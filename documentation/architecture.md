@@ -31,9 +31,9 @@ WordPress continues normally
 
 | Layer | Classes | Talks to WordPress? |
 |---|---|---|
-| Decision core | `Firewall\*`, `Rules\*`, `Login\LoginGuard`, `Settings`, `Support\*`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries` | **No.** Pure PHP, unit-tested |
+| Decision core | `Firewall\*`, `Rules\*`, `Login\LoginGuard`, `Settings`, `Support\*`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Update\ReleaseManifest` | **No.** Pure PHP, unit-tested |
 | Storage adapters | `Storage\TransientStore`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport` | Yes (transients, `$wpdb`) |
-| Integration | `Plugin`, `Installer`, `Admin\*` | Yes |
+| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases) | Yes |
 
 Collaborators reach the core through four interfaces, each with a test double in `tests/Support/`:
 

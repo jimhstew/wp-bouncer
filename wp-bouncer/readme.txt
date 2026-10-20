@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -42,13 +42,17 @@ Add `define( 'WP_BOUNCER_DISABLE', true );` to wp-config.php, log in, fix the se
 
 = Does it phone home? =
 
-No. The only outbound request is the geo database download, and only when you click Import with a URL.
+It sends nothing about your site or visitors. It makes two kinds of outbound request: the geo database download, only when you click Import with a URL, and an update check, a few times a day, that fetches a small update.json from the plugin's GitHub releases. The update check sends no site URL. Add `define( 'WP_BOUNCER_DISABLE_UPDATES', true );` to wp-config.php to switch it off; you can then update by uploading new zips yourself.
 
 = Does it replace Wordfence? =
 
 It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
 
 == Changelog ==
+
+= 1.1.0 =
+* New: updates from GitHub releases appear on the Plugins screen like any other plugin, with Update now, View details and auto-updates. Each download is checked against a published SHA-256 before it is installed.
+* New: Updates card on the Tools tab.
 
 = 1.0.1 =
 * Fix: importing a full geo database (upload or URL) failed with a server error on hosts that stop PHP after 30 seconds. The import now runs in short steps with a progress bar, and can be stopped.

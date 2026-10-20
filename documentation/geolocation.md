@@ -36,7 +36,7 @@ The parser (`Geo\CsvImporter`) skips headers, comments, blank lines, `ZZ` (unass
 
 MaxMind GeoLite2 is **not** supported directly. Its CSV splits networks and locations across two files, and its licence requires an account key. Convert it to `start,end,country` yourself if you prefer it.
 
-**Keep it fresh.** IP allocations change. Re-import monthly. There's no automatic download, on purpose: the plugin makes no outbound requests you haven't asked for.
+**Keep it fresh.** IP allocations change. Re-import monthly. There's no automatic geo download, on purpose. The only request the plugin makes by itself is the update check (see the README), and it sends nothing about your site or visitors.
 
 **Storage.** Each range is stored as two 32-character hex strings (the 16-byte address, with IPv4 mapped into `::ffff:0:0/96`), indexed on the start address. A lookup is one indexed `ORDER BY … DESC LIMIT 1` query. The full DB-IP file takes roughly 40–50 MB including the index.
 

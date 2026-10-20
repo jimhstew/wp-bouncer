@@ -107,6 +107,41 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 </section>
 
 <section class="wpb-card">
+	<h2><?php esc_html_e( 'Updates', 'wp-bouncer' ); ?></h2>
+	<?php
+	$wpb_updates_off = \WPBouncer\Update\Updater::is_disabled();
+	$wpb_latest      = $wpb_updates_off ? null : ( new \WPBouncer\Update\Updater( $plugin->file() ) )->manifest();
+	?>
+	<p>
+		<?php
+		/* translators: %s: version number. */
+		printf( esc_html__( 'Installed version: %s.', 'wp-bouncer' ), '<strong>' . esc_html( \WPBouncer\Plugin::VERSION ) . '</strong>' );
+		echo ' ';
+		if ( $wpb_updates_off ) {
+			esc_html_e( 'Update checks are switched off by WP_BOUNCER_DISABLE_UPDATES in wp-config.php.', 'wp-bouncer' );
+		} elseif ( null !== $wpb_latest && $wpb_latest->is_newer_than( \WPBouncer\Plugin::VERSION ) ) {
+			/* translators: %s: version number. */
+			printf( esc_html__( 'Version %s is available.', 'wp-bouncer' ), '<strong>' . esc_html( $wpb_latest->version() ) . '</strong>' );
+		} elseif ( null !== $wpb_latest ) {
+			esc_html_e( 'This is the latest release.', 'wp-bouncer' );
+		} else {
+			/* translators: %s: error message. */
+			printf( esc_html__( 'Could not check for updates (%s). WordPress will try again later.', 'wp-bouncer' ), esc_html( \WPBouncer\Update\Updater::last_error() ?: __( 'no answer', 'wp-bouncer' ) ) );
+		}
+		?>
+	</p>
+	<p class="description">
+		<?php esc_html_e( 'New releases are published on GitHub and arrive like any other plugin update: a notice on the Plugins screen, Update now, and the Enable auto-updates link. Each download is checked against the SHA-256 published with the release before it is installed.', 'wp-bouncer' ); ?>
+	</p>
+	<?php if ( ! $wpb_updates_off && current_user_can( 'update_plugins' ) ) : ?>
+		<p>
+			<a class="button" href="<?php echo esc_url( self_admin_url( 'update-core.php?force-check=1' ) ); ?>"><?php esc_html_e( 'Check for updates now', 'wp-bouncer' ); ?></a>
+			<a class="button" href="<?php echo esc_url( self_admin_url( 'plugins.php' ) ); ?>"><?php esc_html_e( 'Plugins screen (auto-update setting)', 'wp-bouncer' ); ?></a>
+		</p>
+	<?php endif; ?>
+</section>
+
+<section class="wpb-card">
 	<h2><?php esc_html_e( 'Unlock an IP', 'wp-bouncer' ); ?></h2>
 	<p class="description"><?php esc_html_e( 'Lift a login lockout or rate-limit ban early. To unblock an IP on the blocklist, remove it on the Rules tab.', 'wp-bouncer' ); ?></p>
 	<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">

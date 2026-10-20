@@ -46,7 +46,7 @@ This creates `builds/wp-bouncer-1.0.1.zip`, with a `.sha256` checksum next to it
 1. In wp-admin go to **Plugins → Add New Plugin → Upload Plugin**.
 2. Choose the zip, click **Install Now**, then **Activate**.
 
-To upgrade, upload the newer zip the same way. WordPress asks whether to replace the installed version; choose **Replace current with uploaded**. Your settings and log are kept.
+From version 1.1.0 on, the plugin updates itself like any other plugin (see [Updates](#updates)). To upgrade an older copy, upload the newer zip the same way. WordPress asks whether to replace the installed version; choose **Replace current with uploaded**. Your settings and log are kept.
 
 Without the upload screen, unzip it on your computer and copy the `wp-bouncer` folder into `wp-content/plugins/` on the server (by FTP, SFTP or your host's file manager). Then activate it under **Plugins**.
 
@@ -86,6 +86,22 @@ Out of the box every rule is on except **country blocking** and **rate limiting*
 Blocked visitors get a short "403 Forbidden" page with your block message, or "429 Too Many Requests" from rate limiting. A locked-out login shows "Too many failed login attempts, try again in N minutes".
 
 Refresh the geo database about once a month (**Tools → Import**), because IP address allocations change.
+
+---
+
+## Updates
+
+From version 1.1.0, new releases arrive like any other plugin update:
+
+- **See that there's an update.** When a new version is published on GitHub, the Plugins screen and **Dashboard → Updates** show "There is a new version of WP Bouncer available". This can take up to 12 hours; **Dashboard → Updates → Check again** checks straight away. **View version … details** shows what changed.
+- **Update when you choose.** Click **Update now** on the Plugins screen, or tick it on **Dashboard → Updates**. Settings, the log and the geo database are kept.
+- **Or update automatically.** Click **Enable auto-updates** next to WP Bouncer on the Plugins screen. WordPress then installs new versions by itself, a few hours after they're published, and emails the site admin.
+
+Updates come only from this repository's GitHub releases. Before installing, the plugin checks that the download's SHA-256 matches the one published with the release. If it doesn't match, the update is refused and the installed version keeps running.
+
+The check fetches a small file (`update.json`) from GitHub a few times a day. It sends nothing about your site or visitors. To switch it off, add `define( 'WP_BOUNCER_DISABLE_UPDATES', true );` to `wp-config.php` and update by uploading zips yourself.
+
+**Tools → Updates** shows the installed version, whether a newer one exists, and a **Check for updates now** button.
 
 ---
 
@@ -132,6 +148,10 @@ This is almost always IP detection. Every visitor appears to come from the same 
 2. Fix **General → Client IP source** and **Trusted proxies**.
 3. Remove the proxy's address from the IP blocklist, or unlock it on the **Tools** tab.
 
+### An update went wrong
+
+If the site breaks after an update, use the emergency switch or rename the plugin folder (above) to get back in. Then install the previous version: download its zip from the repository's **Releases** page and upload it under **Plugins → Add New Plugin → Upload Plugin**, choosing **Replace current with uploaded**. Turn off auto-updates for WP Bouncer until a fixed version is out.
+
 ### Geo import fails or stops
 
 The import runs in short steps, so it works on hosts with strict time limits. If it stops with an error, click **Retry**. If you leave the page, the import carries on the next time you open **Tools**. Uploads must fit the server's upload limit, which the Tools tab shows. Upload the `.csv.gz` file (about 5 MB) rather than the unpacked `.csv`, or use the URL option.
@@ -142,11 +162,14 @@ The import runs in short steps, so it works on hosts with strict time limits. If
 
 ```bash
 make            # build builds/wp-bouncer-<version>.zip
+make manifest   # also write builds/update.json (needs PHP)
 make test       # unit tests (needs PHP and `composer install`)
 make e2e        # end-to-end tests in a throwaway WordPress
 make check      # unit tests + build + end-to-end tests against the built zip
 make clean      # delete builds/
 ```
+
+To publish a release, bump the version, add a changelog entry, then push a tag such as `git tag v1.1.1 && git push origin v1.1.1`. GitHub Actions tests it, builds it and publishes the release that installed sites update from. See the developer guide for the details.
 
 Start with [documentation/developer-guide.md](documentation/developer-guide.md). It covers the code layout, how to build and test, and links to the architecture, rules, geolocation and testing guides. Changes are listed in [documentation/CHANGELOG.md](documentation/CHANGELOG.md).
 

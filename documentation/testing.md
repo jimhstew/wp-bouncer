@@ -4,10 +4,10 @@ Run all of these before deploying a change.
 
 | Suite | Command | Needs | What it proves |
 |---|---|---|---|
-| Unit | `make test` | PHP 7.4+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import (221 tests, < 1 s) |
+| Unit | `make test` | PHP 7.4+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation (242 tests, < 1 s) |
 | Static analysis | `make analyse` | `composer install` | No undefined functions or methods and no type mistakes in the WordPress-facing code (PHPStan level 5 + WordPress stubs) |
 | Coding standards | `make lint` | `composer install` | WordPress Coding Standards |
-| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet | The plugin in a real WordPress: 73 live HTTP checks |
+| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet | The plugin in a real WordPress: 93 live checks |
 | Release check | `make check` | all of the above, plus `zip` | Unit tests, build the zip, then the end-to-end suite against the plugin installed **from that zip** |
 
 The `composer test`, `composer analyse`, `composer lint` and `composer test:e2e` scripts are equivalent. Tests live in `tests/`, outside the `wp-bouncer/` plugin folder, so they never end up in the zip you upload.
@@ -50,6 +50,7 @@ Conventions:
 - normal pages, search and the REST posts endpoint load (200)
 - scanner and empty User-Agents, xmlrpc.php, `?author=1`, the REST users list, and XSS/SQLi/traversal payloads are refused (403), and the users sitemap is gone
 - 5 failed logins, or one try as `admin`, lock out the IP even with the right password, while other IPs log in fine and lifting the lockout works
+- updates, with a local server standing in for GitHub releases: no update offered at the same version and the auto-update toggle is offered; a newer release appears on the Plugins screen, Dashboard → Updates and View details; a zip whose SHA-256 doesn't match is refused and the old version keeps running; **Update now** and an auto-update (run as WP-Cron runs it) install the new version, which stays active, keeps its settings and keeps blocking; `WP_BOUNCER_DISABLE_UPDATES` turns the check off. The test replaces the linked source folder with a copy first, because an update deletes the installed folder.
 - the emergency switch (`WP_BOUNCER_DISABLE`) lets a locked-out IP log in and lets scanners through, and removing it restores blocking
 - country blocking with the fixture geo database, site-wide and login-only
 - rate limiting allows 10 requests and throttles the 11th (429)

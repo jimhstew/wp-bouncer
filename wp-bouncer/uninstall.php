@@ -16,6 +16,7 @@ $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_geo" );
 delete_option( 'wp_bouncer_settings' );
 delete_option( 'wp_bouncer_db_version' );
 delete_option( 'wp_bouncer_geo_meta' );
+delete_site_transient( 'wp_bouncer_update_manifest' );
 
 // An unfinished geo import leaves a progress record and a working CSV.
 $wpb_import = get_option( 'wp_bouncer_geo_import' );

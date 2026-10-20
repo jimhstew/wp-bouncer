@@ -297,9 +297,111 @@ check "step with nothing running"    1   "$(curl -s -b "$J" -H "X-Real-IP: 198.5
 check "AJAX step needs a nonce"      403 "$(curl -s -o /dev/null -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "action=wp_bouncer_geo_step&_ajax_nonce=bad" "$U/wp-admin/admin-ajax.php")"
 rm -f "$W/wp-content/mu-plugins/wpb-e2e.php"
 
+echo "==> Updates (a local server stands in for GitHub releases)"
+# An update deletes the installed plugin folder and unpacks the new one. When the
+# plugin is a link to the source folder, that would delete the source, so switch
+# to a copy first and refuse to go on if it is still a link.
+if [ -L "$INSTALLED" ]; then
+	rm -f "$INSTALLED"
+	cp -R "$PLUGIN_DIR" "$INSTALLED"
+fi
+if [ -L "$INSTALLED" ] || [ "$(cd "$INSTALLED" && pwd -P)" = "$(cd "$PLUGIN_DIR" && pwd -P)" ]; then
+	echo "Refusing to test updates: $INSTALLED is the source folder"; exit 1
+fi
+CURRENT=$($WP plugin get wp-bouncer --field=version)
+$WP plugin auto-updates disable wp-bouncer > /dev/null 2>&1   # left on by an earlier run in a reused WPB_E2E_DIR
+
+cat > "$W/wp-content/mu-plugins/wpb-e2e-update.php" <<PHPEOF
+<?php
+add_filter( 'wp_bouncer_update_manifest_url', function () { return 'http://127.0.0.1:$FILES_PORT/update.json'; } );
+add_filter( 'wp_bouncer_update_package_prefix', function () { return 'http://127.0.0.1:$FILES_PORT/'; } );
+add_filter( 'http_request_host_is_external', '__return_true' );
+add_filter( 'http_allowed_safe_ports', function ( \$p ) { \$p[] = $FILES_PORT; return \$p; } );
+PHPEOF
+
+publish() { # publish VERSION -> a plugin zip with that version and its update.json on the stand-in server
+	local v=$1 rel="$WORK/release/wp-bouncer"
+	rm -rf "$WORK/release" && mkdir -p "$WORK/release"
+	cp -R "$PLUGIN_DIR" "$rel"
+	sed -i.bak -e "s/^ \* Version: .*/ * Version:           $v/" -e "s/'WP_BOUNCER_VERSION', '[^']*'/'WP_BOUNCER_VERSION', '$v'/" "$rel/wp-bouncer.php"
+	sed -i.bak -e "s/VERSION = '[^']*'/VERSION = '$v'/" "$rel/src/Plugin.php"
+	find "$rel" -name '*.bak' -delete
+	printf '## [%s] - 2026-01-01\n\n### Added\n- Release %s for the e2e update test.\n' "$v" "$v" > "$WORK/release/CHANGELOG.md"
+	rm -f "$FILES/wp-bouncer-$v.zip"
+	(cd "$WORK/release" && zip -qrX "$FILES/wp-bouncer-$v.zip" wp-bouncer)
+	"$PHP" "$REPO_DIR/scripts/build-manifest.php" --zip "$FILES/wp-bouncer-$v.zip" --plugin-dir "$rel" \
+		--changelog "$WORK/release/CHANGELOG.md" --package-url "http://127.0.0.1:$FILES_PORT/wp-bouncer-$v.zip" \
+		--out "$FILES/update.json" --notes-out "$WORK/release/notes.md" > /dev/null
+}
+refresh_updates() { $WP eval 'delete_site_transient( "update_plugins" ); delete_site_transient( WPBouncer\Update\Updater::CACHE ); wp_update_plugins();'; }
+offered() { # offered -> the version WordPress offers for wp-bouncer, "none", or "unsupported"
+	$WP eval '$t = get_site_transient( "update_plugins" ); $f = "wp-bouncer/wp-bouncer.php"; echo isset( $t->response[ $f ] ) ? $t->response[ $f ]->new_version : ( isset( $t->no_update[ $f ] ) ? "none" : "unsupported" );'
+}
+installed_version() { $WP plugin get wp-bouncer --field=version; }
+update_now() { # update_now -> the JSON from the Plugins screen's "Update now" (admin-ajax update-plugin)
+	admin "$U/wp-admin/plugins.php" > /dev/null
+	local nonce
+	nonce=$(grep -o '"ajax_nonce":"[0-9a-f]*"' "$WORK/admin.html" | head -1 | cut -d'"' -f4)
+	curl -s -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" \
+		-d "action=update-plugin&plugin=wp-bouncer%2Fwp-bouncer.php&slug=wp-bouncer&_ajax_nonce=$nonce" "$U/wp-admin/admin-ajax.php"
+}
+
+publish "$CURRENT"
+refresh_updates
+check "same version: no update"      none "$(offered)"
+admin "$U/wp-admin/plugins.php" > /dev/null
+check "auto-update toggle offered"   1    "$(grep -c 'action=enable-auto-update&amp;plugin=wp-bouncer%2Fwp-bouncer.php' "$WORK/admin.html")"
+
+publish 9.0.0
+refresh_updates
+check "new release is offered"       9.0.0 "$(offered)"
+admin "$U/wp-admin/plugins.php" > /dev/null
+check "Plugins screen shows it"      1    "$(grep -c 'There is a new version of WP Bouncer available' "$WORK/admin.html")"
+admin "$U/wp-admin/update-core.php" > /dev/null
+check "Dashboard > Updates lists it" 1    "$(grep -c 'You have version [0-9.]* installed. Update to 9.0.0' "$WORK/admin.html")"
+admin "$U/wp-admin/plugin-install.php?tab=plugin-information&plugin=wp-bouncer&section=changelog" > /dev/null
+check "View details shows changelog" 1    "$(grep -c 'Release 9.0.0 for the e2e update test' "$WORK/admin.html")"
+
+sed -i.bak 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' "$FILES/update.json" && rm -f "$FILES/update.json.bak"
+$WP eval 'delete_site_transient( WPBouncer\Update\Updater::CACHE );'
+check "tampered zip is refused"      1    "$(update_now | grep -c 'failed its integrity check')"
+check "  ...old version still there" "$CURRENT" "$(installed_version)"
+check "  ...and still running"       403  "$(status 203.0.113.51 "sqlmap/1.7" "$U/")"
+
+publish 9.0.0
+$WP eval 'delete_site_transient( WPBouncer\Update\Updater::CACHE );'
+check "Update now succeeds"          1    "$(update_now | grep -c '"success":true')"
+check "  ...new version installed"   9.0.0 "$(installed_version)"
+check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
+check "  ...settings kept"           x_real_ip "$($WP eval 'echo get_option( "wp_bouncer_settings" )["ip_source"];')"
+check "  ...still blocking"          403  "$(status 203.0.113.52 "sqlmap/1.7" "$U/")"
+check "  ...no update offered now"   none "$(offered)"
+
+$WP plugin auto-updates enable wp-bouncer > /dev/null
+admin "$U/wp-admin/plugins.php" > /dev/null
+check "auto-update switched on"      1    "$(grep -c 'action=disable-auto-update&amp;plugin=wp-bouncer%2Fwp-bouncer.php' "$WORK/admin.html")"
+publish 9.1.0
+refresh_updates
+# Real auto-updates run from WP-Cron, which is what DOING_CRON tells WordPress.
+# (Outside cron, WordPress deactivates a plugin while updating it and leaves
+# reactivating it to the update screen.)
+$WP eval 'define( "DOING_CRON", true ); wp_maybe_auto_update();'
+check "auto-update installs 9.1.0"   9.1.0 "$(installed_version)"
+check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
+check "  ...still blocking"          403  "$(status 203.0.113.53 "sqlmap/1.7" "$U/")"
+
+echo "<?php define( 'WP_BOUNCER_DISABLE_UPDATES', true );" > "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php"
+publish 9.2.0
+refresh_updates
+check "WP_BOUNCER_DISABLE_UPDATES"   unsupported "$(offered)"
+rm -f "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php" "$W/wp-content/mu-plugins/wpb-e2e-update.php"
+
 echo "==> PHP debug log"
-check "no PHP warnings or notices" 0 "$( [ -f "$W/debug.log" ] && grep -c . "$W/debug.log" || echo 0 )"
-[ -f "$W/debug.log" ] && head -20 "$W/debug.log"
+# WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
+PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'
+touch "$W/debug.log"
+check "no PHP warnings or notices" 0 "$(grep -cE "$PHP_PROBLEMS" "$W/debug.log")"
+grep -E -A3 "$PHP_PROBLEMS" "$W/debug.log" | head -20
 
 echo
 echo "$pass passed, $fail failed"

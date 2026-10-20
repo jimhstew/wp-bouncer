@@ -1,6 +1,8 @@
 # WP Bouncer build and test tasks.
 #
 #   make            Build builds/wp-bouncer-<version>.zip, ready for Plugins > Add New > Upload
+#   make manifest   Also write builds/update.json and release-notes.md (needs PHP). The release
+#                   workflow attaches these to the GitHub release; installed sites read update.json.
 #   make test       Unit tests (needs PHP and `composer install`)
 #   make analyse    PHPStan static analysis
 #   make lint       WordPress Coding Standards
@@ -28,7 +30,7 @@ SOURCES  := $(shell find $(SRC) -type f ! -name '.DS_Store')
 # Files that must never ship.
 FORBIDDEN := -e '/tests/' -e 'Test\.php$$' -e '/fixtures/' -e 'phpunit' -e '\.phar$$' -e '/\.' -e 'composer\.'
 
-.PHONY: all build test analyse lint e2e check clean version
+.PHONY: all build manifest test analyse lint e2e check clean version
 
 all: build
 
@@ -59,6 +61,9 @@ $(ZIP): $(SOURCES) Makefile
 	@if command -v sha256sum > /dev/null; then (cd $(BUILDS) && sha256sum $(notdir $@) > $(notdir $@).sha256); \
 	else (cd $(BUILDS) && shasum -a 256 $(notdir $@) > $(notdir $@).sha256); fi
 	@echo "Built $@ ($$(unzip -Z1 $@ | grep -vc '/$$') files, $$(du -k $@ | cut -f1) KB)"
+
+manifest: $(ZIP)
+	$(PHP) scripts/build-manifest.php --zip $(ZIP)
 
 version:
 	@echo $(VERSION)

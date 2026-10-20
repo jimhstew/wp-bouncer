@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-10-20
+
+### Added
+- Updates from GitHub releases through WordPress's normal plugin updater. New versions show on the Plugins screen and on Dashboard → Updates with **Update now** and **View details**, and the plugin can be set to **Enable auto-updates** like any other. WP-CLI `wp plugin update` works too.
+- Each update zip is checked against the SHA-256 published with the release, and must come from this repository's releases, before WordPress installs it.
+- `Update URI` header, so WordPress never takes updates for this plugin from WordPress.org.
+- Updates card on the Tools tab: installed and latest version, and a **Check for updates now** button.
+- `WP_BOUNCER_DISABLE_UPDATES` constant to switch update checks off.
+- Release workflow: pushing a `vX.Y.Z` tag runs the tests, builds the zip and `update.json`, and publishes the GitHub release.
+
 ## [1.0.1] - 2026-10-20
 
 ### Fixed

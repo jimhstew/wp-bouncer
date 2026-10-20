@@ -1,0 +1,58 @@
+# Publishes a release when a version tag is pushed:
+#
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# The tag must match the Version header in wp-bouncer/wp-bouncer.php and have a
+# section in documentation/CHANGELOG.md. The release gets two files:
+#   wp-bouncer-<version>.zip  the plugin
+#   update.json               what installed copies read to find the update
+# Installed sites see the update on their Plugins screen within about 12 hours,
+# or straight away after Dashboard > Updates > Check again.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, zlib
+          coverage: none
+
+      - name: Tag matches plugin version
+        run: |
+          version="$(make -s version)"
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match plugin version ${version} (expected v${version})"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - run: composer install --no-interaction --no-progress
+      - run: composer test
+      - run: make manifest
+      - name: End-to-end tests against the release zip
+        run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-${VERSION}.zip" tests/e2e/run.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" \
+            "builds/wp-bouncer-${VERSION}.zip" \
+            "builds/wp-bouncer-${VERSION}.zip.sha256" \
+            builds/update.json \
+            --title "WP Bouncer ${VERSION}" \
+            --notes-file builds/release-notes.md \
+            $prerelease

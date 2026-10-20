@@ -31,6 +31,7 @@ use WPBouncer\Rules\XmlRpcRule;
 use WPBouncer\Storage\CounterStoreInterface;
 use WPBouncer\Storage\TransientStore;
 use WPBouncer\Support\IpUtils;
+use WPBouncer\Update\Updater;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -44,7 +45,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.0.1';
+	public const VERSION = '1.1.0';
 
 	/** Option holding metadata about the imported geo database. */
 	public const GEO_META_OPTION = 'wp_bouncer_geo_meta';
@@ -105,6 +106,11 @@ final class Plugin {
 			$this->register_login_hooks();
 			$this->register_xmlrpc_hooks();
 			$this->register_user_enumeration_hooks();
+		}
+
+		// Updates are not affected by WP_BOUNCER_DISABLE: updating is one way out of a bad version.
+		if ( ! Updater::is_disabled() ) {
+			( new Updater( $this->file ) )->register();
 		}
 
 		if ( is_admin() ) {

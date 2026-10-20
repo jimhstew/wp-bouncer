@@ -96,6 +96,9 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   │   ├── Log/
 │   │   │   ├── BlockLogInterface.php
 │   │   │   └── BlockLog.php    {prefix}bouncer_log reads and writes
+│   │   ├── Update/             Updates from GitHub releases
+│   │   │   ├── Updater.php     Hooks WordPress's plugin updater; verifies the zip's SHA-256
+│   │   │   └── ReleaseManifest.php  Parses and validates update.json
 │   │   ├── Support/
 │   │   │   ├── IpUtils.php     Validation, CIDR matching, IPv4/IPv6 encoding
 │   │   │   └── Clock.php       Time source (frozen in tests)
@@ -106,6 +109,7 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   ├── assets/                 admin.css, admin.js (no build step, no dependencies)
 │   └── languages/              Translations
 │
+├── scripts/build-manifest.php  Writes update.json + release notes for a built zip. Never shipped
 ├── tests/                      Never shipped
 │   ├── bootstrap.php           Loads wp-bouncer/src without WordPress
 │   ├── Unit/                   PHPUnit tests, mirroring wp-bouncer/src/
@@ -119,7 +123,8 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   └── CHANGELOG.md
 │
 ├── composer.json, phpunit.xml.dist, phpcs.xml.dist, phpstan.neon.dist   Dev tooling
-└── .github/workflows/tests.yml CI: unit tests on PHP 7.4–8.4, e2e against the built zip, lint
+├── .github/workflows/tests.yml    CI: unit tests on PHP 7.4–8.4, e2e against the built zip, lint
+└── .github/workflows/release.yml  On a vX.Y.Z tag: test, build, publish the GitHub release
 ```
 
 Namespaces are PSR-4: `WPBouncer\X\Y` is `wp-bouncer/src/X/Y.php`, and `WPBouncer\Tests\X\Y` is `tests/X/Y.php`.
@@ -135,14 +140,43 @@ make clean      # delete builds/
 
 `make` needs only `zip` and `unzip`. If PHP is on your PATH (or given as `make PHP=/path/to/php`), it also syntax-checks every file first. The zip has a single top-level `wp-bouncer/` folder, as WordPress expects. It leaves out dotfiles, and the build fails if a test, fixture, phar or Composer file somehow ends up inside. The version in the file name comes from the `Version:` header in `wp-bouncer/wp-bouncer.php`.
 
-To release: bump the version in `wp-bouncer/wp-bouncer.php` (header and `WP_BOUNCER_VERSION`), `Plugin::VERSION` and `readme.txt`'s Stable tag, add a `documentation/CHANGELOG.md` entry, then run `make check`. Bumping the version also makes browsers fetch the new admin CSS and JS instead of cached copies.
+## Releasing
+
+Installed copies (1.1.0 and later) update themselves from this repository's GitHub releases, so publishing a release is how you ship.
+
+1. Bump the version in four places: `wp-bouncer/wp-bouncer.php` (the `Version:` header and `WP_BOUNCER_VERSION`), `Plugin::VERSION`, and `readme.txt`'s `Stable tag`. Bumping it also makes browsers fetch the new admin CSS and JS instead of cached copies.
+2. Add a `## [X.Y.Z] - date` section to `documentation/CHANGELOG.md`. It becomes the release notes and the "View details" changelog in wp-admin, and the build refuses to run without it.
+3. Optionally run `make check` locally.
+4. Commit and push, then tag:
+   ```bash
+   git tag v1.1.1
+   git push origin v1.1.1
+   ```
+5. `.github/workflows/release.yml` then:
+   - checks that the tag matches the plugin version
+   - runs the unit tests
+   - builds the zip and `update.json` (`make manifest`)
+   - runs the end-to-end suite against that zip
+   - publishes the GitHub release with `wp-bouncer-X.Y.Z.zip`, its `.sha256` and `update.json` attached
+
+   A version with a suffix (`1.2.0-beta.1`) is published as a pre-release, which installed sites ignore.
+
+### How updates reach sites
+
+- The plugin header has `Update URI: https://github.com/jimhstew/wp-bouncer`. WordPress 5.8+ then never takes updates for it from WordPress.org. Instead it asks the `update_plugins_github.com` filter, which `Update\Updater` answers.
+- `Updater` reads `https://github.com/jimhstew/wp-bouncer/releases/latest/download/update.json`. That address always points at the newest full release, and it isn't subject to GitHub's API rate limits. The answer is cached for 6 hours, or 1 hour after a failure, and "Check again" on Dashboard → Updates clears the cache. `Update\ReleaseManifest` validates the file. The zip must come from `…/releases/download/` and the SHA-256 must be present.
+- Everything after that is WordPress's own updater: the notices, Update now, bulk update, auto-updates and `wp plugin update`. The one addition is `upgrader_pre_download`: `Updater` downloads our zip itself and refuses it if its SHA-256 doesn't match `update.json`, before WordPress removes the installed copy.
+- The zip has a single `wp-bouncer/` folder, so the plugin keeps its folder name and stays active through updates.
+- Testing and forks: the `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` filters change where updates come from. The e2e suite uses them with a local server. `WP_BOUNCER_DISABLE_UPDATES` switches the check off.
+
+Do not delete or replace the assets of a published release. Sites may be part-way through updating from it. To fix a bad release, publish a new version.
 
 ## Testing before deployment
 
 ```bash
 composer install
 
-make test       # 221 PHPUnit unit tests, under a second, no WordPress or DB needed
+make test       # 242 PHPUnit unit tests, under a second, no WordPress or DB needed
 make analyse    # PHPStan static analysis with WordPress stubs
 make lint       # WordPress Coding Standards (checks wp-bouncer/ only)
 make e2e        # Throwaway WordPress on SQLite + live HTTP checks, using wp-bouncer/ directly
