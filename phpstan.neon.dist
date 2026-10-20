@@ -1,0 +1,12 @@
+# Static analysis with WordPress function stubs: composer analyse
+parameters:
+  level: 5
+  paths:
+    - wp-bouncer/src
+    - wp-bouncer/uninstall.php
+    - wp-bouncer/wp-bouncer.php
+  # Values returned by apply_filters() come from third-party code, so runtime
+  # type checks on them are intentional even when the PHPDoc says otherwise.
+  treatPhpDocTypesAsCertain: false
+  dynamicConstantNames:
+    - WP_BOUNCER_DISABLE

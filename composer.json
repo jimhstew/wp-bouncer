@@ -1,0 +1,40 @@
+{
+    "name": "wp-bouncer/wp-bouncer",
+    "description": "Self-contained WordPress firewall: IP, country, user-agent, brute-force, XML-RPC, rate-limit and WAF rules with no cloud service.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpstan/extension-installer": "^1.4",
+        "phpstan/phpstan": "^2.1",
+        "phpunit/phpunit": "^9.6",
+        "squizlabs/php_codesniffer": "^3.10",
+        "szepeviktor/phpstan-wordpress": "^2.0",
+        "wp-coding-standards/wpcs": "^3.1",
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "WPBouncer\\": "wp-bouncer/src/",
+            "WPBouncer\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test:e2e": "tests/e2e/run.sh",
+        "test:coverage": "XDEBUG_MODE=coverage phpunit --coverage-html builds/coverage",
+        "lint": "phpcs",
+        "analyse": "phpstan analyse",
+        "lint:fix": "phpcbf",
+        "build": "make build"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "phpstan/extension-installer": true
+        },
+        "sort-packages": true
+    }
+}

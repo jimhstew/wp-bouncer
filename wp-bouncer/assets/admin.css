@@ -1,0 +1,91 @@
+/* WP Bouncer admin styles. Uses WordPress admin colours and stays small. */
+
+.wp-bouncer .wpb-title { display: flex; align-items: center; gap: 8px; }
+.wp-bouncer .wpb-title .dashicons { font-size: 28px; width: 28px; height: 28px; color: #2271b1; }
+.wp-bouncer .nav-tab-wrapper { margin-bottom: 16px; }
+
+.wpb-card {
+	background: #fff;
+	border: 1px solid #c3c4c7;
+	border-radius: 4px;
+	padding: 16px 20px;
+	margin: 0 0 16px;
+	box-sizing: border-box;
+	min-width: 0;
+}
+.wpb-card h2 { margin-top: 0; font-size: 1.15em; }
+.wpb-card h3 { font-size: 1em; margin: 1.2em 0 .5em; }
+
+.wpb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.wpb-stat { margin: 0; }
+.wpb-stat-value { font-size: 2em; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.wpb-stat-label { color: #646970; }
+
+.wpb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+.wpb-grid .wpb-card { margin: 0; }
+.wpb-grid td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.wpb-rule-table td { vertical-align: middle; }
+.wpb-rule-state, .wpb-rule-toggle { width: 1%; white-space: nowrap; }
+.wpb-rule-toggle form { margin: 0; }
+
+.wpb-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; line-height: 1.6; font-weight: 500; background: #f0f0f1; color: #50575e; }
+.wpb-badge-on, .wpb-badge-blocked { background: #d63638; color: #fff; }
+.wpb-badge-on { background: #00a32a; }
+.wpb-badge-off { background: #f0f0f1; color: #50575e; }
+.wpb-badge-lockout { background: #dba617; color: #1d2327; }
+.wpb-badge-monitored { background: #72aee6; color: #1d2327; }
+
+/* Activity bars */
+.wpb-bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding-bottom: 18px; }
+.wpb-bar { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; position: relative; }
+.wpb-bar span { display: block; background: #2271b1; border-radius: 2px 2px 0 0; min-height: 1px; }
+.wpb-bar em { position: absolute; bottom: -18px; left: 0; right: 0; text-align: center; font-style: normal; font-size: 11px; color: #646970; }
+
+/* Rule panels */
+.wpb-rule-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 12px; }
+.wpb-rule-head h2 { margin: 0 0 2px; }
+.wpb-rule-head .description { margin: 0; }
+.wpb-inline label { display: inline-block; margin-right: 18px; }
+
+/* Toggle switch */
+.wpb-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; margin-top: 2px; }
+.wpb-switch input { opacity: 0; width: 100%; height: 100%; position: absolute; margin: 0; cursor: pointer; z-index: 1; }
+.wpb-slider { position: absolute; inset: 0; background: #8c8f94; border-radius: 22px; transition: background .15s; }
+.wpb-slider::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .15s; }
+.wpb-switch input:checked + .wpb-slider { background: #00a32a; }
+.wpb-switch input:checked + .wpb-slider::before { transform: translateX(18px); }
+.wpb-switch input:focus-visible + .wpb-slider { box-shadow: 0 0 0 2px #fff, 0 0 0 4px #2271b1; }
+
+/* Country picker */
+.wpb-country-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; position: sticky; top: 32px; background: #fff; padding: 8px 0; z-index: 2; }
+.wpb-continent { border: 0; margin: 0 0 16px; padding: 0; }
+.wpb-continent legend { font-weight: 600; font-size: 1.05em; padding: 0; margin-bottom: 6px; }
+.wpb-continent legend .button-link { font-weight: normal; margin-left: 8px; font-size: 12px; }
+.wpb-country-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px 12px; }
+.wpb-country { display: flex; align-items: center; gap: 6px; padding: 3px 4px; border-radius: 3px; }
+.wpb-country:hover { background: #f6f7f7; }
+.wpb-country code { margin-left: auto; font-size: 11px; background: none; color: #646970; }
+.wpb-country.is-hidden { display: none; }
+.wpb-country input:checked ~ * { font-weight: 600; }
+.wpb-flag { width: 1.4em; text-align: center; }
+
+/* Geo import progress */
+.wpb-geo-progress { border-left: 4px solid #2271b1; background: #f0f6fc; padding: 4px 14px 10px; margin-bottom: 14px; }
+.wpb-geo-progress progress { width: 100%; max-width: 520px; height: 18px; }
+.wpb-geo-progress.is-error { border-left-color: #d63638; background: #fcf0f1; }
+.wpb-geo-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.wpb-geo-error { color: #b32d2e; font-weight: 600; }
+
+/* Log */
+.wpb-trunc { display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.wpb-clear-log { margin-top: 12px; }
+.wp-bouncer .column-created_at { width: 150px; }
+.wp-bouncer .column-country { width: 80px; }
+.wp-bouncer .column-action { width: 90px; }
+
+@media (max-width: 782px) {
+	.wpb-country-toolbar { top: 46px; }
+	.wpb-grid { grid-template-columns: 1fr; }
+	.wpb-trunc { max-width: 180px; }
+}

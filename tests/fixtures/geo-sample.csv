@@ -1,0 +1,9 @@
+ip_start,ip_end,country
+1.0.0.0,1.0.0.255,AU
+1.0.1.0,1.0.3.255,CN
+# comment lines are ignored
+
+"16777216","16777471","US","United States of America"
+2001:200::,2001:200:ffff:ffff:ffff:ffff:ffff:ffff,JP
+not,a,row
+2a00:1450::,2a00:1450:ffff:ffff:ffff:ffff:ffff:ffff,IE
