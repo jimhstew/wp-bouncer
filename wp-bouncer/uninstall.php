@@ -9,9 +9,15 @@ defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
 global $wpdb;
 
+// Remove our block from uploads/.htaccess (anything else in that file stays).
+require_once __DIR__ . '/src/Autoloader.php';
+\WPBouncer\Autoloader::register( __DIR__ . '/src' );
+\WPBouncer\Hardening\UploadsGuard::teardown();
+
 // phpcs:disable WordPress.DB.DirectDatabaseQuery
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_log" );
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_geo" );
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_traffic" );
 
 delete_option( 'wp_bouncer_settings' );
 delete_option( 'wp_bouncer_db_version' );
@@ -40,3 +46,5 @@ $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient
 // phpcs:enable
 
 wp_clear_scheduled_hook( 'wp_bouncer_daily_maintenance' );
+wp_clear_scheduled_hook( 'wp_bouncer_uploads_check' );
+wp_clear_scheduled_hook( 'wp_bouncer_traffic_purge' );

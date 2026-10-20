@@ -150,7 +150,7 @@ final class BlockLog implements BlockLogInterface {
 	 * @param string $column rule|ip|country|action.
 	 * @param string $since  UTC datetime.
 	 * @param int    $limit  Max groups.
-	 * @return array<string, int> value => count, largest first.
+	 * @return array<string, int> value => count, largest first. Alerts are not counted.
 	 */
 	public function top( string $column, string $since, int $limit = 10 ): array {
 		if ( ! in_array( $column, array( 'rule', 'ip', 'country', 'action' ), true ) ) {
@@ -158,7 +158,7 @@ final class BlockLog implements BlockLogInterface {
 		}
 		$limit = max( 1, min( 100, $limit ) );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $since ), // phpcs:ignore WordPress.DB.PreparedSQL
+			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert' GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $since ), // phpcs:ignore WordPress.DB.PreparedSQL
 			ARRAY_A
 		);
 		$out = array();
@@ -170,6 +170,7 @@ final class BlockLog implements BlockLogInterface {
 
 	/**
 	 * Events per UTC day for the last $days days (missing days are 0).
+	 * Alerts are not counted: they are notices, not blocked visitors.
 	 *
 	 * @param int $days Number of days including today.
 	 * @return array<string, int> Y-m-d => count, oldest first.
@@ -178,7 +179,7 @@ final class BlockLog implements BlockLogInterface {
 		$days  = max( 1, min( 365, $days ) );
 		$start = gmdate( 'Y-m-d 00:00:00', time() - ( $days - 1 ) * DAY_IN_SECONDS );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s GROUP BY DATE(created_at)", $start ), // phpcs:ignore WordPress.DB.PreparedSQL
+			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND action <> 'alert' GROUP BY DATE(created_at)", $start ), // phpcs:ignore WordPress.DB.PreparedSQL
 			ARRAY_A
 		);
 		$out = array();

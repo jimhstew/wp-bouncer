@@ -35,6 +35,13 @@
 .wpb-badge-off { background: #f0f0f1; color: #50575e; }
 .wpb-badge-lockout { background: #dba617; color: #1d2327; }
 .wpb-badge-monitored { background: #72aee6; color: #1d2327; }
+.wpb-badge-alert { background: #8c5cc4; color: #fff; }
+.wpb-status-2xx { background: #00a32a; color: #fff; }
+.wpb-status-3xx { background: #72aee6; color: #1d2327; }
+.wpb-status-4xx { background: #dba617; color: #1d2327; }
+.wpb-status-5xx { background: #d63638; color: #fff; }
+.wpb-client-scanner { background: #d63638; color: #fff; }
+.wpb-client-search_engine, .wpb-client-monitor, .wpb-client-feed { background: #c5d9ed; color: #1d2327; }
 
 /* Activity bars */
 .wpb-bars { display: flex; align-items: flex-end; gap: 4px; height: 120px; padding-bottom: 18px; }
@@ -47,6 +54,11 @@
 .wpb-rule-head h2 { margin: 0 0 2px; }
 .wpb-rule-head .description { margin: 0; }
 .wpb-inline label { display: inline-block; margin-right: 18px; }
+.wpb-indent { margin-left: 24px; }
+.wpb-uploads-status { margin-top: 12px; padding-top: 4px; border-top: 1px solid #dcdcde; }
+.wpb-uploads-status .button-small { margin-left: 6px; vertical-align: baseline; }
+.wpb-warn { color: #b32d2e; font-weight: 600; }
+.wpb-code { background: #f6f7f7; border: 1px solid #dcdcde; padding: 8px 10px; overflow-x: auto; white-space: pre; }
 
 /* Toggle switch */
 .wpb-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; margin-top: 2px; }

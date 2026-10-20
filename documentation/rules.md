@@ -1,8 +1,12 @@
 # Rules reference
 
-All rules live in `wp-bouncer/src/Rules/`. Settings are stored under `wp_bouncer_settings['rules'][<id>]`, and every rule has an `enabled` flag.
+All rules live in `wp-bouncer/src/Rules/`, except `uploads_php`, which lives in `wp-bouncer/src/Hardening/` because it works through the web server and the upload handler rather than the request firewall. Settings are stored under `wp_bouncer_settings['rules'][<id>]`, and every rule has an `enabled` flag.
 
-Administrators (users with `manage_options`) are never inspected by the WAF or the rate limiter. Allowlisted and loopback IPs skip every rule.
+Evaluation order: `ip_blocklist`, `sensitive_files`, `not_found`, `login_lockout`, `rate_limit`, `user_agent`, `xmlrpc`, `user_enumeration`, `country`, `waf`. The first rule that refuses a request wins.
+
+Administrators (users with `manage_options`) are never inspected by the WAF, the rate limiter, the sensitive-file rule or the 404 counter. Allowlisted and loopback IPs skip every rule.
+
+Email alerts aren't a rule; they are described at the end.
 
 ---
 
@@ -98,3 +102,94 @@ Signatures are in `WafRule::SIGNATURES`. Each one has a short name that appears 
 | `block_rest_users` | bool | `/wp-json/wp/v2/users…` and `?rest_route=/wp/v2/users…` for logged-out visitors. |
 
 The users sitemap (`/wp-sitemap-users-1.xml`) is removed while the rule is on.
+
+## `sensitive_files`: Sensitive-file probes
+**Default:** on · **Status:** 403 · `src/Rules/SensitiveFileRule.php`
+
+| Setting | Type | Notes |
+|---|---|---|
+| `ban_minutes` | int 0–43200 | How long the IP is then refused on every page. Default 60. `0` refuses only the probe itself. |
+| `extra_paths` | string[] | More path fragments to treat as probes, matched anywhere in the lowercased path, e.g. `/old-admin/`. |
+
+Matched against the decoded, lowercased path (never the query string). The groups, each named in the log reason, are in `SensitiveFileRule::PATTERNS`: environment files (`/.env`, `/.env.production`), version-control data (`/.git/`, `/.svn/`…), server config files (`.htpasswd`, `.htaccess`, `.user.ini`, `.DS_Store`…), hidden config folders (`/.aws/`, `/.ssh/`…), wp-config copies (`wp-config.php.bak`, `wp-config.old`…), PHP file backups (`*.php.bak`, `*.php~`, `*.php.swp`…), database dumps (`*.sql`, `*.sql.gz`, `*.sqlite`), site backup archives at the top level (`/backup.zip`, `/wordpress.tar.gz`…), log files (`debug.log`, `error_log`), phpinfo pages, database admin tools (`adminer*.php`, `/phpmyadmin/`), known web shells (`wso.php`, `c99.php`…), PHP in uploads, the PHPUnit `eval-stdin.php` exploit, project manifests at the top level (`composer.json`, `package.json`, `docker-compose.yml`) and `/server-status`.
+
+Never treated as probes: `/.well-known/…`, `/wp-config.php`, `/wp-config-sample.php`, and the uploads self-test script.
+
+Why one request is enough: a file that exists is served by the web server before WordPress runs, so a request that reaches WordPress is for a file that isn't there. No real visitor asks for `/.git/config`. The ban key is `sf_ban:<ip>` in the counter store; **Tools → Unlock an IP** clears it.
+
+## `not_found`: 404 flood
+**Default:** on · **Status:** 403 · `src/Rules/NotFoundFloodRule.php`
+
+| Setting | Type | Notes |
+|---|---|---|
+| `max_404` | int 3–10000 | "Not found" pages allowed per window. Default 20. |
+| `window_seconds` | int 10–3600 | Default 60. |
+| `ban_minutes` | int 1–43200 | Default 60. |
+| `ignore_crawlers` | bool | Don't count User-Agents of major search engines (Google, Bing, DuckDuckGo, Baidu, Yandex, Apple, Yahoo, Petal, Seznam, Qwant). User-Agents can be faked, so this trades a little protection for not banning crawlers that revisit removed pages. Default on. |
+
+Two halves. `Plugin::track_not_found()` runs on `template_redirect` at priority 999, after other plugins have had their chance to turn the 404 into a redirect or a page; if `is_404()`, it calls `NotFoundFloodRule::record()`. Going over the limit places a ban (logged with action `lockout`), and `inspect()` refuses the IP from its next request.
+
+Not counted: missing static files (images, CSS, JS, source maps, fonts, audio/video, PDF), so a page with a broken image never bans its reader; logged-in administrators; allowlisted IPs. `.txt`, `.json`, `.xml` and `.php` do count, because scanners ask for plugin `readme.txt` files and config files. REST API "no route" errors aren't page 404s and don't count. Keys: `nf_count:<ip>`, `nf_ban:<ip>`.
+
+## `uploads_php`: No PHP in uploads
+**Default:** on · `src/Hardening/UploadsGuard.php` (WordPress side) and `src/Hardening/UploadsPolicy.php` (pure, unit-tested)
+
+| Setting | Type | Notes |
+|---|---|---|
+| `htaccess` | bool | Keep a `# BEGIN WP Bouncer` … `# END WP Bouncer` block in `wp-content/uploads/.htaccess`. |
+| `check_uploads` | bool | Refuse uploads that are scripts in disguise. |
+
+**The `.htaccess` block** is a `<FilesMatch>` on script extensions (`php`, `php0`–`php9`, `phtml`, `pht`, `phar`, `phps`, `pgif`, `shtml`, `cgi`, `pl`, `py`, `asp`, `aspx`, `jsp`) with `Require all denied`, plus `Order`/`Deny` for Apache 2.2. It deliberately doesn't use `php_flag engine off`, which gives a 500 error on servers running PHP-FPM. It is written with WordPress's `insert_with_markers()`, so anything else in the file stays. A fingerprint of the wanted state is kept in option `wp_bouncer_uploads_htaccess`; on each `init` the plugin compares it and only touches the file when something changed (after a failed write it retries once an hour, and the Bouncer screens show a warning). The block is removed when either setting turns it off, while `WP_BOUNCER_DISABLE` is on, on deactivation, and on uninstall. If nothing else was in the file, the file is deleted.
+
+**Safety check.** `Require` and `Deny` are only allowed in `.htaccess` when the host's `AllowOverride` permits them; on a host that doesn't, every file in uploads, images included, would get a 500 error while the block is there. So after writing the block the plugin schedules a one-off cron job (`wp_bouncer_uploads_check`) that puts a small text file in uploads and fetches it. If the server answers with a 5xx error, the block is removed, the state is marked `broken` so it isn't written again, an `alert` entry is logged, and the Bouncer screens show an error. **Test now** runs the same check first. **Write it now** on the Rules tab tries again once the host is fixed. A check that can't reach the site at all changes nothing.
+
+nginx ignores `.htaccess`. The Rules tab shows the equivalent rule:
+
+```nginx
+location ~* ^/wp-content/uploads/.*\.(php[0-9]?|phtml|pht|phar|phps|pgif|shtml|cgi|pl|py|asp|aspx|jsp)$ {
+    deny all;
+}
+```
+
+**Test now** (`UploadsGuard::probe()`) writes `wp-content/uploads/wp-bouncer-test-<random>.php`, requests it over HTTP from the site itself, deletes it, and stores the result in option `wp_bouncer_uploads_probe`. Protected means a 401/403, or the script's source coming back as text. Not protected means the script ran. If the safety check found the block breaking uploads, the result is "not protected, block removed". Anything else (404, 500, a timeout, a redirect) is reported as "could not tell".
+
+**Upload checks** hook `wp_handle_upload_prefilter` and `wp_handle_sideload_prefilter`, which cover the media library, the REST API (`/wp/v2/media`), `media_handle_sideload()` and WP-CLI `wp media import`. A file is refused if any part of its name after the first dot is a script extension (`photo.php.jpg`, since some servers run any file with `.php` in its name), if it is a server config file (`.htaccess`, `.user.ini`, `php.ini`, `web.config`, `.htpasswd`), or if its first 50 MB contain `<?php` in any case. Refusals are logged with rule `uploads_php`. Plugins that write files themselves, without WordPress's upload functions, aren't covered; the `.htaccess` block is what protects against those.
+
+---
+
+## Email alerts
+**Default:** on · General tab · `src/Alerts/AlertNotifier.php` (hooks) and `src/Alerts/AlertFormatter.php` (pure, unit-tested) · Settings in `wp_bouncer_settings['alerts']`
+
+| Setting | Type | Notes |
+|---|---|---|
+| `enabled` | bool | Master switch. |
+| `recipients` | string[] | Up to 10 valid addresses. Empty means the site's admin email. |
+| `new_admin` | bool | An account is created as, promoted to or given the administrator role (any role with `manage_options`), or made a multisite super admin. Hooks: `user_register`, `set_user_role`, `add_user_role`, `granted_super_admin`. |
+| `plugin_changes` | bool | A plugin is installed (`upgrader_process_complete`, action `install`), activated, deactivated or deleted (`activated_plugin`, `deactivated_plugin`, `deleted_plugin`). WP Bouncer itself being deactivated says so in the subject. |
+| `plugin_updates` | bool | A plugin is updated. Off by default, since updates are routine and auto-updates already email the admin. |
+
+Events are queued during the request and sent as one `wp_mail()` on `shutdown`, so "install and activate" is one email. Creating an administrator fires several hooks; they are merged into one line per user. Each email gives what happened, when, who was logged in (or "no logged-in user" for WP-CLI, cron or code), and the IP, country and User-Agent. Names are stripped of control characters, so a crafted username can't add mail headers. At most 20 emails go out per hour (transient `wpb_alert_count`); every event is also written to the Activity Log with rule `alerts` and action `alert`, which the Dashboard's statistics leave out. Alerts keep working while `WP_BOUNCER_DISABLE` is on, because they never refuse anyone.
+
+**Send a test email** (General tab) sends a sample and reports WordPress's mail error if sending fails.
+
+---
+
+## Traffic log
+**Default:** off · Traffic tab · `src/Traffic/` · Settings in `wp_bouncer_settings['traffic']`
+
+| Setting | Type | Notes |
+|---|---|---|
+| `enabled` | bool | Record requests. |
+| `retention_days` | int 1–7 | Rows older than this are deleted by the hourly cron job `wp_bouncer_traffic_purge`. Default 7. The purge never keeps anything longer than 7 days, whatever is stored. |
+| `skip_background` | bool | Don't record `/wp-cron.php` or admin-ajax Heartbeat requests. Default on. |
+| `skip_admins` | bool | Don't record logged-in administrators. Default off. |
+
+`TrafficRecorder` writes one row on `shutdown` at priority 100, after everything else, so `http_response_code()` is final. Blocked requests are included: the block page ends with `exit`, and PHP still runs shutdown hooks. WP-CLI is never recorded. A failure to write (for example, the table is missing) is silent and never breaks the page.
+
+Columns of `{prefix}bouncer_traffic`: `created_at` (UTC), `ip`, `method`, `uri` (up to 2048 characters), `referrer` (2048), `user_agent` (512), `client`, `status` (0 if unknown), `user_id` (0 for visitors). Indexed on time, IP, client and status.
+
+**Client type** (`ClientClassifier::classify()`, pure) is read from the User-Agent, first match wins: attack tool (sqlmap, WPScan, Nikto…), search engine (Googlebot, Bingbot…), uptime monitor, feed reader, bot or crawler (anything saying bot, crawl or spider; SEO and AI crawlers; link previews), WordPress (its own loopback and pingback requests), script or tool (curl, wget, Python, Go, Java…), then mobile browser or browser for `Mozilla/…`, "no User-Agent" for an empty one, and "other". The User-Agent is whatever the client claims, so the type is a reading aid, not proof.
+
+**Secrets in URLs** (`TrafficEntry::redact_url()`, pure): the values of `key`, `pwd`, `pass`, `password`, `token`, `access_token`, `refresh_token`, `id_token`, `auth`, `code`, `secret`, `client_secret`, `api_key`, `signature`, `nonce`, `_wpnonce`, `session`, `sid`, `otp`, `jwt`, and any parameter whose name contains `pass`, `token` or `secret`, become `[removed]`, in both the URL and the referrer. That covers WordPress's password-reset links (`wp-login.php?action=rp&key=…`).
+
+What isn't recorded: files the web server serves itself (images, CSS, JS, and any file that exists), since those never reach WordPress.

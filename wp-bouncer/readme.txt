@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -22,6 +22,13 @@ WP Bouncer checks every request before WordPress does any real work and refuses 
 * **Rate limiting**: temporarily ban IPs that hammer the site.
 * **Web application firewall**: SQL injection, XSS, path traversal and code injection signatures.
 * **User enumeration**: stops ?author=N scans, the REST user list and the users sitemap for anonymous visitors.
+* **Sensitive-file probes**: bans IPs that look for .env, .git, wp-config backups, database dumps, logs, phpinfo pages and web shells.
+* **404 flood**: bans IPs that hit many "not found" pages, as vulnerability scanners do. Missing images and search engine crawlers don't count.
+* **No PHP in uploads**: tells the web server not to run scripts from wp-content/uploads, and refuses uploads that are scripts in disguise. A "Test now" button checks what your server really does.
+
+**Traffic log** (optional): every request that reaches WordPress, with IP, client type, URL, response code, referrer and User-Agent, kept for 1 to 7 days. Filter, search, export to CSV, block an IP from any row. Secrets such as password-reset keys are removed from URLs before saving.
+
+**Email alerts** tell you when an administrator account is created or promoted, or a plugin is installed, activated, deactivated or deleted, the usual signs that someone else has got in.
 
 You also get an Activity Log of everything refused (searchable, filterable, CSV export, one-click "Block IP"), a dashboard with 24-hour, 7-day and 30-day stats, a monitor (log-only) mode for trying rules safely, an allowlist, and proxy/CDN-aware IP detection.
 
@@ -44,11 +51,27 @@ Add `define( 'WP_BOUNCER_DISABLE', true );` to wp-config.php, log in, fix the se
 
 It sends nothing about your site or visitors. It makes two kinds of outbound request: the geo database download, only when you click Import with a URL, and an update check, a few times a day, that fetches a small update.json from the plugin's GitHub releases. The update check sends no site URL. Add `define( 'WP_BOUNCER_DISABLE_UPDATES', true );` to wp-config.php to switch it off; you can then update by uploading new zips yourself.
 
+= Will the uploads protection break my site? =
+
+It only adds a marked block to wp-content/uploads/.htaccess that refuses to run script files there; images and other uploads are unaffected, and anything else in that file is left alone. Right after writing it, the plugin checks that a file in uploads still loads; on a host that doesn't allow the rule and answers with errors, the block is taken out again and the Bouncer screens tell you. Untick it under Rules → No PHP in uploads to remove the block. It is also removed when WP Bouncer is deactivated or WP_BOUNCER_DISABLE is on. On nginx, which ignores .htaccess, the Rules tab shows the rule to add to your server config.
+
+= I'm not getting alert emails =
+
+Use **Send a test email** under Bouncer → General → Email alerts. If it doesn't arrive, your site can't send mail; many hosts need an SMTP plugin. Every alert is also written to the Activity Log.
+
 = Does it replace Wordfence? =
 
 It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
 
 == Changelog ==
+
+= 1.1.1 =
+* New: Sensitive-file probes rule. Bans IPs that ask for .env, .git, wp-config backups, database dumps, logs, phpinfo pages, database tools and web shells.
+* New: 404 flood rule. Bans IPs that get more than 20 "not found" pages in a minute.
+* New: No PHP in uploads. Writes a block to wp-content/uploads/.htaccess (on update too) so scripts there can't run, refuses uploads that are scripts in disguise, and has a "Test now" button.
+* New: email alerts for new or promoted administrators and for plugins being installed, activated, deactivated or deleted. Optional alerts for plugin updates. "Send a test email" button.
+* New: Traffic tab, an optional log of every request that reaches WordPress (IP, client type, URL, response code, referrer, User-Agent, user), kept 1 to 7 days and purged hourly. Off by default.
+* The three new rules and alerts are on by default, including on sites updating from 1.1.0. Each can be switched off on the Dashboard or Rules tab.
 
 = 1.1.0 =
 * New: updates from GitHub releases appear on the Plugins screen like any other plugin, with Update now, View details and auto-updates. Each download is checked against a published SHA-256 before it is installed.

@@ -24,6 +24,9 @@ interface BlockLogInterface {
 	/** A temporary ban or lockout was placed on the IP. */
 	public const ACTION_LOCKOUT = 'lockout';
 
+	/** Not a block: an email alert about a site change (new administrator, plugin change). */
+	public const ACTION_ALERT = 'alert';
+
 	/**
 	 * Record one event.
 	 *

@@ -14,9 +14,9 @@ Rules must get everything from the `Request` and from constructor arguments. **D
 
 ## Option A: a new built-in rule
 
-Example: block requests for backup and dump files (`.sql`, `.bak`, `.zip` in wp-content).
+Example: refuse the TRACE, TRACK and CONNECT HTTP methods, which a WordPress site never needs.
 
-**1. The rule**, `wp-bouncer/src/Rules/BackupProbeRule.php`:
+**1. The rule**, `wp-bouncer/src/Rules/HttpMethodRule.php`:
 
 ```php
 <?php
@@ -28,22 +28,22 @@ use WPBouncer\Firewall\Verdict;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Refuses probes for leftover backup files.
+ * Refuses HTTP methods that a WordPress site never needs.
  *
  * Settings:
  * - enabled (bool)
  */
-final class BackupProbeRule extends AbstractRule {
+final class HttpMethodRule extends AbstractRule {
 
-    public const ID = 'backup_probe';
+    public const ID = 'http_method';
 
     public function id(): string {
         return self::ID;
     }
 
     public function inspect( Request $request ): ?Verdict {
-        if ( preg_match( '#\.(sql|bak|old|tar\.gz|zip)$#', $request->path() ) ) {
-            return $this->deny( 'Backup file probe' );
+        if ( in_array( $request->method(), array( 'TRACE', 'TRACK', 'CONNECT' ), true ) ) {
+            return $this->deny( 'HTTP method ' . $request->method() . ' is not allowed', 405 );
         }
         return null;
     }
@@ -51,15 +51,15 @@ final class BackupProbeRule extends AbstractRule {
 ```
 
 **2. Settings**, in `wp-bouncer/src/Settings.php`:
-- add `'backup_probe' => array( 'enabled' => true )` to `defaults()['rules']`
+- add `'http_method' => array( 'enabled' => true )` to `defaults()['rules']`
 - add a block to `sanitize()` that copies and coerces each field
-- add `'rules.backup_probe'` to `TAB_FIELDS['rules']`
+- add `'rules.http_method'` to `TAB_FIELDS['rules']`
 
-**3. Wiring**, in `Plugin::build_rules()`: add `new BackupProbeRule( $s->rule( BackupProbeRule::ID ) )` at a position that suits its cost.
+**3. Wiring**, in `Plugin::build_rules()`: add `new HttpMethodRule( $s->rule( HttpMethodRule::ID ) )` at a position that suits its cost (this one is cheap, so near the top).
 
-**4. UI**: add a label to `AdminController::rule_labels()` (this also adds it to the Dashboard and the log filter), and add a panel to `wp-bouncer/src/Admin/views/rules.php` using `$heading( 'backup_probe' )`.
+**4. UI**: add a label to `AdminController::rule_labels()` (this also adds it to the Dashboard and the log filter), and add a panel to `wp-bouncer/src/Admin/views/rules.php` using `$heading( 'http_method' )`.
 
-**5. Tests**: add `tests/Unit/Rules/BackupProbeRuleTest.php` with cases that must be blocked and cases that must pass. `SettingsTest::test_defaults_survive_their_own_sanitisation` will fail if step 2 is incomplete.
+**5. Tests**: add `tests/Unit/Rules/HttpMethodRuleTest.php` with cases that must be blocked and cases that must pass. `SettingsTest::test_defaults_survive_their_own_sanitisation` will fail if step 2 is incomplete.
 
 **6. Docs**: add a section to [rules.md](rules.md).
 

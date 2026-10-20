@@ -18,7 +18,7 @@ if ( ! class_exists( '\WP_List_Table' ) ) {
 }
 
 /**
- * Paged, sortable, filterable table of blocks, lockouts and monitored matches.
+ * Paged, sortable, filterable table of blocks, lockouts, monitored matches and alerts.
  */
 final class LogListTable extends \WP_List_Table {
 
@@ -101,14 +101,14 @@ final class LogListTable extends \WP_List_Table {
 
 		echo '<label class="screen-reader-text" for="wpb-filter-rule">' . esc_html__( 'Filter by rule', 'wp-bouncer' ) . '</label>';
 		echo '<select name="rule" id="wpb-filter-rule"><option value="">' . esc_html__( 'All rules', 'wp-bouncer' ) . '</option>';
-		foreach ( AdminController::rule_labels() as $id => $label ) {
-			printf( '<option value="%s" %s>%s</option>', esc_attr( $id ), selected( $filters['rule'] ?? '', $id, false ), esc_html( $label[0] ) );
+		foreach ( AdminController::log_rule_labels() as $id => $label ) {
+			printf( '<option value="%s" %s>%s</option>', esc_attr( $id ), selected( $filters['rule'] ?? '', $id, false ), esc_html( $label ) );
 		}
 		echo '</select>';
 
 		echo '<label class="screen-reader-text" for="wpb-filter-action">' . esc_html__( 'Filter by action', 'wp-bouncer' ) . '</label>';
 		echo '<select name="log_action" id="wpb-filter-action"><option value="">' . esc_html__( 'All actions', 'wp-bouncer' ) . '</option>';
-		foreach ( array( BlockLogInterface::ACTION_BLOCKED, BlockLogInterface::ACTION_LOCKOUT, BlockLogInterface::ACTION_MONITORED ) as $action ) {
+		foreach ( array( BlockLogInterface::ACTION_BLOCKED, BlockLogInterface::ACTION_LOCKOUT, BlockLogInterface::ACTION_MONITORED, BlockLogInterface::ACTION_ALERT ) as $action ) {
 			printf( '<option value="%s" %s>%s</option>', esc_attr( $action ), selected( $filters['action'] ?? '', $action, false ), esc_html( AdminController::action_label( $action ) ) );
 		}
 		echo '</select>';

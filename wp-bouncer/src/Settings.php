@@ -35,9 +35,10 @@ final class Settings {
 	 * that belong to another tab.
 	 */
 	public const TAB_FIELDS = array(
-		'general'   => array( 'mode', 'ip_source', 'trusted_proxies', 'allowlist', 'log_retention_days', 'block_message', 'geo_source', 'geo_header' ),
-		'rules'     => array( 'rules.ip_blocklist', 'rules.user_agent', 'rules.xmlrpc', 'rules.login_lockout', 'rules.rate_limit', 'rules.waf', 'rules.user_enumeration' ),
+		'general'   => array( 'mode', 'ip_source', 'trusted_proxies', 'allowlist', 'log_retention_days', 'block_message', 'geo_source', 'geo_header', 'alerts' ),
+		'rules'     => array( 'rules.ip_blocklist', 'rules.user_agent', 'rules.xmlrpc', 'rules.login_lockout', 'rules.rate_limit', 'rules.waf', 'rules.user_enumeration', 'rules.sensitive_files', 'rules.not_found', 'rules.uploads_php' ),
 		'countries' => array( 'rules.country' ),
+		'traffic'   => array( 'traffic' ),
 	);
 
 	/** @var array<string, mixed> */
@@ -74,6 +75,19 @@ final class Settings {
 			'block_message'      => 'Sorry, your request has been blocked by this site\'s security policy.',
 			'geo_source'         => 'database',
 			'geo_header'         => 'CF-IPCountry',
+			'alerts'             => array(
+				'enabled'        => true,
+				'recipients'     => array(),
+				'new_admin'      => true,
+				'plugin_changes' => true,
+				'plugin_updates' => false,
+			),
+			'traffic'            => array(
+				'enabled'         => false,
+				'retention_days'  => 7,
+				'skip_admins'     => false,
+				'skip_background' => true,
+			),
 			'rules'              => array(
 				'ip_blocklist'     => array(
 					'enabled' => true,
@@ -122,6 +136,23 @@ final class Settings {
 					'block_author_scan' => true,
 					'block_rest_users'  => true,
 				),
+				'sensitive_files'  => array(
+					'enabled'     => true,
+					'ban_minutes' => 60,
+					'extra_paths' => array(),
+				),
+				'not_found'        => array(
+					'enabled'         => true,
+					'max_404'         => 20,
+					'window_seconds'  => 60,
+					'ban_minutes'     => 60,
+					'ignore_crawlers' => true,
+				),
+				'uploads_php'      => array(
+					'enabled'       => true,
+					'htaccess'      => true,
+					'check_uploads' => true,
+				),
 			),
 		);
 	}
@@ -135,6 +166,11 @@ final class Settings {
 	private static function merge_defaults( array $stored ): array {
 		$defaults = self::defaults();
 		$merged   = array_merge( $defaults, array_intersect_key( $stored, $defaults ) );
+
+		$alerts           = is_array( $stored['alerts'] ?? null ) ? $stored['alerts'] : array();
+		$merged['alerts'] = array_merge( $defaults['alerts'], array_intersect_key( $alerts, $defaults['alerts'] ) );
+		$traffic           = is_array( $stored['traffic'] ?? null ) ? $stored['traffic'] : array();
+		$merged['traffic'] = array_merge( $defaults['traffic'], array_intersect_key( $traffic, $defaults['traffic'] ) );
 
 		$merged['rules'] = array();
 		$stored_rules    = is_array( $stored['rules'] ?? null ) ? $stored['rules'] : array();
@@ -219,6 +255,23 @@ final class Settings {
 		$out['geo_source']         = self::choice( $in['geo_source'] ?? null, array( 'database', 'header' ), $d['geo_source'] );
 		$geo_header                = trim( (string) ( $in['geo_header'] ?? '' ) );
 		$out['geo_header']         = preg_match( '/^[A-Za-z0-9_-]{1,64}$/', $geo_header ) ? $geo_header : $d['geo_header'];
+
+		$alerts        = is_array( $in['alerts'] ?? null ) ? $in['alerts'] : array();
+		$out['alerts'] = array(
+			'enabled'        => self::bool( $alerts['enabled'] ?? false ),
+			'recipients'     => self::emails( $alerts['recipients'] ?? array() ),
+			'new_admin'      => self::bool( $alerts['new_admin'] ?? false ),
+			'plugin_changes' => self::bool( $alerts['plugin_changes'] ?? false ),
+			'plugin_updates' => self::bool( $alerts['plugin_updates'] ?? false ),
+		);
+
+		$traffic        = is_array( $in['traffic'] ?? null ) ? $in['traffic'] : array();
+		$out['traffic'] = array(
+			'enabled'         => self::bool( $traffic['enabled'] ?? false ),
+			'retention_days'  => self::int_range( $traffic['retention_days'] ?? null, 1, 7, $d['traffic']['retention_days'] ),
+			'skip_admins'     => self::bool( $traffic['skip_admins'] ?? false ),
+			'skip_background' => self::bool( $traffic['skip_background'] ?? false ),
+		);
 
 		$rules = is_array( $in['rules'] ?? null ) ? $in['rules'] : array();
 		$r     = static function ( string $id ) use ( $rules ): array {
@@ -319,6 +372,45 @@ final class Settings {
 			'block_rest_users'  => self::bool( $rule['block_rest_users'] ?? false ),
 		);
 
+		$rule                             = $r( 'sensitive_files' );
+		$out['rules']['sensitive_files']  = array(
+			'enabled'     => self::bool( $rule['enabled'] ?? false ),
+			'ban_minutes' => self::int_range( $rule['ban_minutes'] ?? null, 0, 43200, $dr['sensitive_files']['ban_minutes'] ),
+			'extra_paths' => array_values(
+				array_unique(
+					array_filter(
+						array_map(
+							static function ( $p ) {
+								return strtolower( substr( $p, 0, 200 ) );
+							},
+							self::lines( $rule['extra_paths'] ?? array() )
+						),
+						static function ( $p ) {
+							// A path fragment: at least two characters besides slashes, no spaces.
+							return strlen( trim( $p, '/' ) ) >= 2 && ! preg_match( '/\s/', $p );
+						}
+					)
+				)
+			),
+		);
+
+		$rule                             = $r( 'not_found' );
+		$dl                               = $dr['not_found'];
+		$out['rules']['not_found']        = array(
+			'enabled'         => self::bool( $rule['enabled'] ?? false ),
+			'max_404'         => self::int_range( $rule['max_404'] ?? null, 3, 10000, $dl['max_404'] ),
+			'window_seconds'  => self::int_range( $rule['window_seconds'] ?? null, 10, 3600, $dl['window_seconds'] ),
+			'ban_minutes'     => self::int_range( $rule['ban_minutes'] ?? null, 1, 43200, $dl['ban_minutes'] ),
+			'ignore_crawlers' => self::bool( $rule['ignore_crawlers'] ?? false ),
+		);
+
+		$rule                             = $r( 'uploads_php' );
+		$out['rules']['uploads_php']      = array(
+			'enabled'       => self::bool( $rule['enabled'] ?? false ),
+			'htaccess'      => self::bool( $rule['htaccess'] ?? false ),
+			'check_uploads' => self::bool( $rule['check_uploads'] ?? false ),
+		);
+
 		return $out;
 	}
 
@@ -403,6 +495,23 @@ final class Settings {
 				}
 			)
 		);
+	}
+
+	/**
+	 * Valid, de-duplicated email addresses (at most 10).
+	 *
+	 * @param mixed $v Textarea or array.
+	 * @return string[]
+	 */
+	private static function emails( $v ): array {
+		$out = array();
+		foreach ( self::lines( $v, true ) as $email ) {
+			$email = strtolower( $email );
+			if ( strlen( $email ) <= 254 && false !== filter_var( $email, FILTER_VALIDATE_EMAIL ) ) {
+				$out[] = $email;
+			}
+		}
+		return array_slice( array_values( array_unique( $out ) ), 0, 10 );
 	}
 
 	/**

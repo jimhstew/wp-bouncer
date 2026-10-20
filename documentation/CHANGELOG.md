@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-10-20
+
+### Added
+- **Sensitive-file probes** rule (`sensitive_files`). Refuses requests for files that leak secrets if they exist: `.env`, `.git/` and other version-control data, `.htpasswd`, wp-config backups, PHP file backups, database dumps, site backup archives, log files, phpinfo pages, database admin tools, known web shells, PHP in uploads, the PHPUnit `eval-stdin.php` exploit and project manifests. A file that exists is served by the web server before WordPress runs, so a probe that reaches WordPress is a guess, and the IP is banned from the whole site for 60 minutes (configurable; 0 refuses only the probe). Extra path fragments can be added. `/.well-known/` is never treated as a probe.
+- **404 flood** rule (`not_found`). Bans an IP for 60 minutes after more than 20 "not found" pages in 60 seconds (all configurable). Missing images, CSS, JS, fonts and media don't count, nor do logged-in administrators or, by default, search engine crawlers.
+- **No PHP in uploads** (`uploads_php`):
+  - Keeps a `# BEGIN WP Bouncer` block in `wp-content/uploads/.htaccess` that refuses to run scripts there (Apache 2.2/2.4, LiteSpeed). It uses access rules only, not `php_flag`, which breaks PHP-FPM servers. Other content in the file is left alone. The block is removed when the setting is turned off, while `WP_BOUNCER_DISABLE` is on, and on deactivation and uninstall.
+  - Refuses uploads through WordPress (media library, REST API, sideloads) whose names have a script extension anywhere (`photo.php.jpg`), that are server config files (`.htaccess`, `.user.ini`), or that contain `<?php`.
+  - **Test now** button: puts a tiny script in uploads, requests it, deletes it, and reports whether the server ran it. The equivalent nginx rule is shown for servers that ignore `.htaccess`.
+  - Safety check: after the block is written, a one-off cron job fetches a text file from uploads. If the server answers with an error (a host whose `AllowOverride` doesn't allow access rules would fail every upload, images included), the block is removed again and the admin screens say why.
+- **Email alerts** (`alerts` settings, General tab). Emails when an account is created as, promoted to or given the administrator role (or made a multisite super admin), and when a plugin is installed, activated, deactivated or deleted, including WP Bouncer itself being deactivated. Plugin updates are optional (off by default). Each email says who did it, from which IP and country, and when. Changes in one request arrive as one email; at most 20 emails are sent per hour. Recipients default to the site's admin email. A **Send a test email** button. Alerts keep working while `WP_BOUNCER_DISABLE` is on.
+- **Traffic log** (Traffic tab, `traffic` settings), off by default. Records every request that reaches WordPress in a new table `{prefix}bouncer_traffic`: time, IP, client type, method, URL, response code, referrer, User-Agent and logged-in user. Written on `shutdown`, so the final status is recorded, including the 403 of requests the firewall blocked. Client types (`Traffic\ClientClassifier`): browser, mobile browser, search engine, bot or crawler, uptime monitor, feed reader, WordPress, script or tool, attack tool, no User-Agent, other. Secret query parameters (`key`, `pwd`, `password`, `token`, `access_token`, `_wpnonce`, anything containing `pass`, `token` or `secret`, …) are replaced with `[removed]` in URLs and referrers. Retention 1 to 7 days (default 7), purged by an hourly cron job (`wp_bouncer_traffic_purge`). Options to skip WP-Cron and Heartbeat requests (on by default) and logged-in administrators. Filters by client, response class and IP, search, CSV export, and Block IP from any row. Summary of the last 24 hours: requests, distinct IPs, 4xx responses, top client types.
+- Activity Log action `alert` (purple badge) and rule filter "Email alerts". Alerts are not counted in the Dashboard's block statistics.
+- Tools → Unlock IP also lifts sensitive-file and 404-flood bans.
+
+### Changed
+- Database schema version 2 (the traffic table). Sites updating from 1.1.0 get it, and the hourly purge job, on the first request after the update.
+- The three new rules and alerts are on by default, including on sites updating from 1.1.0. On update the uploads `.htaccess` block is written on the first request.
+- End-to-end tests run PHP's built-in server with a router (as Apache with WordPress's rewrite rules) and pretty permalinks, and capture outgoing mail.
+
 ## [1.1.0] - 2026-10-20
 
 ### Added

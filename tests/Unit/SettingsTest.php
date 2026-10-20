@@ -184,4 +184,97 @@ final class SettingsTest extends TestCase {
 		$this->assertSame( array( 'a', 'b', 'c' ), Settings::lines( 'a, b c', true ) );
 		$this->assertSame( array( 'x' ), Settings::lines( array( 'x', '', array( 'nested' ) ) ) );
 	}
+
+	public function test_new_protections_are_on_by_default(): void {
+		$d = Settings::defaults();
+		$this->assertTrue( $d['rules']['sensitive_files']['enabled'] );
+		$this->assertTrue( $d['rules']['not_found']['enabled'] );
+		$this->assertTrue( $d['rules']['uploads_php']['enabled'] );
+		$this->assertTrue( $d['alerts']['enabled'] );
+		$this->assertFalse( $d['alerts']['plugin_updates'], 'routine updates do not email by default' );
+	}
+
+	public function test_sites_upgrading_from_older_settings_get_the_new_defaults(): void {
+		// A 1.1.0 option has no alerts block and none of the new rules.
+		$s = new Settings( array( 'rules' => array( 'waf' => array( 'enabled' => false ) ) ) );
+		$this->assertTrue( $s->rule( 'sensitive_files' )['enabled'] );
+		$this->assertSame( 20, $s->rule( 'not_found' )['max_404'] );
+		$this->assertTrue( $s->rule( 'uploads_php' )['htaccess'] );
+		$this->assertSame( array(), $s->get( 'alerts' )['recipients'] );
+		$this->assertTrue( $s->get( 'alerts' )['new_admin'] );
+	}
+
+	public function test_partial_alerts_are_filled_from_defaults(): void {
+		$s = new Settings( array( 'alerts' => array( 'plugin_updates' => true ) ) );
+		$this->assertTrue( $s->get( 'alerts' )['plugin_updates'] );
+		$this->assertTrue( $s->get( 'alerts' )['plugin_changes'] );
+	}
+
+	public function test_alert_recipients_are_validated(): void {
+		$out = Settings::sanitize( array( 'alerts' => array( 'recipients' => "Me@Example.org\nnot-an-email\nyou@example.net, me@example.org\n\"x\"\r\nbcc:@x" ) ) );
+		$this->assertSame( array( 'me@example.org', 'you@example.net' ), $out['alerts']['recipients'] );
+
+		$many = array();
+		for ( $i = 0; $i < 15; $i++ ) {
+			$many[] = "a{$i}@example.org";
+		}
+		$this->assertCount( 10, Settings::sanitize( array( 'alerts' => array( 'recipients' => $many ) ) )['alerts']['recipients'] );
+	}
+
+	public function test_new_rule_numbers_are_clamped(): void {
+		$out = Settings::sanitize(
+			array(
+				'rules' => array(
+					'sensitive_files' => array( 'ban_minutes' => -5 ),
+					'not_found'       => array( 'max_404' => 1, 'window_seconds' => 999999, 'ban_minutes' => 'x' ),
+				),
+			)
+		);
+		$this->assertSame( 0, $out['rules']['sensitive_files']['ban_minutes'] );
+		$this->assertSame( 3, $out['rules']['not_found']['max_404'] );
+		$this->assertSame( 3600, $out['rules']['not_found']['window_seconds'] );
+		$this->assertSame( 60, $out['rules']['not_found']['ban_minutes'] );
+	}
+
+	public function test_sensitive_file_extra_paths(): void {
+		$out = Settings::sanitize( array( 'rules' => array( 'sensitive_files' => array( 'extra_paths' => "/Old-Admin/\n/\n/a\nhas space\n/old-admin/" ) ) ) );
+		$this->assertSame( array( '/old-admin/' ), $out['rules']['sensitive_files']['extra_paths'] );
+	}
+
+	public function test_general_tab_owns_alerts_and_rules_tab_owns_new_rules(): void {
+		$out = Settings::apply_form( Settings::defaults(), array( 'mode' => 'enforce' ), 'general' );
+		$this->assertFalse( $out['alerts']['enabled'], 'unticked on the General tab' );
+		$this->assertTrue( $out['rules']['uploads_php']['enabled'], 'rules tab untouched' );
+
+		$out = Settings::apply_form( Settings::defaults(), array(), 'rules' );
+		$this->assertFalse( $out['rules']['sensitive_files']['enabled'] );
+		$this->assertFalse( $out['rules']['not_found']['enabled'] );
+		$this->assertFalse( $out['rules']['uploads_php']['enabled'] );
+		$this->assertTrue( $out['alerts']['enabled'], 'general tab untouched' );
+	}
+
+	public function test_traffic_log_is_off_by_default_and_kept_a_week(): void {
+		$t = Settings::defaults()['traffic'];
+		$this->assertFalse( $t['enabled'] );
+		$this->assertSame( 7, $t['retention_days'] );
+		$this->assertTrue( $t['skip_background'] );
+		$this->assertTrue( ( new Settings( array() ) )->get( 'traffic' )['skip_background'], 'filled in for older settings' );
+	}
+
+	public function test_traffic_retention_is_at_most_a_week(): void {
+		$this->assertSame( 7, Settings::sanitize( array( 'traffic' => array( 'retention_days' => 30 ) ) )['traffic']['retention_days'] );
+		$this->assertSame( 1, Settings::sanitize( array( 'traffic' => array( 'retention_days' => 0 ) ) )['traffic']['retention_days'] );
+		$this->assertSame( 3, Settings::sanitize( array( 'traffic' => array( 'retention_days' => '3' ) ) )['traffic']['retention_days'] );
+	}
+
+	public function test_traffic_tab_owns_only_traffic_settings(): void {
+		$out = Settings::apply_form( Settings::defaults(), array( 'traffic' => array( 'enabled' => '1', 'retention_days' => '2' ) ), 'traffic' );
+		$this->assertTrue( $out['traffic']['enabled'] );
+		$this->assertSame( 2, $out['traffic']['retention_days'] );
+		$this->assertFalse( $out['traffic']['skip_background'], 'unticked on that tab' );
+		$this->assertTrue( $out['alerts']['enabled'], 'general tab untouched' );
+
+		$out = Settings::apply_form( $out, array(), 'general' );
+		$this->assertTrue( $out['traffic']['enabled'], 'general tab leaves traffic alone' );
+	}
 }

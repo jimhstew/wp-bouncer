@@ -7,15 +7,20 @@
 
 namespace WPBouncer\Admin;
 
+use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Geo\Countries;
+use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Plugin;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
+use WPBouncer\Rules\NotFoundFloodRule;
 use WPBouncer\Rules\RateLimitRule;
+use WPBouncer\Rules\SensitiveFileRule;
 use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Settings;
 use WPBouncer\Support\IpUtils;
+use WPBouncer\Traffic\ClientClassifier;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -27,6 +32,7 @@ defined( 'ABSPATH' ) || exit;
  *   rules      Settings for each rule.
  *   countries  Country picker.
  *   log        Searchable, filterable activity log with CSV export.
+ *   traffic    Every request that reached WordPress (optional, kept up to a week).
  *   tools      Geo database import, unlock an IP.
  *
  * Every state-changing action posts to admin-post.php and is protected by a
@@ -57,10 +63,15 @@ final class AdminController {
 		add_action( 'admin_post_wp_bouncer_unlock_ip', array( $this, 'handle_unlock_ip' ) );
 		add_action( 'admin_post_wp_bouncer_clear_log', array( $this, 'handle_clear_log' ) );
 		add_action( 'admin_post_wp_bouncer_export_log', array( $this, 'handle_export_log' ) );
+		add_action( 'admin_post_wp_bouncer_clear_traffic', array( $this, 'handle_clear_traffic' ) );
+		add_action( 'admin_post_wp_bouncer_export_traffic', array( $this, 'handle_export_traffic' ) );
 		add_action( 'admin_post_wp_bouncer_geo_import', array( $this, 'handle_geo_import' ) );
 		add_action( 'admin_post_wp_bouncer_geo_step', array( $this, 'handle_geo_step' ) );
 		add_action( 'admin_post_wp_bouncer_geo_cancel', array( $this, 'handle_geo_cancel' ) );
 		add_action( 'wp_ajax_wp_bouncer_geo_step', array( $this, 'ajax_geo_step' ) );
+		add_action( 'admin_post_wp_bouncer_test_alert', array( $this, 'handle_test_alert' ) );
+		add_action( 'admin_post_wp_bouncer_uploads_probe', array( $this, 'handle_uploads_probe' ) );
+		add_action( 'admin_post_wp_bouncer_uploads_sync', array( $this, 'handle_uploads_sync' ) );
 		add_filter( 'plugin_action_links_' . plugin_basename( $this->plugin->file() ), array( $this, 'action_links' ) );
 	}
 
@@ -83,7 +94,25 @@ final class AdminController {
 			'rate_limit'       => array( __( 'Rate limiting', 'wp-bouncer' ), __( 'Temporarily ban IPs that make too many requests.', 'wp-bouncer' ) ),
 			'waf'              => array( __( 'Web application firewall', 'wp-bouncer' ), __( 'Refuse SQL injection, XSS, path traversal and code injection payloads.', 'wp-bouncer' ) ),
 			'user_enumeration' => array( __( 'User enumeration', 'wp-bouncer' ), __( 'Stop anonymous visitors from harvesting usernames.', 'wp-bouncer' ) ),
+			'sensitive_files'  => array( __( 'Sensitive-file probes', 'wp-bouncer' ), __( 'Ban IPs that look for .env, .git, backups, database dumps and web shells.', 'wp-bouncer' ) ),
+			'not_found'        => array( __( '404 flood', 'wp-bouncer' ), __( 'Ban IPs that hit many "not found" pages, as vulnerability scanners do.', 'wp-bouncer' ) ),
+			'uploads_php'      => array( __( 'No PHP in uploads', 'wp-bouncer' ), __( 'Stop scripts running from the uploads folder, and refuse uploads that are scripts.', 'wp-bouncer' ) ),
 		);
+	}
+
+	/**
+	 * Everything that can appear in the log's Rule column: the rules plus
+	 * email alerts (which have no on/off switch on the Dashboard).
+	 *
+	 * @return array<string, string> Id => title.
+	 */
+	public static function log_rule_labels(): array {
+		$out = array();
+		foreach ( self::rule_labels() as $id => $label ) {
+			$out[ $id ] = $label[0];
+		}
+		$out[ AlertNotifier::LOG_RULE ] = __( 'Email alerts', 'wp-bouncer' );
+		return $out;
 	}
 
 	/**
@@ -92,8 +121,29 @@ final class AdminController {
 	 * @param string $id Rule id.
 	 */
 	public static function rule_title( string $id ): string {
-		$labels = self::rule_labels();
-		return $labels[ $id ][0] ?? $id;
+		return self::log_rule_labels()[ $id ] ?? $id;
+	}
+
+	/**
+	 * Label for a client type.
+	 *
+	 * @param string $type ClientClassifier constant.
+	 */
+	public static function client_label( string $type ): string {
+		$labels = array(
+			ClientClassifier::BROWSER       => __( 'Browser', 'wp-bouncer' ),
+			ClientClassifier::MOBILE        => __( 'Mobile browser', 'wp-bouncer' ),
+			ClientClassifier::SEARCH_ENGINE => __( 'Search engine', 'wp-bouncer' ),
+			ClientClassifier::BOT           => __( 'Bot or crawler', 'wp-bouncer' ),
+			ClientClassifier::MONITOR       => __( 'Uptime monitor', 'wp-bouncer' ),
+			ClientClassifier::FEED          => __( 'Feed reader', 'wp-bouncer' ),
+			ClientClassifier::WORDPRESS     => __( 'WordPress', 'wp-bouncer' ),
+			ClientClassifier::TOOL          => __( 'Script or tool', 'wp-bouncer' ),
+			ClientClassifier::SCANNER       => __( 'Attack tool', 'wp-bouncer' ),
+			ClientClassifier::UNKNOWN       => __( 'No User-Agent', 'wp-bouncer' ),
+			ClientClassifier::OTHER         => __( 'Other', 'wp-bouncer' ),
+		);
+		return $labels[ $type ] ?? $type;
 	}
 
 	/** @return array<string, string> Tab key => label. */
@@ -104,6 +154,7 @@ final class AdminController {
 			'rules'     => __( 'Rules', 'wp-bouncer' ),
 			'countries' => __( 'Countries', 'wp-bouncer' ),
 			'log'       => __( 'Activity Log', 'wp-bouncer' ),
+			'traffic'   => __( 'Traffic', 'wp-bouncer' ),
 			'tools'     => __( 'Tools', 'wp-bouncer' ),
 		);
 	}
@@ -180,6 +231,12 @@ final class AdminController {
 		$meta    = get_option( Plugin::GEO_META_OPTION, array() );
 		if ( ! empty( $country['enabled'] ) && empty( $meta['rows'] ) && 'header' !== $s->get( 'geo_source' ) ) {
 			$this->notice( 'error', __( 'Country blocking is on but no geo database is loaded, so it can\'t identify any country. Import one under Tools.', 'wp-bouncer' ) );
+		}
+		$uploads = get_option( UploadsGuard::STATE_OPTION );
+		if ( UploadsGuard::is_broken() && $this->plugin->uploads_guard()->wants_htaccess() ) {
+			$this->notice( 'error', __( 'WP Bouncer removed its block from wp-content/uploads/.htaccess: with it in place, your server answered uploaded files (images too) with an error, probably because it doesn\'t allow access rules in .htaccess. Uploads are not protected. See Rules → No PHP in uploads.', 'wp-bouncer' ) );
+		} elseif ( $this->plugin->uploads_guard()->wants_htaccess() && is_array( $uploads ) && empty( $uploads['ok'] ) ) {
+			$this->notice( 'warning', __( 'WP Bouncer could not write its block to wp-content/uploads/.htaccess (the folder may not be writable). See Rules → No PHP in uploads.', 'wp-bouncer' ) );
 		}
 
 		// phpcs:disable WordPress.Security.NonceVerification -- display only.
@@ -375,18 +432,19 @@ final class AdminController {
 		if ( ! IpUtils::is_valid_range( $ip ) ) {
 			$this->back( 'log', __( 'That is not a valid IP address or range.', 'wp-bouncer' ), true );
 		}
+		$back = isset( $_REQUEST['back'] ) && 'traffic' === $_REQUEST['back'] ? 'traffic' : 'log';
 		if ( IpUtils::in_range( $this->plugin->client_ip(), $ip ) ) {
-			$this->back( 'log', __( 'Refusing to block your own IP address.', 'wp-bouncer' ), true );
+			$this->back( $back, __( 'Refusing to block your own IP address.', 'wp-bouncer' ), true );
 		}
 		$values                                   = $this->plugin->settings()->to_array();
 		$values['rules']['ip_blocklist']['ips'][] = $ip;
 		$values['rules']['ip_blocklist']['enabled'] = true;
 		$this->save( Settings::sanitize( $values ) );
 		/* translators: %s: IP address. */
-		$this->back( 'log', sprintf( __( '%s added to the IP blocklist.', 'wp-bouncer' ), $ip ) );
+		$this->back( $back, sprintf( __( '%s added to the IP blocklist.', 'wp-bouncer' ), $ip ) );
 	}
 
-	/** Lift login lockouts and rate-limit bans for an IP. */
+	/** Lift login lockouts and every temporary ban for an IP. */
 	public function handle_unlock_ip(): void {
 		$this->guard( 'wp_bouncer_unlock_ip' );
 		$ip = isset( $_POST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['ip'] ) ) ) : '';
@@ -396,8 +454,67 @@ final class AdminController {
 		$this->plugin->login_guard()->clear( $ip );
 		$this->plugin->store()->delete( RateLimitRule::ban_key( $ip ) );
 		$this->plugin->store()->delete( RateLimitRule::counter_key( $ip ) );
+		$this->plugin->store()->delete( SensitiveFileRule::ban_key( $ip ) );
+		$this->plugin->store()->delete( NotFoundFloodRule::ban_key( $ip ) );
+		$this->plugin->store()->delete( NotFoundFloodRule::counter_key( $ip ) );
 		/* translators: %s: IP address. */
 		$this->back( 'tools', sprintf( __( 'Lockouts and bans cleared for %s.', 'wp-bouncer' ), $ip ) );
+	}
+
+	/** Send a test alert email. */
+	public function handle_test_alert(): void {
+		$this->guard( 'wp_bouncer_test_alert' );
+		$result = $this->plugin->alerts()->send_test();
+		if ( true !== $result ) {
+			/* translators: %s: error message. */
+			$this->back( 'general', sprintf( __( 'The test email was not sent: %s', 'wp-bouncer' ), $result ), true );
+		}
+		$this->back(
+			'general',
+			sprintf(
+				/* translators: %s: email addresses. */
+				__( 'Test email sent to %s. If it does not arrive, check spam, then your site\'s mail setup.', 'wp-bouncer' ),
+				implode( ', ', $this->plugin->alerts()->recipients() )
+			)
+		);
+	}
+
+	/** Check whether the server runs PHP from the uploads folder. */
+	public function handle_uploads_probe(): void {
+		$this->guard( 'wp_bouncer_uploads_probe' );
+		$result = $this->plugin->uploads_guard()->probe();
+		$this->back( 'rules', self::probe_message( $result['result'] ), in_array( $result['result'], array( 'unprotected', 'broken' ), true ) );
+	}
+
+	/** Write (or remove) the uploads/.htaccess block now. */
+	public function handle_uploads_sync(): void {
+		$this->guard( 'wp_bouncer_uploads_sync' );
+		$guard = $this->plugin->uploads_guard();
+		delete_option( UploadsGuard::STATE_OPTION );
+		$guard->maybe_sync();
+		$state = get_option( UploadsGuard::STATE_OPTION );
+		if ( empty( $state['ok'] ) ) {
+			$this->back( 'rules', __( 'Could not update wp-content/uploads/.htaccess. Check that the folder is writable, or add the rule to your server config by hand.', 'wp-bouncer' ), true );
+		}
+		$this->back( 'rules', $guard->wants_htaccess() ? __( 'The block is in wp-content/uploads/.htaccess.', 'wp-bouncer' ) : __( 'The block was removed from wp-content/uploads/.htaccess.', 'wp-bouncer' ) );
+	}
+
+	/**
+	 * Explain an uploads test result.
+	 *
+	 * @param string $result protected|unprotected|unknown.
+	 */
+	public static function probe_message( string $result ): string {
+		switch ( $result ) {
+			case 'protected':
+				return __( 'Protected: the server refused to run a test script placed in the uploads folder.', 'wp-bouncer' );
+			case 'unprotected':
+				return __( 'Not protected: the server ran a test script from the uploads folder. On nginx, add the rule shown below to your server config.', 'wp-bouncer' );
+			case 'broken':
+				return __( 'Not protected: with the .htaccess block in place, your server answered uploaded files with an error (it probably doesn\'t allow access rules in .htaccess), so WP Bouncer removed the block. Ask your host to allow "AllowOverride AuthConfig Limit" for the site, or add the rule to the server config, then click "Write it now".', 'wp-bouncer' );
+			default:
+				return __( 'Could not tell: the test script could not be fetched (the site may not be able to reach itself). The details are below.', 'wp-bouncer' );
+		}
 	}
 
 	/** Empty the activity log. */
@@ -435,6 +552,86 @@ final class AdminController {
 		}
 		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 		exit;
+	}
+
+	/** Empty the traffic log. */
+	public function handle_clear_traffic(): void {
+		$this->guard( 'wp_bouncer_clear_traffic' );
+		$this->plugin->traffic_log()->clear();
+		$this->back( 'traffic', __( 'Traffic log cleared.', 'wp-bouncer' ) );
+	}
+
+	/** Download the (filtered) traffic log as CSV. */
+	public function handle_export_traffic(): void {
+		$this->guard( 'wp_bouncer_export_traffic' );
+		$filters = self::traffic_filters_from_request();
+
+		nocache_headers();
+		header( 'Content-Type: text/csv; charset=utf-8' );
+		header( 'Content-Disposition: attachment; filename="wp-bouncer-traffic-' . gmdate( 'Ymd-His' ) . '.csv"' );
+
+		$out = fopen( 'php://output', 'w' );
+		fputcsv( $out, array( 'time_utc', 'ip', 'client', 'method', 'url', 'status', 'referrer', 'user_agent', 'user_id' ) );
+		for ( $page = 1; $page <= 500; $page++ ) {
+			$rows = $this->plugin->traffic_log()->query( $filters, 1000, $page );
+			foreach ( $rows as $row ) {
+				fputcsv(
+					$out,
+					array_map(
+						array( self::class, 'csv_safe' ),
+						array( $row['created_at'], $row['ip'], $row['client'], $row['method'], $row['uri'], $row['status'], $row['referrer'], $row['user_agent'], $row['user_id'] )
+					)
+				);
+			}
+			if ( count( $rows ) < 1000 ) {
+				break;
+			}
+		}
+		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		exit;
+	}
+
+	/**
+	 * Traffic filters from the query string.
+	 *
+	 * @return array<string, string>
+	 */
+	public static function traffic_filters_from_request(): array {
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters.
+		$filters = array();
+		$client  = isset( $_REQUEST['client'] ) ? sanitize_key( wp_unslash( $_REQUEST['client'] ) ) : '';
+		if ( in_array( $client, ClientClassifier::types(), true ) ) {
+			$filters['client'] = $client;
+		}
+		$status = isset( $_REQUEST['status'] ) ? sanitize_key( wp_unslash( $_REQUEST['status'] ) ) : '';
+		if ( preg_match( '/^[1-5]xx$/', $status ) ) {
+			$filters['status'] = $status;
+		}
+		$ip = isset( $_REQUEST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_REQUEST['ip'] ) ) ) : '';
+		if ( IpUtils::is_valid( $ip ) ) {
+			$filters['ip'] = $ip;
+		}
+		if ( ! empty( $_REQUEST['s'] ) ) {
+			$filters['search'] = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) );
+		}
+		// phpcs:enable
+		return $filters;
+	}
+
+	/**
+	 * Traffic filters back to query args.
+	 *
+	 * @param array<string, string> $filters Filters.
+	 * @return array<string, string>
+	 */
+	public static function traffic_filters_to_args( array $filters ): array {
+		$args = array();
+		foreach ( array( 'client' => 'client', 'status' => 'status', 'ip' => 'ip', 'search' => 's' ) as $key => $param ) {
+			if ( ! empty( $filters[ $key ] ) ) {
+				$args[ $param ] = rawurlencode( $filters[ $key ] );
+			}
+		}
+		return $args;
 	}
 
 	/**
@@ -694,6 +891,8 @@ final class AdminController {
 				return __( 'Monitored', 'wp-bouncer' );
 			case BlockLogInterface::ACTION_LOCKOUT:
 				return __( 'Lockout', 'wp-bouncer' );
+			case BlockLogInterface::ACTION_ALERT:
+				return __( 'Alert', 'wp-bouncer' );
 			default:
 				return __( 'Blocked', 'wp-bouncer' );
 		}

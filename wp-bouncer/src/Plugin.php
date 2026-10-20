@@ -8,6 +8,7 @@
 namespace WPBouncer;
 
 use WPBouncer\Admin\AdminController;
+use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\HttpResponder;
 use WPBouncer\Firewall\IpResolver;
@@ -17,13 +18,17 @@ use WPBouncer\Geo\GeoDatabase;
 use WPBouncer\Geo\GeoImport;
 use WPBouncer\Geo\GeoProviderInterface;
 use WPBouncer\Geo\HeaderGeoProvider;
+use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Log\BlockLog;
+use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Login\LoginGuard;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
 use WPBouncer\Rules\LoginLockoutRule;
+use WPBouncer\Rules\NotFoundFloodRule;
 use WPBouncer\Rules\RateLimitRule;
 use WPBouncer\Rules\RuleInterface;
+use WPBouncer\Rules\SensitiveFileRule;
 use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Rules\UserEnumerationRule;
 use WPBouncer\Rules\WafRule;
@@ -31,6 +36,8 @@ use WPBouncer\Rules\XmlRpcRule;
 use WPBouncer\Storage\CounterStoreInterface;
 use WPBouncer\Storage\TransientStore;
 use WPBouncer\Support\IpUtils;
+use WPBouncer\Traffic\TrafficLog;
+use WPBouncer\Traffic\TrafficRecorder;
 use WPBouncer\Update\Updater;
 
 defined( 'ABSPATH' ) || exit;
@@ -45,7 +52,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.1.0';
+	public const VERSION = '1.1.1';
 
 	/** Option holding metadata about the imported geo database. */
 	public const GEO_META_OPTION = 'wp_bouncer_geo_meta';
@@ -62,6 +69,9 @@ final class Plugin {
 	private ?LoginGuard $guard            = null;
 	private ?Request $request             = null;
 	private ?string $client_ip            = null;
+	private ?UploadsGuard $uploads        = null;
+	private ?AlertNotifier $alerts        = null;
+	private ?TrafficLog $traffic          = null;
 
 	/**
 	 * @param string $file Main plugin file.
@@ -106,7 +116,16 @@ final class Plugin {
 			$this->register_login_hooks();
 			$this->register_xmlrpc_hooks();
 			$this->register_user_enumeration_hooks();
+			// Late, so other plugins have had their chance to turn a 404 into a page.
+			add_action( 'template_redirect', array( $this, 'track_not_found' ), 999 );
 		}
+
+		// Not affected by WP_BOUNCER_DISABLE in the same way: the uploads guard
+		// removes its .htaccess block while the switch is on, and alerts and the
+		// traffic log keep working because they never refuse anyone.
+		$this->uploads_guard()->register();
+		$this->alerts()->register();
+		( new TrafficRecorder( $this ) )->register();
 
 		// Updates are not affected by WP_BOUNCER_DISABLE: updating is one way out of a bad version.
 		if ( ! Updater::is_disabled() ) {
@@ -166,6 +185,15 @@ final class Plugin {
 		return $this->log;
 	}
 
+	/** Traffic log (every request that reached WordPress). */
+	public function traffic_log(): TrafficLog {
+		if ( null === $this->traffic ) {
+			global $wpdb;
+			$this->traffic = new TrafficLog( $wpdb );
+		}
+		return $this->traffic;
+	}
+
 	/** Local geo database table. */
 	public function geo_database(): GeoDatabase {
 		if ( null === $this->geo_db ) {
@@ -199,6 +227,22 @@ final class Plugin {
 			$this->geo = new ChainGeoProvider( $providers );
 		}
 		return $this->geo;
+	}
+
+	/** Keeps PHP from running in the uploads folder. */
+	public function uploads_guard(): UploadsGuard {
+		if ( null === $this->uploads ) {
+			$this->uploads = new UploadsGuard( $this );
+		}
+		return $this->uploads;
+	}
+
+	/** Emails about new administrators and plugin changes. */
+	public function alerts(): AlertNotifier {
+		if ( null === $this->alerts ) {
+			$this->alerts = new AlertNotifier( $this );
+		}
+		return $this->alerts;
 	}
 
 	/** Brute-force tracker. */
@@ -256,6 +300,8 @@ final class Plugin {
 
 		$rules = array(
 			new IpBlocklistRule( $s->rule( IpBlocklistRule::ID ) ),
+			new SensitiveFileRule( $s->rule( SensitiveFileRule::ID ), $this->store() ),
+			new NotFoundFloodRule( $s->rule( NotFoundFloodRule::ID ), $this->store() ),
 			new LoginLockoutRule( $s->rule( LoginLockoutRule::ID ), $this->login_guard() ),
 			new RateLimitRule( $s->rule( RateLimitRule::ID ), $this->store() ),
 			new UserAgentRule( $s->rule( UserAgentRule::ID ) ),
@@ -303,6 +349,34 @@ final class Plugin {
 		);
 
 		$firewall->handle( $this->current_request(), new HttpResponder(), (string) $this->settings->get( 'block_message' ) );
+	}
+
+	/**
+	 * Count a "not found" page towards the 404-flood ban (template_redirect).
+	 *
+	 * The ban itself is enforced by NotFoundFloodRule on the visitor's next request.
+	 */
+	public function track_not_found(): void {
+		if ( ! is_404() || self::is_disabled() || $this->client_is_allowlisted() ) {
+			return;
+		}
+		$rule   = new NotFoundFloodRule( $this->settings->rule( NotFoundFloodRule::ID ), $this->store() );
+		$reason = $rule->record( $this->current_request() );
+		if ( null === $reason ) {
+			return;
+		}
+		$request = $this->current_request();
+		$this->log()->record(
+			array_merge(
+				$this->log_context(),
+				array(
+					'ip'     => $request->ip(),
+					'rule'   => NotFoundFloodRule::ID,
+					'action' => BlockLogInterface::ACTION_LOCKOUT,
+					'reason' => $reason,
+				)
+			)
+		);
 	}
 
 	/** Purge old log rows (daily cron). */

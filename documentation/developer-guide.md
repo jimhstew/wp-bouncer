@@ -18,8 +18,14 @@ Every blocking rule has its own on/off switch, on the Dashboard and on the Rules
 | **Rate limiting** | Temporarily bans IPs that make too many requests (sends 429 with Retry-After). |
 | **Web application firewall** | SQL injection, XSS, path traversal/file inclusion and PHP/command injection signatures in URLs, query strings and POST bodies. Has per-parameter exclusions. Administrators are never inspected. |
 | **User enumeration** | `?author=N` scans, the REST `/wp/v2/users` listing, and the users sitemap, for logged-out visitors. |
+| **Sensitive-file probes** | Requests for `.env`, `.git/`, wp-config backups, database dumps, logs, phpinfo pages, database tools and web shells. One probe bans the IP site-wide for an hour. |
+| **404 flood** | IPs that get more than 20 "not found" pages a minute, as vulnerability scanners do. Missing images, CSS and JS, administrators and (optionally) search engine crawlers don't count. |
+| **No PHP in uploads** | Scripts running from `wp-content/uploads` (a marked block in `uploads/.htaccess`), and uploads that are scripts in disguise. **Test now** checks the server really refuses. |
 
 Also included:
+
+- **Traffic log.** Optional: every request that reaches WordPress, with IP, client type, URL, response code, referrer, User-Agent and user, for 1 to 7 days. Secrets are removed from URLs first.
+- **Email alerts.** An email when an administrator account is created or promoted, or a plugin is installed, activated, deactivated (WP Bouncer included) or deleted; optionally on plugin updates. One email per request, at most 20 an hour, each also in the Activity Log.
 
 - **Activity log.** Every block, lockout and monitored match, with time, IP, country, rule, reason, request and User-Agent. You can search and filter it, export it to CSV, and block an IP straight from a log row. Entries are kept for a set number of days.
 - **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries.
@@ -80,7 +86,20 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   │   │   ├── LoginLockoutRule.php
 │   │   │   ├── RateLimitRule.php
 │   │   │   ├── WafRule.php
-│   │   │   └── UserEnumerationRule.php
+│   │   │   ├── UserEnumerationRule.php
+│   │   │   ├── SensitiveFileRule.php   Bans probes for .env, .git, backups, web shells…
+│   │   │   └── NotFoundFloodRule.php   Bans IPs that hit many 404s
+│   │   ├── Hardening/          No PHP in uploads
+│   │   │   ├── UploadsPolicy.php   Pure: .htaccess lines, nginx rule, dangerous names, PHP sniffing
+│   │   │   └── UploadsGuard.php    Writes/removes the uploads/.htaccess block, checks uploads, self-test
+│   │   ├── Traffic/            Optional traffic log
+│   │   │   ├── ClientClassifier.php  Pure: User-Agent -> client type
+│   │   │   ├── TrafficEntry.php      Pure: builds a row, removes secrets from URLs
+│   │   │   ├── TrafficLog.php        {prefix}bouncer_traffic reads, writes, purge
+│   │   │   └── TrafficRecorder.php   Records each request on shutdown; hourly purge
+│   │   ├── Alerts/             Email alerts
+│   │   │   ├── AlertFormatter.php  Pure: subject and body
+│   │   │   └── AlertNotifier.php   Hooks admin/plugin changes, sends one email per request
 │   │   ├── Login/LoginGuard.php    Failed-login counting and lockouts
 │   │   ├── Geo/                Local IP-to-country lookup
 │   │   │   ├── GeoProviderInterface.php
@@ -129,12 +148,12 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 
 Namespaces are PSR-4: `WPBouncer\X\Y` is `wp-bouncer/src/X/Y.php`, and `WPBouncer\Tests\X\Y` is `tests/X/Y.php`.
 
-The design rule that makes this testable: **`Firewall/`, `Rules/`, `Login/`, `Geo/CsvImporter`, `Support/` and `Settings` never call WordPress functions.** They get everything through constructors and the `Request` object. All WordPress integration lives in `Plugin.php`, `Admin/`, `Installer.php` and the `wpdb`/transient-backed classes.
+The design rule that makes this testable: **`Firewall/`, `Rules/`, `Login/`, `Geo/CsvImporter`, `Support/`, `Settings`, `Hardening/UploadsPolicy`, `Alerts/AlertFormatter`, `Traffic/ClientClassifier` and `Traffic/TrafficEntry` never call WordPress functions.** They get everything through constructors and the `Request` object. All WordPress integration lives in `Plugin.php`, `Admin/`, `Installer.php` and the `wpdb`/transient-backed classes.
 
 ## Building
 
 ```bash
-make            # builds/wp-bouncer-1.0.1.zip and its .sha256
+make            # builds/wp-bouncer-<version>.zip and its .sha256
 make clean      # delete builds/
 ```
 
@@ -176,7 +195,7 @@ Do not delete or replace the assets of a published release. Sites may be part-wa
 ```bash
 composer install
 
-make test       # 242 PHPUnit unit tests, under a second, no WordPress or DB needed
+make test       # 422 PHPUnit unit tests, under a second, no WordPress or DB needed
 make analyse    # PHPStan static analysis with WordPress stubs
 make lint       # WordPress Coding Standards (checks wp-bouncer/ only)
 make e2e        # Throwaway WordPress on SQLite + live HTTP checks, using wp-bouncer/ directly

@@ -105,15 +105,74 @@ $WP core is-installed 2>/dev/null || $WP core install --url="$U" --title=E2E --a
 # Pin the URLs: WP-CLI can otherwise record the directory name in siteurl.
 $WP option update siteurl "$U"
 $WP option update home "$U"
+# Pretty permalinks, as almost every live site has: with plain ones, WordPress
+# answers most unknown paths with the home page or a redirect, not a 404.
+$WP rewrite structure '/%postname%/'
 $WP plugin activate wp-bouncer
 $WP eval '$d = WPBouncer\Settings::defaults(); $d["ip_source"] = "x_real_ip"; update_option("wp_bouncer_settings", $d); global $wpdb; $wpdb->query("DELETE FROM {$wpdb->prefix}bouncer_log"); $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%transient%wpb\_%\"");'
 rm -f "$W/debug.log"
 
+# Capture outgoing mail instead of sending it: one JSON line per email.
+MAILLOG="$W/wp-content/e2e-mail.log"
+mkdir -p "$W/wp-content/mu-plugins"
+cat > "$W/wp-content/mu-plugins/wpb-e2e-mail.php" <<'PHPEOF'
+<?php
+add_filter(
+	'pre_wp_mail',
+	function ( $null, $atts ) {
+		file_put_contents( WP_CONTENT_DIR . '/e2e-mail.log', json_encode( $atts, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . "\n", FILE_APPEND );
+		return true;
+	},
+	10,
+	2
+);
+PHPEOF
+rm -f "$MAILLOG"
+
+# Router for PHP's built-in server. Like Apache with WordPress's rewrite rules:
+# a file that exists is served (or run, for .php) by the server; anything else
+# goes to WordPress. Without it the server answers missing paths with a dot
+# (/.env, /x.jpg) itself, so they would never reach the plugin.
+# It also stands in for Apache reading wp-content/uploads/.htaccess: while
+# WP Bouncer's block is in that file, scripts in uploads get a 403. If the file
+# wp-content/e2e-htaccess-500 exists, it acts like a host that doesn't allow
+# access rules in .htaccess instead: everything in uploads gets a 500.
+cat > "$WORK/router.php" <<'PHPEOF'
+<?php
+$root = $_SERVER['DOCUMENT_ROOT'];
+$path = '/' . ltrim( (string) parse_url( urldecode( $_SERVER['REQUEST_URI'] ), PHP_URL_PATH ), '/' );
+if ( 0 === strpos( $path, '/wp-content/uploads/' ) && file_exists( $root . '/wp-content/e2e-htaccess-500' )
+	&& false !== strpos( (string) @file_get_contents( $root . '/wp-content/uploads/.htaccess' ), '# BEGIN WP Bouncer' ) ) {
+	http_response_code( 500 );
+	echo 'Internal Server Error';
+	return true;
+}
+if ( preg_match( '#^/wp-content/uploads/.*\.(php[0-9]?|phtml|pht|phar)$#i', $path )
+	&& false !== strpos( (string) @file_get_contents( $root . '/wp-content/uploads/.htaccess' ), '# BEGIN WP Bouncer' ) ) {
+	http_response_code( 403 );
+	echo 'Forbidden';
+	return true;
+}
+if ( file_exists( $root . $path ) ) {
+	if ( is_dir( $root . $path ) && '/' !== substr( $path, -1 ) ) {
+		header( "Location: $path/" );
+		return true;
+	}
+	return false;
+}
+chdir( $root );
+$_SERVER['SCRIPT_NAME']     = '/index.php';
+$_SERVER['PHP_SELF']        = '/index.php';
+$_SERVER['SCRIPT_FILENAME'] = $root . '/index.php';
+require 'index.php';
+PHPEOF
+
 # Typical shared-hosting limits, so anything that relies on one long request fails here too.
 # display_errors is off as on a production host; PHP's own start-up warnings
 # (such as "POST too large") would otherwise land in the page and break redirects.
-"$PHP" -d max_execution_time=30 -d upload_max_filesize=2M -d post_max_size=8M -d display_errors=0 \
-	-S "127.0.0.1:$PORT" -t "$W" > "$WORK/server.log" 2>&1 &
+# Several workers, so the site can make a request to itself (the uploads test does).
+PHP_CLI_SERVER_WORKERS=4 "$PHP" -d max_execution_time=30 -d upload_max_filesize=2M -d post_max_size=8M -d display_errors=0 \
+	-S "127.0.0.1:$PORT" -t "$W" "$WORK/router.php" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "$U/" && break; sleep 0.1; done
 
@@ -125,6 +184,15 @@ FILES_PORT=$((PORT + 1))
 FILES_PID=$!
 
 MOZ="Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0"
+GOOGLEBOT="Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+
+count_in() { # count_in TEXT FILE -> matching lines in FILE (0 if it doesn't exist)
+	if [ -f "$2" ]; then grep -cF -- "$1" "$2"; else echo 0; fi
+}
+mail_count() { count_in '"subject"' "$MAILLOG"; }
+log_value() { # log_value COLUMN "WHERE ..." -> first matching value from the bouncer log
+	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_log WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
+}
 
 echo "==> Normal traffic"
 check "home page"                    200 "$(status 203.0.113.10 "$MOZ" "$U/")"
@@ -140,7 +208,7 @@ check "REST user listing"            403 "$(status 203.0.113.25 "$MOZ" "$U/?rest
 check "WAF: XSS"                     403 "$(status 203.0.113.26 "$MOZ" "$U/?s=%3Cscript%3Ealert(1)%3C/script%3E")"
 check "WAF: SQL injection"           403 "$(status 203.0.113.27 "$MOZ" "$U/?id=1%27%20UNION%20SELECT%20user_pass%20FROM%20wp_users--")"
 check "WAF: path traversal"          403 "$(status 203.0.113.28 "$MOZ" "$U/?file=../../../../etc/passwd")"
-check "users sitemap removed"        404 "$(status 203.0.113.10 "$MOZ" "$U/?sitemap=users")"
+check "users sitemap removed"        404 "$(status 203.0.113.10 "$MOZ" "$U/wp-sitemap-users-1.xml")"
 
 echo "==> Brute-force protection"
 for i in 1 2 3 4; do login 198.51.100.5 admin_e2e "wrong$i" > /dev/null; done
@@ -192,17 +260,51 @@ set_settings '$s["rules"]["user_agent"]["enabled"] = false'
 check "User-Agent rule off"          200 "$(status 203.0.113.31 "sqlmap/1.7" "$U/")"
 set_settings '$s["rules"]["user_agent"]["enabled"] = true'
 
+echo "==> Sensitive-file probes"
+check "/.env refused"                403 "$(status 203.0.113.61 "$MOZ" "$U/.env")"
+check "  ...prober banned site-wide" 403 "$(status 203.0.113.61 "$MOZ" "$U/")"
+check "  ...other visitors fine"     200 "$(status 203.0.113.62 "$MOZ" "$U/")"
+check "  ...logged"                  sensitive_files "$(log_value rule "ip = '203.0.113.61'")"
+check "/.git/config refused"         403 "$(status 203.0.113.63 "$MOZ" "$U/.git/config")"
+check "wp-config.php.bak refused"    403 "$(status 203.0.113.64 "$MOZ" "$U/wp-config.php.bak")"
+check "backup.zip refused"           403 "$(status 203.0.113.65 "$MOZ" "$U/backup.zip")"
+check "PHPUnit eval-stdin refused"   403 "$(status 203.0.113.66 "$MOZ" "$U/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php")"
+check "/.well-known/ is not a probe" 404 "$(status 203.0.113.67 "$MOZ" "$U/.well-known/security.txt")"
+check "  ...and not banned"          200 "$(status 203.0.113.67 "$MOZ" "$U/")"
+set_settings '$s["rules"]["sensitive_files"]["ban_minutes"] = 0'
+check "ban 0: probe refused"         403 "$(status 203.0.113.68 "$MOZ" "$U/.env")"
+check "  ...but no ban"              200 "$(status 203.0.113.68 "$MOZ" "$U/")"
+set_settings '$s["rules"]["sensitive_files"]["enabled"] = false'
+check "rule off: /.env is a 404"     404 "$(status 203.0.113.69 "$MOZ" "$U/.env")"
+set_settings '$s["rules"]["sensitive_files"] = ["enabled" => true, "ban_minutes" => 60, "extra_paths" => []]'
+
+echo "==> 404 flood"
+set_settings '$s["rules"]["not_found"]["max_404"] = 5'
+codes=""; for i in 1 2 3 4 5 6; do codes="$codes$(status 203.0.113.71 "$MOZ" "$U/wp-content/plugins/scan-$i/readme.txt") "; done
+check "six 404s answered as 404s"    "404 404 404 404 404 404 " "$codes"
+check "  ...then banned"             403 "$(status 203.0.113.71 "$MOZ" "$U/")"
+check "  ...ban logged as a lockout" 1 "$(log_value "COUNT(*)" "rule = 'not_found' AND ip = '203.0.113.71' AND action = 'lockout'")"
+for i in $(seq 1 12); do status 203.0.113.72 "$MOZ" "$U/wp-content/uploads/missing-$i.jpg" > /dev/null; done
+check "missing images don't count"   200 "$(status 203.0.113.72 "$MOZ" "$U/")"
+for i in $(seq 1 12); do status 203.0.113.73 "$GOOGLEBOT" "$U/old-page-$i/" > /dev/null; done
+check "crawlers don't count"         200 "$(status 203.0.113.73 "$GOOGLEBOT" "$U/")"
+codes=""; for i in 1 2 3; do codes="$codes$(status 203.0.113.74 "$MOZ" "$U/typo-$i/") "; done
+check "a few 404s are fine"          "404 404 404 200" "$codes$(status 203.0.113.74 "$MOZ" "$U/")"
+set_settings '$s["rules"]["not_found"]["max_404"] = 20'
+
 echo "==> Admin screens"
 J="$WORK/cookies.txt"; rm -f "$J"
 curl -s -o /dev/null -c "$J" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" \
 	-d "log=admin_e2e&pwd=e2e-pass-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
-for tab in dashboard general rules countries log tools; do
+for tab in dashboard general rules countries log traffic tools; do
 	out="$WORK/tab-$tab.html"
 	code=$(curl -s -o "$out" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-admin/admin.php?page=wp-bouncer&tab=$tab")
 	check "admin tab '$tab' loads"     200 "$code"
 	check "admin tab '$tab' no PHP errors" 0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$out")"
 done
 check "log lists blocked entries" 1 "$( [ "$(grep -o 'wpb-badge-blocked' "$WORK/tab-log.html" | wc -l)" -gt 5 ] && echo 1 || echo 0 )"
+check "admin is never banned for probes" 404 "$(status 198.51.100.50 "$MOZ" "$U/.env" -b "$J")"
+check "  ...still gets in"           200 "$(status 198.51.100.50 "$MOZ" "$U/wp-admin/" -b "$J")"
 
 echo "==> Geo import through the Tools screen"
 # One 500-row batch per step, so even a small file needs several steps.
@@ -224,8 +326,8 @@ admin() { # admin URL [curl args...] -> body to $WORK/admin.html, prints status
 	local url=$1; shift
 	curl -s -o "$WORK/admin.html" -D "$WORK/admin.headers" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$@" "$url"
 }
-nonce_for() { # nonce_for ACTION -> the _wpnonce of the Tools-tab form with that action
-	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=tools" > /dev/null
+nonce_for() { # nonce_for ACTION [TAB] -> the _wpnonce of the form with that action (on the Tools tab by default)
+	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=${2:-tools}" > /dev/null
 	"$PHP" -r 'preg_match("/name=\"_wpnonce\" value=\"([0-9a-f]+)\"(?:(?!_wpnonce).)*?name=\"action\" value=\"" . $argv[2] . "\"/s", file_get_contents($argv[1]), $m); echo $m[1] ?? "";' "$WORK/admin.html" "$1"
 }
 ajax_nonce() { grep -o '"geoNonce":"[0-9a-f]*"' "$WORK/admin.html" | cut -d'"' -f4; }
@@ -296,6 +398,226 @@ admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=tools" > /dev/null
 check "step with nothing running"    1   "$(curl -s -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "action=wp_bouncer_geo_step&_ajax_nonce=$(ajax_nonce)" "$U/wp-admin/admin-ajax.php" | grep -c '"success":false')"
 check "AJAX step needs a nonce"      403 "$(curl -s -o /dev/null -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "action=wp_bouncer_geo_step&_ajax_nonce=bad" "$U/wp-admin/admin-ajax.php")"
 rm -f "$W/wp-content/mu-plugins/wpb-e2e.php"
+
+echo "==> No PHP in uploads"
+UP="$W/wp-content/uploads"
+HT="$UP/.htaccess"
+rm -f "$HT" "$W/wp-content/e2e-htaccess-500"  # left by an earlier run in a reused WPB_E2E_DIR
+$WP option delete wp_bouncer_uploads_htaccess > /dev/null 2>&1
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null   # any request writes the block if needed
+check "block written to uploads/.htaccess" 1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+probe() { # probe -> result of the Rules tab's "Test now" button
+	admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_probe rules)&action=wp_bouncer_uploads_probe" > /dev/null
+	$WP eval 'echo get_option( WPBouncer\Hardening\UploadsGuard::PROBE_OPTION )["result"];'
+}
+check "Test now: protected"          protected "$(probe)"
+check "  ...test files deleted"      0 "$(find "$UP" -maxdepth 1 -name 'wp-bouncer-*' | wc -l | tr -d ' ')"
+$WP cron event run wp_bouncer_uploads_check > /dev/null
+check "after-write check keeps it"   1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=rules" > /dev/null
+check "Rules tab: block in place"    1 "$(count_in 'in place.' "$WORK/admin.html")"
+check "Rules tab: shows the result"  1 "$(count_in 'Protected: the server refused' "$WORK/admin.html")"
+printf '# Site owner rule\nOptions -Indexes\n' >> "$HT"
+set_settings '$s["rules"]["uploads_php"]["htaccess"] = false'
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null
+check "setting off: block removed"   0 "$(count_in 'WP Bouncer' "$HT")"
+check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
+check "Test now: not protected"      unprotected "$(probe)"
+set_settings '$s["rules"]["uploads_php"]["htaccess"] = true'
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null
+check "setting on: block back"       1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
+echo "<?php define( 'WP_BOUNCER_DISABLE', true );" > "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null
+check "WP_BOUNCER_DISABLE removes it" 0 "$(count_in 'WP Bouncer' "$HT")"
+rm -f "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null
+check "  ...and it returns after"    1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+# A host where the block makes every upload fail: the check takes it out again.
+touch "$W/wp-content/e2e-htaccess-500"
+check "  (stand-in host breaks uploads)" 500 "$(curl -s -o /dev/null -w '%{http_code}' "$U/wp-content/uploads/")"
+$WP cron event run wp_bouncer_uploads_check > /dev/null
+check "broken host: block removed"   0 "$(count_in 'WP Bouncer' "$HT")"
+check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
+check "  ...not rewritten"           0 "$(status 203.0.113.10 "$MOZ" "$U/" > /dev/null; count_in 'WP Bouncer' "$HT")"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=rules" > /dev/null
+check "  ...admin is told"           1 "$(count_in 'answered uploaded files (images too) with an error' "$WORK/admin.html")"
+check "  ...and logged"              alert "$(log_value action "rule = 'uploads_php' AND reason LIKE 'Removed the uploads%'")"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_sync rules)&action=wp_bouncer_uploads_sync" > /dev/null
+check "Test now on that host"        broken "$(probe)"
+check "  ...block removed again"     0 "$(count_in 'WP Bouncer' "$HT")"
+rm -f "$W/wp-content/e2e-htaccess-500"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_sync rules)&action=wp_bouncer_uploads_sync" > /dev/null
+check "host fixed: Write it now"     1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+check "  ...Test now: protected"     protected "$(probe)"
+check "  ...warning gone"            0 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=rules" > /dev/null; count_in 'answered uploaded files (images too)' "$WORK/admin.html")"
+rm -f "$MAILLOG"
+$WP plugin deactivate wp-bouncer
+check "deactivating removes it"      0 "$(count_in 'WP Bouncer' "$HT")"
+check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
+check "  ...and sends an alert"      1 "$(count_in 'WP Bouncer itself was deactivated' "$MAILLOG")"
+$WP plugin activate wp-bouncer
+status 203.0.113.10 "$MOZ" "$U/" > /dev/null
+check "reactivating writes it again" 1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
+
+# Uploads that are scripts in disguise. WordPress would refuse some of these
+# itself; the message shows WP Bouncer got there first.
+printf 'GIF89a\x01\x00\x01\x00\x00\x00\x00;<?php echo 1; ?>' > "$WORK/pic.gif"
+printf 'not really a picture' > "$WORK/cat.php.jpg"
+"$PHP" -r 'file_put_contents($argv[1], base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="));' "$WORK/dot.png"
+WP_LOUD="${WP% --quiet}"   # --quiet would hide the warning that carries the reason
+check "WP-CLI import: .php.jpg refused" 1 "$($WP_LOUD media import "$WORK/cat.php.jpg" 2>&1 | grep -c 'WP Bouncer refused')"
+check "WP-CLI import: PHP in a GIF refused" 1 "$($WP_LOUD media import "$WORK/pic.gif" 2>&1 | grep -c 'contains PHP code')"
+check "WP-CLI import: real image fine" 0 "$($WP media import "$WORK/dot.png" > /dev/null 2>&1; echo $?)"
+RN=$(curl -s -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-admin/admin-ajax.php?action=rest-nonce")
+rest_upload() { # rest_upload FILE NAME TYPE -> HTTP status of a media upload through the REST API
+	curl -s -o "$WORK/rest.json" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -H "X-WP-Nonce: $RN" \
+		-H "Content-Disposition: attachment; filename=$2" -H "Content-Type: $3" --data-binary "@$1" "$U/?rest_route=/wp/v2/media"
+}
+check "REST upload: PHP in a GIF refused" 1 "$( [ "$(rest_upload "$WORK/pic.gif" pic.gif image/gif)" -ge 400 ] && count_in 'WP Bouncer refused' "$WORK/rest.json" || echo 0)"
+check "REST upload: real image fine" 201 "$(rest_upload "$WORK/dot.png" dot.png image/png)"
+check "refused uploads are logged"   uploads_php "$(log_value rule "rule = 'uploads_php'")"
+check "  ...no PHP left in uploads"  0 "$(find "$UP" \( -name '*.php*' -o -name 'pic*.gif' \) ! -name index.php | wc -l | tr -d ' ')"
+
+echo "==> Email alerts"
+rm -f "$MAILLOG"
+$WP user create eve_e2e eve@example.test --role=administrator --user_pass=e2e-pass-eve
+check "new administrator: one email" 1 "$(mail_count)"
+check "  ...subject"                 1 "$(count_in 'WP Bouncer alert: New administrator account created' "$MAILLOG")"
+check "  ...names the account"       1 "$(count_in 'Username: eve_e2e, email: eve@example.test' "$MAILLOG")"
+check "  ...to the admin email"      1 "$(count_in '"to":["e2e@example.test"]' "$MAILLOG")"
+check "  ...says it came from WP-CLI" 1 "$(count_in 'From IP:    command line' "$MAILLOG")"
+check "  ...logged as an alert"      alert "$(log_value action "rule = 'alerts'")"
+rm -f "$MAILLOG"
+$WP user create sub_e2e sub@example.test --role=subscriber --user_pass=e2e-pass-sub
+check "new subscriber: no email"     0 "$(mail_count)"
+$WP user set-role sub_e2e administrator
+check "promotion: one email"         1 "$(count_in 'Account promoted to administrator' "$MAILLOG")"
+rm -f "$MAILLOG"
+$WP user set-role sub_e2e editor
+check "demotion: no email"           0 "$(mail_count)"
+$WP user add-role sub_e2e administrator
+check "added admin role: email"      1 "$(count_in 'Account given the administrator role' "$MAILLOG")"
+rm -f "$MAILLOG"
+$WP plugin activate hello
+check "plugin activated: email"      1 "$(count_in 'Plugin activated: Hello Dolly' "$MAILLOG")"
+$WP plugin deactivate hello
+check "plugin deactivated: email"    1 "$(count_in 'Plugin deactivated: Hello Dolly' "$MAILLOG")"
+mkdir -p "$WORK/e2e-sample/e2e-sample"
+printf '<?php\n/**\n * Plugin Name: E2E Sample\n * Version: 1.2.3\n */\n' > "$WORK/e2e-sample/e2e-sample/e2e-sample.php"
+rm -f "$WORK/e2e-sample.zip"; (cd "$WORK/e2e-sample" && zip -qr "$WORK/e2e-sample.zip" e2e-sample)
+rm -f "$MAILLOG"
+$WP plugin install "$WORK/e2e-sample.zip" --activate
+check "install + activate: one email" 1 "$(mail_count)"
+check "  ...listing both"            1 "$(count_in 'WP Bouncer alert: 2 security events' "$MAILLOG")"
+check "  ...install named"           1 "$(count_in 'Plugin installed: E2E Sample' "$MAILLOG")"
+rm -f "$MAILLOG"
+$WP plugin deactivate e2e-sample
+$WP plugin delete e2e-sample
+check "plugin deleted: email"        1 "$(count_in 'Plugin deleted: e2e-sample/e2e-sample.php' "$MAILLOG")"
+rm -f "$MAILLOG"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_test_alert general)&action=wp_bouncer_test_alert" > /dev/null
+check "Send a test email button"     1 "$(redirect_has "Test%20email%20sent")"
+check "  ...email captured"          1 "$(count_in 'WP Bouncer alert: Test alert' "$MAILLOG")"
+check "  ...shows who and where"     1 "$(count_in 'admin_e2e (user ID 1)' "$MAILLOG")"
+set_settings '$s["alerts"]["recipients"] = ["security@example.test", "owner@example.test"]'
+rm -f "$MAILLOG"
+$WP user create eve2_e2e eve2@example.test --role=administrator --user_pass=e2e-pass-eve
+check "custom recipients"            1 "$(count_in '"to":["security@example.test","owner@example.test"]' "$MAILLOG")"
+echo "<?php define( 'WP_BOUNCER_DISABLE', true );" > "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
+rm -f "$MAILLOG"
+$WP user create eve3_e2e eve3@example.test --role=administrator --user_pass=e2e-pass-eve
+check "alerts work with DISABLE on"  1 "$(mail_count)"
+rm -f "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
+$WP eval 'set_transient( "wpb_alert_count", 20, HOUR_IN_SECONDS );'
+rm -f "$MAILLOG"
+$WP user create eve4_e2e eve4@example.test --role=administrator --user_pass=e2e-pass-eve
+check "over 20 an hour: not emailed" 0 "$(mail_count)"
+check "  ...but still logged"        1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE action = \"alert\" AND reason LIKE \"%eve4_e2e%\"");')"
+$WP eval 'delete_transient( "wpb_alert_count" );'
+set_settings '$s["alerts"]["enabled"] = false'
+rm -f "$MAILLOG"
+$WP user create eve5_e2e eve5@example.test --role=administrator --user_pass=e2e-pass-eve
+check "alerts off: no email"         0 "$(mail_count)"
+set_settings '$s["alerts"] = ["enabled" => true, "recipients" => [], "new_admin" => true, "plugin_changes" => true, "plugin_updates" => true]'
+for u in eve_e2e sub_e2e eve2_e2e eve3_e2e eve4_e2e eve5_e2e; do $WP user delete "$u" --yes > /dev/null 2>&1; done
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=log&log_action=alert" > /dev/null
+check "Activity Log shows alerts"    1 "$( [ "$(grep -o 'wpb-badge-alert' "$WORK/admin.html" | wc -l)" -ge 5 ] && echo 1 || echo 0 )"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard" > /dev/null
+check "Dashboard still loads"        200 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard")"
+
+echo "==> Traffic log"
+traffic_value() { # traffic_value COLUMN "WHERE ..." -> newest matching value from the traffic log
+	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_traffic WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
+}
+traffic_count() { traffic_value "COUNT(*)" "$1"; }
+check "purge job scheduled"          1 "$($WP cron event list --hook=wp_bouncer_traffic_purge --format=count)"
+$WP eval 'WPBouncer\Plugin::instance()->traffic_log()->clear();'
+status 203.0.113.81 "$MOZ" "$U/" > /dev/null
+check "off by default"               0 "$(traffic_count "1=1")"
+set_settings '$s["traffic"]["enabled"] = true'
+status 203.0.113.81 "$MOZ" "$U/" -e "https://www.example.com/where-they-came-from" > /dev/null
+check "page view recorded"           "200 browser /" "$(traffic_value status "ip = '203.0.113.81'") $(traffic_value client "ip = '203.0.113.81'") $(traffic_value uri "ip = '203.0.113.81'")"
+check "  ...with the referrer"       "https://www.example.com/where-they-came-from" "$(traffic_value referrer "ip = '203.0.113.81'")"
+check "  ...and the User-Agent"      "$MOZ" "$(traffic_value user_agent "ip = '203.0.113.81'")"
+status 203.0.113.82 "$MOZ" "$U/no-such-page/" > /dev/null
+check "404 recorded"                 404 "$(traffic_value status "ip = '203.0.113.82'")"
+status 203.0.113.82 "$MOZ" "$U/wp-admin/" > /dev/null
+check "redirect recorded"            302 "$(traffic_value status "ip = '203.0.113.82' AND uri = '/wp-admin/'")"
+status 203.0.113.83 "$MOZ" "$U/.env" > /dev/null
+check "blocked request recorded"     403 "$(traffic_value status "ip = '203.0.113.83'")"
+status 203.0.113.84 "" "$U/" > /dev/null
+check "no User-Agent: unknown, 403"  "unknown 403" "$(traffic_value client "ip = '203.0.113.84'") $(traffic_value status "ip = '203.0.113.84'")"
+status 203.0.113.85 "$GOOGLEBOT" "$U/" > /dev/null
+check "Googlebot: search engine"     search_engine "$(traffic_value client "ip = '203.0.113.85'")"
+status 203.0.113.86 "curl/8.4.0" "$U/" > /dev/null
+check "curl: script or tool"         tool "$(traffic_value client "ip = '203.0.113.86'")"
+status 203.0.113.87 "$MOZ" "$U/wp-login.php?action=rp&key=TOPSECRET123&login=nobody" > /dev/null
+check "reset key not stored"         0 "$(traffic_count "uri LIKE '%TOPSECRET%'")"
+check "  ...URL kept without it"     1 "$(traffic_count "uri = '/wp-login.php?action=rp&key=[removed]&login=nobody'")"
+curl -s -o /dev/null -H "X-Real-IP: 203.0.113.88" -A "$MOZ" "$U/wp-cron.php?doing_wp_cron=1"
+check "WP-Cron not recorded"         0 "$(traffic_count "ip = '203.0.113.88'")"
+set_settings '$s["traffic"]["skip_background"] = false'
+curl -s -o /dev/null -H "X-Real-IP: 203.0.113.88" -A "$MOZ" "$U/wp-cron.php?doing_wp_cron=1"
+check "  ...unless asked"            1 "$(traffic_count "ip = '203.0.113.88'")"
+set_settings '$s["traffic"]["skip_background"] = true'
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic" > /dev/null
+check "admin's request recorded"     1 "$(traffic_value user_id "ip = '198.51.100.50'")"
+check "Traffic tab lists requests"   1 "$( [ "$(grep -o 'wpb-status-[0-9]xx' "$WORK/admin.html" | wc -l)" -ge 8 ] && echo 1 || echo 0 )"
+check "  ...shows the referrer"      1 "$(count_in 'https://www.example.com/where-they-came-from' "$WORK/admin.html")"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic&client=search_engine" > /dev/null
+check "filter by client"             "1 0" "$(grep -o 'class="wpb-badge wpb-client-search_engine"' "$WORK/admin.html" | wc -l | tr -d ' ') $(grep -o 'class="wpb-badge wpb-client-browser"' "$WORK/admin.html" | wc -l | tr -d ' ')"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic&status=4xx" > /dev/null
+check "filter by response"           0 "$(grep -o 'wpb-status-[235]xx' "$WORK/admin.html" | wc -l | tr -d ' ')"
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic&ip=203.0.113.82" > /dev/null
+check "filter by IP"                 2 "$(grep -o 'class="wpb-badge wpb-status-' "$WORK/admin.html" | wc -l | tr -d ' ')"
+EXPORT=$(grep -o 'href="[^"]*action=wp_bouncer_export_traffic[^"]*"' "$WORK/admin.html" | head -1 | sed 's/^href="//; s/"$//; s/&amp;/\&/g; s/&#038;/\&/g')
+curl -s -o "$WORK/traffic.csv" -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$EXPORT"
+check "CSV export"                   "time_utc,ip,client,method,url,status,referrer,user_agent,user_id" "$(head -1 "$WORK/traffic.csv")"
+check "  ...keeps the filter"        2 "$(grep -c '203.0.113.82' "$WORK/traffic.csv")"
+set_settings '$s["traffic"]["skip_admins"] = true'
+$WP eval 'WPBouncer\Plugin::instance()->traffic_log()->clear();'
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic" > /dev/null
+check "skip administrators"          0 "$(traffic_count "ip = '198.51.100.50'")"
+set_settings '$s["traffic"]["skip_admins"] = false'
+# Old rows: 8 days, 2 days and 1 hour ago.
+$WP eval 'global $wpdb; foreach ( array( 8 * DAY_IN_SECONDS, 2 * DAY_IN_SECONDS, HOUR_IN_SECONDS ) as $age ) { $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - $age ), "ip" => "192.0.2.1", "uri" => "/age-" . $age ) ); }'
+$WP cron event run wp_bouncer_traffic_purge > /dev/null
+check "7-day retention purges"       "0 1 1" "$(traffic_count "uri = '/age-691200'") $(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
+set_settings '$s["traffic"]["retention_days"] = 1'
+$WP cron event run wp_bouncer_traffic_purge > /dev/null
+check "1-day retention purges"       "0 1" "$(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
+set_settings '$s["traffic"]["retention_days"] = 99'   # stored behind the form's back
+$WP eval 'global $wpdb; $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - 8 * DAY_IN_SECONDS ), "ip" => "192.0.2.1", "uri" => "/age-old" ) );'
+$WP cron event run wp_bouncer_traffic_purge > /dev/null
+check "never kept past 7 days"       0 "$(traffic_count "uri = '/age-old'")"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_save traffic)&action=wp_bouncer_save&tab=traffic&wp_bouncer[traffic][enabled]=1&wp_bouncer[traffic][retention_days]=3&wp_bouncer[traffic][skip_background]=1" > /dev/null
+check "Traffic tab saves settings"   "1 3" "$($WP eval '$t = WPBouncer\Settings::load()->get("traffic"); echo (int) $t["enabled"], " ", $t["retention_days"];')"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_clear_traffic traffic)&action=wp_bouncer_clear_traffic" > /dev/null
+check "Clear traffic log"            0 "$(traffic_count "ip <> '198.51.100.50'")"
+set_settings '$s["traffic"]["enabled"] = false'
+status 203.0.113.89 "$MOZ" "$U/" > /dev/null
+check "switched off: not recorded"   0 "$(traffic_count "ip = '203.0.113.89'")"
 
 echo "==> Updates (a local server stands in for GitHub releases)"
 # An update deletes the installed plugin folder and unpacks the new one. When the
@@ -370,9 +692,11 @@ check "  ...and still running"       403  "$(status 203.0.113.51 "sqlmap/1.7" "$
 
 publish 9.0.0
 $WP eval 'delete_site_transient( WPBouncer\Update\Updater::CACHE );'
+rm -f "$MAILLOG"
 check "Update now succeeds"          1    "$(update_now | grep -c '"success":true')"
 check "  ...new version installed"   9.0.0 "$(installed_version)"
 check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
+check "  ...update alert sent"       1    "$(count_in 'Plugin updated: WP Bouncer' "$MAILLOG")"
 check "  ...settings kept"           x_real_ip "$($WP eval 'echo get_option( "wp_bouncer_settings" )["ip_source"];')"
 check "  ...still blocking"          403  "$(status 203.0.113.52 "sqlmap/1.7" "$U/")"
 check "  ...no update offered now"   none "$(offered)"

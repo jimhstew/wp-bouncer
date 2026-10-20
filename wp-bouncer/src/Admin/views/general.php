@@ -1,6 +1,6 @@
 <?php
 /**
- * General tab: mode, IP detection, allowlist, logging, geo source.
+ * General tab: mode, IP detection, allowlist, logging, geo source, email alerts.
  *
  * @package WPBouncer
  * @var \WPBouncer\Plugin    $plugin
@@ -98,5 +98,41 @@ $your_ip = $plugin->client_ip();
 		</tr>
 	</table>
 
+	<h2 id="wpb-alerts"><?php esc_html_e( 'Email alerts', 'wp-bouncer' ); ?></h2>
+	<p class="description"><?php esc_html_e( 'Attackers who get in usually create an administrator account or install a plugin as a backdoor. Get an email when that happens, so you find out the same day.', 'wp-bouncer' ); ?></p>
+	<table class="form-table" role="presentation">
+		<tr>
+			<th scope="row"><?php esc_html_e( 'Send alerts', 'wp-bouncer' ); ?></th>
+			<td>
+				<fieldset>
+					<label><input type="checkbox" name="wp_bouncer[alerts][enabled]" value="1" <?php checked( $settings['alerts']['enabled'] ); ?>> <strong><?php esc_html_e( 'Email me when:', 'wp-bouncer' ); ?></strong></label><br>
+					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][new_admin]" value="1" <?php checked( $settings['alerts']['new_admin'] ); ?>> <?php esc_html_e( 'an administrator account is created, or an account is promoted to administrator', 'wp-bouncer' ); ?></label><br>
+					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][plugin_changes]" value="1" <?php checked( $settings['alerts']['plugin_changes'] ); ?>> <?php esc_html_e( 'a plugin is installed, activated, deactivated or deleted (including WP Bouncer itself being deactivated)', 'wp-bouncer' ); ?></label><br>
+					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][plugin_updates]" value="1" <?php checked( $settings['alerts']['plugin_updates'] ); ?>> <?php esc_html_e( 'a plugin is updated (off by default: updates are routine)', 'wp-bouncer' ); ?></label>
+				</fieldset>
+				<p class="description"><?php esc_html_e( 'Changes made in one go arrive as one email. At most 20 emails are sent per hour; every alert is also written to the Activity Log.', 'wp-bouncer' ); ?></p>
+			</td>
+		</tr>
+		<tr>
+			<th scope="row"><label for="wpb-alert-to"><?php esc_html_e( 'Send to', 'wp-bouncer' ); ?></label></th>
+			<td>
+				<textarea id="wpb-alert-to" name="wp_bouncer[alerts][recipients]" rows="2" class="large-text code" placeholder="<?php echo esc_attr( (string) get_option( 'admin_email' ) ); ?>"><?php echo esc_textarea( implode( "\n", $settings['alerts']['recipients'] ) ); ?></textarea>
+				<p class="description">
+					<?php
+					/* translators: %s: the site's admin email address. */
+					printf( esc_html__( 'Email addresses, one per line (up to 10). Leave empty to use the site\'s admin email, %s.', 'wp-bouncer' ), '<code>' . esc_html( (string) get_option( 'admin_email' ) ) . '</code>' );
+					?>
+					<button type="submit" class="button button-small" form="wpb-test-alert-form"><?php esc_html_e( 'Send a test email', 'wp-bouncer' ); ?></button>
+				</p>
+				<p class="description"><?php esc_html_e( 'Save first if you changed the addresses. Alerts use WordPress\'s normal mail sending; many hosts need an SMTP plugin for mail to arrive.', 'wp-bouncer' ); ?></p>
+			</td>
+		</tr>
+	</table>
+
 	<?php submit_button(); ?>
+</form>
+
+<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" id="wpb-test-alert-form">
+	<?php wp_nonce_field( 'wp_bouncer_test_alert' ); ?>
+	<input type="hidden" name="action" value="wp_bouncer_test_alert">
 </form>

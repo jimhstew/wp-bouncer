@@ -4,10 +4,10 @@ Run all of these before deploying a change.
 
 | Suite | Command | Needs | What it proves |
 |---|---|---|---|
-| Unit | `make test` | PHP 7.4+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation (242 tests, < 1 s) |
+| Unit | `make test` | PHP 7.4+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation, uploads policy, alert wording, client types and URL redaction (422 tests, < 1 s) |
 | Static analysis | `make analyse` | `composer install` | No undefined functions or methods and no type mistakes in the WordPress-facing code (PHPStan level 5 + WordPress stubs) |
 | Coding standards | `make lint` | `composer install` | WordPress Coding Standards |
-| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet | The plugin in a real WordPress: 93 live checks |
+| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet | The plugin in a real WordPress: 208 live checks |
 | Release check | `make check` | all of the above, plus `zip` | Unit tests, build the zip, then the end-to-end suite against the plugin installed **from that zip** |
 
 The `composer test`, `composer analyse`, `composer lint` and `composer test:e2e` scripts are equivalent. Tests live in `tests/`, outside the `wp-bouncer/` plugin folder, so they never end up in the zip you upload.
@@ -28,7 +28,11 @@ tests/
 │   └── FakeGeo.php          IP → country map that counts lookups
 ├── Unit/                    Mirrors wp-bouncer/src/
 │   ├── Firewall/            FirewallTest, RequestTest, IpResolverTest
-│   ├── Rules/               One test class per rule
+│   ├── Rules/               One test class per rule, with must-block and must-pass lists
+│   ├── Hardening/           UploadsPolicyTest (dangerous names, PHP sniffing, .htaccess, probe results)
+│   ├── Alerts/              AlertFormatterTest (subject, body, header injection, de-duplication)
+│   ├── Traffic/             ClientClassifierTest, TrafficEntryTest (rows, secrets removed, status filters)
+│   ├── Update/              ReleaseManifestTest
 │   ├── Login/               LoginGuardTest (also covers LoginLockoutRule)
 │   ├── Geo/                 CsvImporterTest, GeoProvidersTest, CountriesTest
 │   ├── Log/                 BlockLogTest (row normalisation, CSV-injection guard)
@@ -56,13 +60,18 @@ Conventions:
 - rate limiting allows 10 requests and throttles the 11th (429)
 - monitor mode lets a scanner through but logs it as `monitored`
 - switching a single rule off lets its traffic through
-- all six admin tabs load for an administrator with no PHP errors, and the log lists entries
+- sensitive-file probes (`/.env`, `/.git/config`, `wp-config.php.bak`, `backup.zip`, PHPUnit's `eval-stdin.php`) are refused and ban the IP from every page, other IPs are unaffected, `/.well-known/` is left alone, a ban of 0 minutes refuses only the probe, and an administrator is never banned
+- the 404 flood: six "not found" pages are answered normally and the seventh request is refused; missing images and Googlebot don't count; a few typos are fine
+- no PHP in uploads: the `.htaccess` block is written and survives the after-write check; on a stand-in host that answers every upload with a 500 while the block is there, the check removes it, doesn't rewrite it, logs it and warns the admin, **Test now** reports it, and **Write it now** restores it once the host is fixed; **Test now** reports protected (and not protected once the block is switched off), the owner's own lines in that file survive every change, the block is removed while `WP_BOUNCER_DISABLE` is on and on deactivation, and comes back afterwards; `photo.php.jpg` and a GIF containing PHP are refused through WP-CLI `media import` and the REST API, while a real image uploads
+- email alerts (captured through `pre_wp_mail`): a new administrator, a promotion and an added administrator role each send one email, a new subscriber and a demotion send none; plugin activate, deactivate, install (+ activate, as one email) and delete; WP Bouncer's own deactivation; **Send a test email**; custom recipients; alerts while `WP_BOUNCER_DISABLE` is on; the 20-an-hour limit (logged but not emailed); alerts switched off; a plugin update with update alerts on
+- the traffic log: off by default; once on, it records a page view with its referrer and User-Agent, a 404, a redirect, a request the firewall blocked (403), the client types of a browser, Googlebot, curl and an empty User-Agent, and a logged-in admin's user ID; a password-reset key never reaches the table; WP-Cron is skipped unless asked; the Traffic tab lists rows, filters by client, response class and IP, exports CSV with the filter applied, saves its settings and clears the log; skipping administrators works; the hourly purge keeps 7 days, then 1 day, and never more than 7 days; switched off, nothing is recorded
+- all seven admin tabs load for an administrator with no PHP errors, and the log lists entries
 - geo import through the Tools tab, the way a browser does it: upload and URL import both start, take several AJAX steps and load every range; a file that isn't a geo CSV, a URL that fails, and uploads over `upload_max_filesize` and `post_max_size` are refused with a message and leave the old data in place; the no-JavaScript Continue button and the Stop button work; the working file is cleaned up
 - WordPress's `debug.log` is empty at the end
 
-The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. A second built-in server on port+1 stands in for download.db-ip.com.
+The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
 
-Options: `PHP=/path/to/php`, `WPB_E2E_ZIP=builds/wp-bouncer-1.0.1.zip` (install from a built zip instead of linking `wp-bouncer/`), `WPB_E2E_PORT=8899`, `WPB_E2E_DIR=/some/dir` (reused between runs, faster), `WPB_E2E_KEEP=1`.
+Options: `PHP=/path/to/php`, `WPB_E2E_ZIP=builds/wp-bouncer-1.1.1.zip` (install from a built zip instead of linking `wp-bouncer/`), `WPB_E2E_PORT=8899`, `WPB_E2E_DIR=/some/dir` (reused between runs, faster), `WPB_E2E_KEEP=1`.
 
 ## Manual checks on a staging site with MySQL
 
@@ -74,3 +83,5 @@ The e2e suite runs on SQLite. Before a release, also check on MySQL/MariaDB:
 4. Block your own country with the scope set to login, from a second browser. The login page should be refused, and the settings save should warn that it added your IP to the allowlist.
 5. Activity Log: filter, search, page through results, export CSV, use "Block IP".
 6. Leave it overnight and confirm old entries are purged by the daily cron.
+7. On Apache or LiteSpeed: **Rules → No PHP in uploads → Test now** reports Protected. On nginx, add the rule shown there, reload nginx, and test again.
+8. **General → Email alerts → Send a test email** arrives through the site's real mail setup.

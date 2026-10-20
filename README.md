@@ -10,6 +10,13 @@ A self-contained firewall for WordPress. Like a bouncer at a club door, it check
 - request floods (rate limiting)
 - SQL injection, cross-site scripting and similar attacks (a small web application firewall)
 - username harvesting
+- scanners probing for secrets and backups (`.env`, `.git`, `wp-config.php.bak`, database dumps, web shells)
+- scanners hitting page after page of "not found" URLs
+- scripts uploaded to `wp-content/uploads`, the commonest way sites get backdoored
+
+It can also keep a **traffic log** of every request that reaches WordPress (who, what kind of client, which URL, the response code and where they came from) for up to a week.
+
+It also emails you when an administrator account appears or a plugin is installed, activated, deactivated or deleted, so you hear about a break-in the same day.
 
 There is no cloud service, account or subscription. Everything runs on your server, and nothing about your visitors is sent anywhere. Licence: GPL-2.0-or-later.
 
@@ -39,7 +46,7 @@ To build it yourself, you need `make` and `zip` (both come with macOS and most L
 make
 ```
 
-This creates `builds/wp-bouncer-1.0.1.zip`, with a `.sha256` checksum next to it. The zip contains only the `wp-bouncer/` folder: no tests and no documentation.
+This creates `builds/wp-bouncer-1.1.1.zip`, with a `.sha256` checksum next to it. The zip contains only the `wp-bouncer/` folder: no tests and no documentation.
 
 ### 2. Upload it to WordPress
 
@@ -67,6 +74,8 @@ A new **Bouncer** item appears in the wp-admin menu. Most protection is on from 
    1. **Tools → Geo database → Import.** The form is pre-filled with this month's free DB-IP file. Keep the page open while the progress bar runs, usually one to three minutes.
    2. **Countries tab:** tick the countries to block, or choose "allow only these countries". Choose whether to apply it site-wide or only to the login pages. Then switch the rule on.
    3. The DB-IP licence asks for a credit somewhere on your site, such as "IP Geolocation by DB-IP" linking to https://db-ip.com.
+5. **Check the alert emails reach you.** **General → Email alerts → Send a test email.** Alerts go to the site's admin email unless you list other addresses. If the test doesn't arrive, check spam; many hosts need an SMTP plugin before WordPress can send mail.
+6. **Check uploads are protected.** **Rules → No PHP in uploads → Test now.** "Protected" means your server refused to run a test script placed in the uploads folder. On nginx, which ignores `.htaccess`, add the rule shown there to your server config and test again.
 
 ---
 
@@ -75,13 +84,20 @@ A new **Bouncer** item appears in the wp-admin menu. Most protection is on from 
 | Tab | What you do there |
 |---|---|
 | **Dashboard** | Blocks in the last 24 hours, 7 days and 30 days, a 14-day chart, the top rules, IPs and countries, and an on/off switch for every rule. |
-| **General** | Enforce or monitor mode, IP detection and trusted proxies, the allowlist, how long to keep the log, and the message blocked visitors see. |
-| **Rules** | Each blocking rule, with its own on/off switch and settings: IP blocklist, user-agent filter, XML-RPC, login lockout, rate limiting, web application firewall, user enumeration. |
+| **General** | Enforce or monitor mode, IP detection and trusted proxies, the allowlist, how long to keep the log, the message blocked visitors see, and email alerts. |
+| **Rules** | Each blocking rule, with its own on/off switch and settings: IP blocklist, login lockout, sensitive-file probes, 404 flood, no PHP in uploads, XML-RPC, user-agent filter, web application firewall, user enumeration, rate limiting. |
 | **Countries** | Pick countries from the list of 249, grouped by continent and searchable. |
-| **Activity Log** | Everything that was blocked or would have been (in monitor mode): when, which IP and country, which rule and why. Filter, search, export to CSV, or **Block IP** from any row. |
-| **Tools** | Import or refresh the geo database, unlock an IP that is locked out or rate-limited, and the emergency instructions below. |
+| **Activity Log** | Everything that was blocked or would have been (in monitor mode): when, which IP and country, which rule and why. Email alerts are listed too. Filter, search, export to CSV, or **Block IP** from any row. |
+| **Traffic** | Optional. Every request that reached WordPress for the last 1 to 7 days: time, IP, client type (browser, mobile, search engine, bot, uptime monitor, script, attack tool…), method and URL, response code, referrer, User-Agent and logged-in user. Filter by client, response class or IP, search, export to CSV, **Block IP** from any row. |
+| **Tools** | Import or refresh the geo database, unlock an IP that is locked out or banned, and the emergency instructions below. |
 
-Out of the box every rule is on except **country blocking** and **rate limiting**, which need setting up first.
+Out of the box every rule is on except **country blocking** and **rate limiting**, which need setting up first. The **traffic log** is off until you switch it on (Traffic tab), because it adds one database write per request.
+
+About the traffic log: it records requests that reach WordPress, including ones WP Bouncer blocked (with their 403), redirects and 404s. Images, CSS and JS that your web server serves directly never reach WordPress, so they aren't in it; your host's access log has those. WP-Cron and the admin Heartbeat are skipped by default. Passwords, password-reset keys, tokens and nonces are removed from URLs and referrers before saving. Rows older than the retention you choose (1 to 7 days) are deleted every hour. IP addresses are personal data in many places, so mention the log in your privacy policy.
+
+Three rules ban an IP for a while after it misbehaves, so it can't try anything else meanwhile: **sensitive-file probes** (one request for something like `/.env`), **404 flood** (more than 20 "not found" pages in a minute; missing images and search engine crawlers don't count) and **rate limiting**. Logged-in administrators are never banned by these.
+
+**No PHP in uploads** adds a marked `# BEGIN WP Bouncer` block to `wp-content/uploads/.htaccess`; anything else in that file is left alone. Straight after writing it, the plugin checks that files in uploads still load. Some hosts don't allow this kind of rule in `.htaccess` and answer every upload, images included, with an error; there the block is taken out again and the Bouncer screens say so. It also refuses uploads that are scripts in disguise, such as `photo.php.jpg` or an "image" containing PHP code.
 
 Blocked visitors get a short "403 Forbidden" page with your block message, or "429 Too Many Requests" from rate limiting. A locked-out login shows "Too many failed login attempts, try again in N minutes".
 
@@ -113,7 +129,7 @@ The check fetches a small file (`update.json`) from GitHub a few times a day. It
 2. Then fix the cause:
    - **Switch that rule off** on the Dashboard, or adjust its settings on the Rules tab.
    - **Add the IP to the allowlist** (General).
-   - For a login lockout or rate-limit ban: **Tools → Unlock an IP**.
+   - For a login lockout, or a rate-limit, probe or 404-flood ban: **Tools → Unlock an IP**.
    - Nothing makes sense? Set **Mode → Monitor** while you investigate. Nothing is blocked in monitor mode.
 
 ### You can't get in at all: the emergency switch
@@ -127,7 +143,7 @@ This turns off **all** blocking, including login lockouts, while leaving the plu
    define( 'WP_BOUNCER_DISABLE', true );
    ```
 
-3. Save, then log in to wp-admin. A red notice confirms the plugin is switched off.
+3. Save, then log in to wp-admin. A red notice confirms the plugin is switched off. WP Bouncer's block in `wp-content/uploads/.htaccess` is removed on the next page load and comes back when you remove the line. Email alerts keep working.
 4. Fix the setting that caught you (see the section above). Usually you add your IP to the allowlist, correct **Client IP source**, or switch off the rule.
 5. **Remove the line from `wp-config.php`.** Until you do, your site has no protection from WP Bouncer.
 
@@ -139,7 +155,19 @@ Use any one of these:
 - **No wp-admin access:** rename the folder `wp-content/plugins/wp-bouncer` to `wp-bouncer.off` with your file manager or FTP. WordPress deactivates a plugin whose folder has gone. Rename it back and reactivate it when you're ready.
 - **SSH with WP-CLI:** run `wp plugin deactivate wp-bouncer`. WP-CLI is never blocked by the plugin.
 
-Deactivating keeps your settings and log. **Deleting** the plugin from the Plugins screen removes everything: its tables, settings, lockouts and scheduled tasks.
+Deactivating keeps your settings and log, and removes WP Bouncer's block from `wp-content/uploads/.htaccess`. Deactivating it from wp-admin or WP-CLI also sends an alert email, so an intruder can't switch it off quietly. **Deleting** the plugin from the Plugins screen removes everything: its tables, settings, lockouts, the uploads block and scheduled tasks.
+
+### Something that used to work in the uploads folder stopped
+
+A few plugins wrongly run PHP files from `wp-content/uploads`. If one breaks after you install WP Bouncer, the Activity Log won't show it (the web server refuses those requests, not WordPress). Untick **Rules → No PHP in uploads → Tell the web server not to run scripts in the uploads folder** and save; the block is removed straight away. Consider replacing that plugin.
+
+### Alert emails don't arrive
+
+Use **General → Email alerts → Send a test email**. If it fails or never arrives, WordPress on your host can't send mail; install an SMTP plugin. Alerts are also listed in the Activity Log (filter by action **Alert**), and at most 20 emails are sent per hour.
+
+### The site got slower after switching on the traffic log
+
+Each recorded request is one database write. On a busy site, tick **Skip logged-in administrators**, shorten the retention, or switch the log off on the Traffic tab; **Clear traffic log** empties it straight away.
 
 ### The whole site returns 403 for everyone
 
