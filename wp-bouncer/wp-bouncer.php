@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name:       WP Bouncer
- * Plugin URI:        https://github.com/your-org/wp-bouncer
+ * Plugin URI:        https://github.com/jimhstew/wp-bouncer
  * Description:       A self-contained firewall that turns away unwanted visitors at the door: IP and country blocking, bad user-agents, brute-force login lockouts, XML-RPC blocking, rate limiting, user-enumeration protection and a lightweight WAF. No cloud service, no subscription.
  * Version:           1.0.1
  * Requires at least: 5.8
