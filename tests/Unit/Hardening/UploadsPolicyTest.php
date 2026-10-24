@@ -72,25 +72,84 @@ final class UploadsPolicyTest extends TestCase {
 	}
 
 	public function test_bare_echo_open_in_binary_data_is_not_php(): void {
-		$this->assertFalse( UploadsPolicy::has_php_tag( "\x01<?=\xff\x02" ) );
-		$this->assertFalse( UploadsPolicy::has_php_tag( '<?=' ) );
-		$this->assertTrue( UploadsPolicy::has_php_tag( '<?= $x ?>' ) );
-		$this->assertTrue( UploadsPolicy::has_php_tag( '<?=system(1)' ) );
-		$this->assertTrue( UploadsPolicy::has_php_tag( '<?=  \\Foo\\bar ( 1 )' ) );
-		$this->assertTrue( UploadsPolicy::has_php_tag( "<?='x'" ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( "\x01<?=\xff\x02", true ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( '<?=', true ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( '<?=', false ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( '<?=>', false ) );
+	}
+
+	/** @dataProvider echo_tag_evasions */
+	public function test_echo_tag_evasions_are_found( string $code ): void {
+		$this->assertTrue( UploadsPolicy::has_php_tag( $code, false ), 'text tier' );
+		$this->assertTrue( UploadsPolicy::has_php_tag( "\x01\x02" . $code . "\xff\x00", true ), 'media tier' );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( "GIF89a\x01\x00" . $code ), 52428800, 'a.gif' ), 'in a GIF named .gif' );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( "GIF89a\x01\x00" . $code ) ), 'in a GIF, name unknown' );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( "\xff\xd8\xff\xe0" . str_repeat( "\x01", 100 ) . $code . "\xff\x00\x00" ), 52428800, 'a.jpg' ), 'in a JPEG' );
+	}
+
+	public static function echo_tag_evasions(): array {
+		return array(
+			'variable'        => array( '<?= $x ?>' ),
+			'function call'   => array( '<?=system($_GET[0]);' ),
+			'backticks'       => array( '<?=`id`?>' ),
+			'statement first' => array( '<?=1;system($_GET[0])?>' ),
+			'comment first'   => array( '<?=/**/system($_GET[0]);' ),
+			'silenced'        => array( '<?=@$x;' ),
+			'tilde'           => array( '<?=~"\x9e\x8c"();' ),
+			'namespaced'      => array( '<?=  \\Foo\\bar ( 1 );' ),
+		);
+	}
+
+	/** @dataProvider relaxed_media */
+	public function test_media_needs_extension_and_signature_to_agree( string $head, string $name, bool $expected ): void {
+		$this->assertSame( $expected, UploadsPolicy::is_binary_media( $head, $name ), $name );
+	}
+
+	public static function relaxed_media(): array {
+		return array(
+			'jpeg'                    => array( "\xff\xd8\xff\xe0", 'photo.JPG', true ),
+			'png'                     => array( "\x89PNG\r\n\x1a\n", 'a.png', true ),
+			'gif'                     => array( 'GIF89a', 'a.gif', true ),
+			'mp4'                     => array( "\x00\x00\x00\x18ftypmp42", 'v.mp4', true ),
+			'webp'                    => array( "RIFF\x00\x00\x00\x00WEBP", 'v.webp', true ),
+			'zip'                     => array( "PK\x03\x04", 'a.zip', true ),
+			'pdf'                     => array( '%PDF-1.7', 'a.pdf', true ),
+			'mismatch: png as jpg'    => array( "\x89PNG", 'a.jpg', false ),
+			'php with gif magic'      => array( 'GIF89a', 'shell.php', false ),
+			'phtml with jpeg magic'   => array( "\xff\xd8\xff", 'x.phtml', false ),
+			'phar'                    => array( "PK\x03\x04", 'x.phar', false ),
+			'php3'                    => array( 'GIF89a', 'x.php3', false ),
+			'double extension'        => array( 'GIF89a', 'x.php.gif', false ),
+			'double extension, other' => array( 'GIF89a', 'x.gif.php', false ),
+			'unknown extension'       => array( 'GIF89a', 'x.dat', false ),
+			'no extension'            => array( 'GIF89a', 'x', false ),
+			'no name'                 => array( 'GIF89a', '', false ),
+			'htaccess'                => array( 'GIF89a', '.htaccess', false ),
+			'text'                    => array( '<?xml version', 'a.svg', false ),
+		);
+	}
+
+	public function test_a_media_signature_alone_does_not_relax_the_echo_tag_rule(): void {
+		// A GIF header on a file called .php (or .dat) is scanned strictly: any code after "<?=" counts.
+		$data = "GIF89a\x01<?=\xff@ \x00";
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( $data ), 52428800, 'shell.php' ) );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( $data ), 52428800, 'x.dat' ) );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( $data ) ) );
+		$this->assertFalse( UploadsPolicy::contains_php( $this->file( $data ), 52428800, 'x.gif' ), 'a real GIF is scanned with the relaxed rule' );
 	}
 
 	public function test_context_after_the_tag_is_found_across_chunks(): void {
 		$this->assertTrue( UploadsPolicy::contains_php( $this->file( str_repeat( 'a', 1048576 - 3 ) . '<?=' . str_repeat( ' ', 10 ) . '$x' ) ) );
 	}
 
-	public function test_8mb_of_seeded_random_bytes_has_no_match(): void {
+	public function test_8mb_of_seeded_random_bytes_has_no_match_with_or_without_a_media_header(): void {
 		$data = '';
 		for ( $i = 0; $i < 262144; $i++ ) {
 			$data .= hash( 'sha256', 'wpb-seed-' . $i, true );
 		}
 		$this->assertSame( 8388608, strlen( $data ) );
-		$this->assertFalse( UploadsPolicy::contains_php( $this->file( $data ) ) );
+		$this->assertFalse( UploadsPolicy::contains_php( $this->file( "\xff\xd8\xff" . $data ), 52428800, 'photo.jpg' ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( $data, true ) );
 	}
 
 	public function test_clean_files_pass(): void {

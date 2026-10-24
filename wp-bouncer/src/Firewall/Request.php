@@ -82,6 +82,13 @@ final class Request {
 	private $body_reader;
 
 	/**
+	 * Opens the raw request body as a stream, or null to wrap body().
+	 *
+	 * @var (callable(): mixed)|null
+	 */
+	private $stream_opener;
+
+	/**
 	 * Is this a request from the server itself?
 	 *
 	 * @var bool
@@ -135,6 +142,7 @@ final class Request {
 	 *     @type callable $logged_in   Returns whether a user is logged in.
 	 *     @type callable $trusted     Returns whether the user is a site administrator.
 	 *     @type callable $body        Returns the raw request body.
+	 *     @type callable $body_stream Opens the raw request body as a readable stream (no size cap).
 	 *     @type bool     $local       Request from the server itself (loopback, no forwarding header). Default false.
 	 *     @type bool     $bannable    Bans, lockouts and counters may be kept for this client. Default true.
 	 *     @type string   $subject     Key for bans and counters when it must differ from the IP. Default ''.
@@ -162,6 +170,7 @@ final class Request {
 		$this->body_reader        = $args['body'] ?? static function (): string {
 			return '';
 		};
+		$this->stream_opener      = isset( $args['body_stream'] ) && is_callable( $args['body_stream'] ) ? $args['body_stream'] : null;
 	}
 
 	/**
@@ -180,18 +189,22 @@ final class Request {
 	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '' ): self {
 		return new self(
 			array(
-				'ip'        => $ip,
-				'method'    => (string) ( $server['REQUEST_METHOD'] ?? 'GET' ),
-				'uri'       => (string) ( $server['REQUEST_URI'] ?? '/' ),
-				'query'     => $get,
-				'post'      => $post,
-				'server'    => $server,
-				'logged_in' => $logged_in,
-				'trusted'   => $trusted,
-				'local'     => $local,
-				'bannable'  => $bannable,
-				'subject'   => $subject,
-				'body'      => static function (): string {
+				'ip'          => $ip,
+				'method'      => (string) ( $server['REQUEST_METHOD'] ?? 'GET' ),
+				'uri'         => (string) ( $server['REQUEST_URI'] ?? '/' ),
+				'query'       => $get,
+				'post'        => $post,
+				'server'      => $server,
+				'logged_in'   => $logged_in,
+				'trusted'     => $trusted,
+				'local'       => $local,
+				'bannable'    => $bannable,
+				'subject'     => $subject,
+				'body_stream' => static function () {
+					// Not capped: lets a rule read a large body in chunks without holding it in memory.
+					return fopen( 'php://input', 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- php://input is not a file the Filesystem API can open.
+				},
+				'body'        => static function (): string {
 					// php://input can be read more than once on PHP >= 5.6, so WordPress still sees it later.
 					$body = file_get_contents( 'php://input', false, null, 0, 1048576 );
 					return false === $body ? '' : $body;
@@ -313,6 +326,27 @@ final class Request {
 			$this->body = (string) call_user_func( $this->body_reader );
 		}
 		return $this->body;
+	}
+
+	/**
+	 * The raw request body as a new readable stream, positioned at the start.
+	 *
+	 * Unlike body(), this has no size cap. The caller must fclose() it.
+	 *
+	 * @return resource|null
+	 */
+	public function body_stream() {
+		if ( null !== $this->stream_opener ) {
+			$stream = call_user_func( $this->stream_opener );
+			return is_resource( $stream ) ? $stream : null;
+		}
+		$stream = fopen( 'php://memory', 'w+b' ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- in-memory stream, not a file.
+		if ( false === $stream ) {
+			return null;
+		}
+		fwrite( $stream, $this->body() ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- in-memory stream.
+		rewind( $stream );
+		return $stream;
 	}
 
 	/** Is any user logged in? */

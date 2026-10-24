@@ -36,6 +36,9 @@ final class WafRule extends AbstractRule {
 	/** Characters or words without which no built-in signature can match (used to skip big, plain values). */
 	private const GATE = '/[<\'"`;(%:|&=#$\/\\\\_{]|union|into|document|wp-config/i';
 
+	/** Name of the event-handler signature, which is checked in code (see event_handler_hit()). */
+	private const EVENT_HANDLER = 'event handler';
+
 	/** Size of one scan window. */
 	private const WINDOW = 8192;
 
@@ -71,7 +74,7 @@ final class WafRule extends AbstractRule {
 		'xss'            => array(
 			'script tag'     => '/<\s{0,64}script\b/i',
 			'javascript uri' => '/\bjavascript\s{0,64}:/i',
-			'event handler'  => '/<[a-z][^>]{0,800}[\s\/]on[a-z]{3,20}\s{0,16}=/i',
+			'event handler'  => '/[\s\/"\']on[a-z]{3,20}\s{0,16}=/i',
 			'embed tag'      => '/<\s{0,64}(iframe|object|embed|applet|base|meta)\b/i',
 			'cookie access'  => '/\bdocument\s{0,64}\.\s{0,64}(cookie|domain)\b/i',
 		),
@@ -158,13 +161,21 @@ final class WafRule extends AbstractRule {
 	/**
 	 * Test one value against the given signature groups.
 	 *
-	 * Values up to 64 KB are scanned in 8 KB windows that overlap by 1 KB;
-	 * longer values also get their last 8 KB scanned. Every quantifier in the
+	 * The value is first normalised: runs of whitespace and complete SQL/C
+	 * comments collapse to one space, so padding (the word "union", 300 spaces or
+	 * empty comments, then "select") cannot push a signature out of reach of its
+	 * bounded quantifiers. If it holds "%", a URL-decoded copy is normalised and
+	 * checked too (one extra decode level, R-04).
+	 *
+	 * Each copy up to 64 KB is scanned in 8 KB windows that overlap by 1 KB;
+	 * longer ones also get their last 8 KB scanned. Every quantifier in the
 	 * signatures is bounded so that no match is longer than the overlap, which
 	 * means a payload cannot hide on a window boundary. Each window is scanned
 	 * with one byte of left context, so "\b" and "^" do not fire at an artificial
-	 * edge, and "$" only counts in the window that ends the value. Each window is
-	 * also checked after one more round of URL decoding.
+	 * edge, and "$" only counts in the window that ends the value.
+	 *
+	 * The event-handler signature has no distance bound: it finds " onxxx=" and
+	 * then checks in code that an unclosed "<tag" comes before it.
 	 *
 	 * A PCRE failure (backtrack limit, JIT stack) counts as a match, with the
 	 * signature name "pattern error (<name>)", so an attacker can't switch the
@@ -178,41 +189,205 @@ final class WafRule extends AbstractRule {
 	 * @return array{0: string, 1: string}|null [category, signature name] on match.
 	 */
 	public static function match_value( string $value, array $categories ): ?array {
-		$large = strlen( $value ) > self::WINDOW;
-		foreach ( self::windows( $value ) as $window ) {
+		$variants = array( self::normalise( $value ) );
+		if ( false !== strpos( $value, '%' ) ) {
+			$decoded = self::normalise( rawurldecode( $value ) );
+			if ( $decoded !== $variants[0] ) {
+				$variants[] = $decoded;
+			}
+		}
+
+		foreach ( $variants as $variant ) {
+			$hit = self::scan_variant( $variant, $categories );
+			if ( null !== $hit ) {
+				return $hit;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Collapse whitespace runs and complete C-style comments to one space.
+	 *
+	 * MySQL executes the inside of a comment that opens with slash, star, exclamation
+	 * mark (optionally followed by a five-digit version), so those comments are unwrapped
+	 * first: the markers go and the inner text stays, so a split word is joined again. An unterminated one is unwrapped to the end of the text. Nested forms
+	 * are unwrapped one level per pass, at most four passes. Every pattern is linear.
+	 *
+	 * @param string $value Value.
+	 */
+	private static function normalise( string $value ): string {
+		for ( $pass = 0; $pass < 4; $pass++ ) {
+			if ( false === strpos( $value, '/*!' ) ) {
+				break;
+			}
+			$unwrapped = preg_replace( '~/\*!\d*+((?:[^*]++|\*(?!/))*+)(?:\*/|$)~', '$1 ', $value );
+			if ( null === $unwrapped || $unwrapped === $value ) {
+				break;
+			}
+			$value = $unwrapped;
+		}
+		// No comment can end after the last closing marker, so only look for comments before it.
+		// An opener with no closer would otherwise be scanned to the end once per opener, which is quadratic.
+		$cut  = strrpos( $value, '*/' );
+		$head = false === $cut ? '' : substr( $value, 0, $cut + 2 );
+		$tail = false === $cut ? $value : (string) substr( $value, $cut + 2 );
+		$head = '' === $head ? '' : preg_replace( '~(?:\s++|/\*(?:[^*]++|\*(?!/))*+\*/)++~', ' ', $head );
+		$tail = preg_replace( '~\s++~', ' ', $tail );
+		return null === $head || null === $tail ? $value : $head . $tail;
+	}
+
+	/**
+	 * Run the signatures over one normalised copy of a value.
+	 *
+	 * @param string                               $text       Normalised text.
+	 * @param array<string, array<string, string>> $categories Signature groups.
+	 * @return array{0: string, 1: string}|null
+	 */
+	private static function scan_variant( string $text, array $categories ): ?array {
+		$large = strlen( $text ) > self::WINDOW;
+		foreach ( self::windows( $text ) as $window ) {
 			// Cheap gate for big values: every signature needs one of these characters or words.
 			if ( $large && 1 !== preg_match( self::GATE, $window['text'] ) ) {
 				continue;
 			}
 
-			$subjects = array( array( $window['context'] . $window['text'], strlen( $window['context'] ) ) );
-			if ( false !== strpos( $window['text'], '%' ) ) {
-				$decoded = rawurldecode( $window['text'] );
-				if ( $decoded !== $window['text'] ) {
-					$subjects[] = array( $window['context'] . $decoded, strlen( $window['context'] ) );
-				}
-			}
-
-			foreach ( $subjects as $subject ) {
-				foreach ( $categories as $category => $signatures ) {
-					foreach ( $signatures as $name => $regex ) {
-						// "$" would match at the end of a window that is not the end of the value.
-						if ( ! $window['last'] && 1 === preg_match( '/\$\/[a-z]*$/', $regex ) ) {
-							continue;
-						}
-						$result = preg_match( $regex, $subject[0], $unused, 0, $subject[1] );
-						if ( 1 === $result ) {
-							return array( $category, $name );
-						}
-						if ( false === $result ) {
-							self::$last_error = array( $name, preg_last_error() );
-							return array( $category, 'pattern error (' . $name . ')' );
-						}
+			$subject = $window['context'] . $window['text'];
+			$offset  = strlen( $window['context'] );
+			foreach ( $categories as $category => $signatures ) {
+				foreach ( $signatures as $name => $regex ) {
+					if ( self::EVENT_HANDLER === $name ) {
+						continue; // Handled below, without a distance bound.
+					}
+					// "$" would match at the end of a window that is not the end of the value.
+					if ( ! $window['last'] && 1 === preg_match( '/\$\/[a-z]*$/', $regex ) ) {
+						continue;
+					}
+					$result = preg_match( $regex, $subject, $unused, 0, $offset );
+					if ( 1 === $result ) {
+						return array( $category, $name );
+					}
+					if ( false === $result ) {
+						self::$last_error = array( $name, preg_last_error() );
+						return array( $category, 'pattern error (' . $name . ')' );
 					}
 				}
 			}
 		}
+
+		foreach ( $categories as $category => $signatures ) {
+			if ( isset( $signatures[ self::EVENT_HANDLER ] ) ) {
+				$hit = self::event_handler_hit( $text, $signatures[ self::EVENT_HANDLER ] );
+				if ( null !== $hit ) {
+					return array( $category, $hit );
+				}
+			}
+		}
 		return null;
+	}
+
+	/**
+	 * Find an event-handler attribute (" onerror=") inside an unclosed tag, whatever the distance from "<tag".
+	 *
+	 * Scans the first 64 KB and, for longer text, the last 8 KB.
+	 *
+	 * @param string $text  Normalised text.
+	 * @param string $regex The handler signature.
+	 * @return string|null The signature name, "pattern error (...)", or null.
+	 */
+	private static function event_handler_hit( string $text, string $regex ): ?string {
+		$length   = strlen( $text );
+		$segments = array( substr( $text, 0, self::MAX_VALUE_LENGTH ) );
+		if ( $length > self::MAX_VALUE_LENGTH ) {
+			$segments[] = substr( $text, -self::WINDOW );
+		}
+		foreach ( $segments as $segment ) {
+			$found = preg_match_all( $regex, $segment, $all, PREG_OFFSET_CAPTURE );
+			if ( false === $found ) {
+				self::$last_error = array( self::EVENT_HANDLER, preg_last_error() );
+				return 'pattern error (' . self::EVENT_HANDLER . ')';
+			}
+			if ( 0 === $found ) {
+				continue;
+			}
+			// Position of the attribute name (one past the leading space, slash or quote).
+			$candidates = array();
+			foreach ( $all[0] as $match ) {
+				$candidates[] = (int) $match[1] + 1;
+			}
+			if ( self::candidate_inside_tag( $segment, $candidates ) ) {
+				return self::EVENT_HANDLER;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Is any of the (sorted) positions inside an open tag, outside a quoted attribute value?
+	 *
+	 * One pass over the text. A tag opens at "<" plus a letter and closes at ">".
+	 * A quote only starts a value straight after "=", as in HTML, so a stray quote
+	 * inside an unquoted value (src=x"onerror=...) does not hide anything, and a
+	 * ">" inside a quoted value does not close the tag.
+	 *
+	 * @param string $text       Text.
+	 * @param int[]  $candidates Ascending positions to test.
+	 */
+	private static function candidate_inside_tag( string $text, array $candidates ): bool {
+		$length = strlen( $text );
+		$count  = count( $candidates );
+		$state  = 'out';
+		$quote  = '';
+		$i      = 0;
+		$ci     = 0;
+		while ( $ci < $count ) {
+			$end  = $length;
+			$next = $length;
+			$m    = array();
+			if ( 'out' === $state ) {
+				if ( 1 === preg_match( '/<[a-z]/i', $text, $m, PREG_OFFSET_CAPTURE, $i ) ) {
+					$end  = (int) $m[0][1];
+					$next = $end + 2;
+				}
+			} elseif ( 'tag' === $state ) {
+				if ( 1 === preg_match( '/>|=\s*(["\'])/', $text, $m, PREG_OFFSET_CAPTURE, $i ) ) {
+					$end  = (int) $m[0][1];
+					$next = $end + strlen( $m[0][0] );
+				}
+			} else {
+				$pos = strpos( $text, $quote, $i );
+				if ( false !== $pos ) {
+					$end  = $pos;
+					$next = $pos + 1;
+				}
+			}
+
+			// Candidates in the stretch [i, end) are in the current state.
+			while ( $ci < $count && $candidates[ $ci ] < $end ) {
+				if ( 'tag' === $state && $candidates[ $ci ] >= $i ) {
+					return true;
+				}
+				++$ci;
+			}
+			if ( $end >= $length ) {
+				break;
+			}
+
+			if ( 'out' === $state ) {
+				$state = 'tag';
+			} elseif ( 'tag' === $state ) {
+				if ( '>' === $m[0][0] ) {
+					$state = 'out';
+				} else {
+					$state = 'quote';
+					$quote = $m[1][0];
+				}
+			} else {
+				$state = 'tag';
+			}
+			$i = $next;
+		}
+		return false;
 	}
 
 	/**
@@ -251,24 +426,14 @@ final class WafRule extends AbstractRule {
 	/**
 	 * One window plus its left-context byte.
 	 *
-	 * If the window starts inside a %XX escape the context is a neutral letter,
-	 * so decoding the window cannot misalign it.
-	 *
 	 * @param string $value Whole value.
 	 * @param int    $start Window start.
 	 * @return array{text: string, context: string, last: bool}
 	 */
 	private static function window_at( string $value, int $start ): array {
-		$context = '';
-		if ( $start > 0 ) {
-			$context = $value[ $start - 1 ];
-			if ( '%' === $context || ( $start > 1 && '%' === $value[ $start - 2 ] ) ) {
-				$context = 'a';
-			}
-		}
 		return array(
 			'text'    => substr( $value, $start, self::WINDOW ),
-			'context' => $context,
+			'context' => $start > 0 ? $value[ $start - 1 ] : '',
 			'last'    => $start + self::WINDOW >= strlen( $value ),
 		);
 	}

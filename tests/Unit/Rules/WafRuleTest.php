@@ -290,4 +290,96 @@ final class WafRuleTest extends TestCase {
 			$this->assertNotNull( WafRule::match_value( $plain . $p, WafRule::SIGNATURES ), $p );
 		}
 	}
+
+	/** @dataProvider padded_attacks */
+	public function test_padding_cannot_push_a_payload_out_of_range( string $payload, string $category ): void {
+		$hit = WafRule::match_value( $payload, WafRule::SIGNATURES );
+		$this->assertNotNull( $hit, substr( $payload, 0, 40 ) );
+		$this->assertSame( $category, $hit[0] );
+		// The same payload preceded by plain text, so it also crosses window boundaries.
+		$this->assertNotNull( WafRule::match_value( str_repeat( 'x ', 4090 ) . $payload . str_repeat( 'y ', 500 ), WafRule::SIGNATURES ) );
+	}
+
+	public static function padded_attacks(): array {
+		return array(
+			'img title 900'      => array( '<img title="' . str_repeat( 'A', 900 ) . '" onerror=alert(1)>', 'xss' ),
+			'img title 20000'    => array( '<img title="' . str_repeat( 'A', 20000 ) . '" onerror=alert(1)>', 'xss' ),
+			'tag, attrs, slash'  => array( '<svg ' . str_repeat( 'a=b ', 500 ) . '/onload=alert(1)>', 'xss' ),
+			'union 250 spaces'   => array( 'x union' . str_repeat( ' ', 250 ) . 'select 1', 'sqli' ),
+			'union 400 comments' => array( 'x union' . str_repeat( '/**/', 400 ) . 'select 1', 'sqli' ),
+			'union 9000 spaces'  => array( 'x union' . str_repeat( ' ', 9000 ) . 'select 1', 'sqli' ),
+			'union mixed'        => array( 'x union' . str_repeat( " /* a */\n\t", 300 ) . 'select 1', 'sqli' ),
+			'union encoded pad'  => array( 'x union' . str_repeat( '%20', 9000 ) . 'select 1', 'sqli' ),
+			'tautology 65'       => array( "x' or" . str_repeat( ' ', 65 ) . '1=1', 'sqli' ),
+			'tautology 5000'     => array( "x' or" . str_repeat( ' ', 5000 ) . '1 = 1', 'sqli' ),
+			'script tag pad'     => array( '<' . str_repeat( ' ', 300 ) . 'script>', 'xss' ),
+			'sleep pad'          => array( 'sleep' . str_repeat( ' ', 300 ) . '(5)', 'sqli' ),
+		);
+	}
+
+	/** @dataProvider harmless_handler_lookalikes */
+	public function test_handler_lookalikes_outside_a_tag_pass( string $value ): void {
+		$this->assertNull( WafRule::match_value( $value, WafRule::SIGNATURES ), $value );
+	}
+
+	public static function harmless_handler_lookalikes(): array {
+		return array(
+			'prose'             => array( 'He said online=yes and once = twice' ),
+			'closed tag first'  => array( '<b>bold</b> then onclick=hello' ),
+			'less-than digit'   => array( 'if 3 < 4 onload=1' ),
+			'tag then close'    => array( '<p class="x"> text onfoo=bar' ),
+			'spaced prose'      => array( str_repeat( 'lorem ipsum ', 2000 ) . ' onerror=fine' ),
+		);
+	}
+
+	public function test_a_quoted_handler_after_an_unclosed_tag_is_found_after_closed_ones(): void {
+		$this->assertSame( 'xss', WafRule::match_value( '<b>x</b> <a href="#" title=\'t\' onmouseover=x()', WafRule::SIGNATURES )[0] );
+	}
+
+	/** @dataProvider mysql_comment_variants */
+	public function test_mysql_comment_variants_do_not_hide_sqli( string $payload ): void {
+		$hit = WafRule::match_value( $payload, WafRule::SIGNATURES );
+		$this->assertNotNull( $hit, $payload );
+		$this->assertSame( 'sqli', $hit[0] );
+	}
+
+	public static function mysql_comment_variants(): array {
+		return array(
+			'split word'            => array( '1 un/*!ion*/ select 1' ),
+			'versioned'             => array( '1 /*!50000union*/ /*!50000select*/ 1' ),
+			'versioned, spaces'     => array( '1 /*!50000 union */ select 1' ),
+			'bang only'             => array( '1 /*!union*/select 1' ),
+			'both bang'             => array( '1 /*!union*//*!select*/ 1' ),
+			'nested bang'           => array( '1 /*!50000 /*!50000 union*/ */ select 1' ),
+			'unterminated bang'     => array( '1 /*!50000union select 1' ),
+			'empty comments'        => array( '1 union/**//**/select 1' ),
+			'comment with newline'  => array( "1 union/* a\nb */select 1" ),
+			'sleep split'           => array( '1 and sl/*!eep*/(5)' ),
+			'information_schema'    => array( 'x /*!information_schema*/.tables' ),
+			'into outfile'          => array( "1' into/*!50000 outfile*/ '/x" ),
+			'tautology comments'    => array( "x' /**/or/**/ 1=1" ),
+			'encoded bang'          => array( '1%20un/*!ion*/%20select%201' ),
+		);
+	}
+
+	public function test_comment_normaliser_is_linear_on_hostile_input(): void {
+		foreach ( array( str_repeat( '/*!', 20000 ), str_repeat( '/*', 30000 ), str_repeat( '/*/', 30000 ), str_repeat( '*/', 30000 ), str_repeat( '/**', 30000 ), '/*!' . str_repeat( '*', 50000 ), str_repeat( '/*!50000 ', 5000 ) . 'x' ) as $hostile ) {
+			$start = microtime( true );
+			WafRule::match_value( $hostile, WafRule::SIGNATURES );
+			$this->assertLessThan( 1.0, microtime( true ) - $start );
+		}
+	}
+
+	public function test_quotes_in_attribute_values_are_tracked(): void {
+		// A ">" inside a quoted value does not close the tag.
+		$this->assertSame( 'xss', WafRule::match_value( '<img alt="a>b" onerror=alert(1)>', WafRule::SIGNATURES )[0] );
+		$this->assertSame( 'xss', WafRule::match_value( "<img alt='a>b' title=\"c>d\" onerror=alert(1)>", WafRule::SIGNATURES )[0] );
+		// A quote in the middle of an unquoted value is literal, so it hides nothing.
+		$this->assertSame( 'xss', WafRule::match_value( '<img src=x"onerror=alert(1)>', WafRule::SIGNATURES )[0] );
+		$this->assertSame( 'xss', WafRule::match_value( '<img src="x"onerror=alert(1)>', WafRule::SIGNATURES )[0] );
+		// Text that only looks like a handler inside a quoted value is inert.
+		$this->assertNull( WafRule::match_value( '<img alt="see onerror=alert(1) here">', WafRule::SIGNATURES ) );
+		// A closed tag, then a quote-laden text, then a lookalike: no tag is open.
+		$this->assertNull( WafRule::match_value( '<p title="a">text "quoted" onclick=fine', WafRule::SIGNATURES ) );
+	}
 }

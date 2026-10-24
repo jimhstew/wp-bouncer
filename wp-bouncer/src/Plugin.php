@@ -22,6 +22,8 @@ use WPBouncer\Geo\HeaderGeoProvider;
 use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Log\BlockLog;
 use WPBouncer\Log\BlockLogInterface;
+use WPBouncer\Log\BudgetedBlockLog;
+use WPBouncer\Log\WriteBudget;
 use WPBouncer\Login\LoginGuard;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
@@ -36,6 +38,7 @@ use WPBouncer\Rules\WafRule;
 use WPBouncer\Rules\XmlRpcRule;
 use WPBouncer\Storage\CounterStoreInterface;
 use WPBouncer\Storage\TransientStore;
+use WPBouncer\Support\Clock;
 use WPBouncer\Support\IpUtils;
 use WPBouncer\Traffic\TrafficLog;
 use WPBouncer\Traffic\TrafficRecorder;
@@ -93,6 +96,18 @@ final class Plugin {
 	 * @var BlockLog|null
 	 */
 	private ?BlockLog $log = null;
+	/**
+	 * Budgeted writer in front of the block log.
+	 *
+	 * @var BudgetedBlockLog|null
+	 */
+	private ?BudgetedBlockLog $log_writer = null;
+	/**
+	 * Log write budget.
+	 *
+	 * @var WriteBudget|null
+	 */
+	private ?WriteBudget $write_budget = null;
 	/**
 	 * Country lookup.
 	 *
@@ -277,6 +292,38 @@ final class Plugin {
 		return $this->log;
 	}
 
+	/**
+	 * Log writer: the block log behind a per-minute write budget.
+	 *
+	 * Use this to record events. log() stays for reads, purging and the admin screens.
+	 */
+	public function log_writer(): BudgetedBlockLog {
+		if ( null === $this->log_writer ) {
+			$this->log_writer = new BudgetedBlockLog( $this->log(), $this->write_budget() );
+		}
+		return $this->log_writer;
+	}
+
+	/** Site-wide log write budget (shared by the firewall and the log writer). */
+	public function write_budget(): WriteBudget {
+		if ( null === $this->write_budget ) {
+			/**
+			 * Filters how many block-log rows may be written per minute, site-wide (at least 10).
+			 *
+			 * @param int $per_minute Default 120.
+			 */
+			$per_minute = max( 10, (int) apply_filters( 'wp_bouncer_log_budget_per_minute', 120 ) );
+			/**
+			 * Filters the separate per-minute allowance for lockout and uploads-block rows (at least 5).
+			 *
+			 * @param int $per_minute Default 30.
+			 */
+			$priority           = max( 5, (int) apply_filters( 'wp_bouncer_log_priority_budget_per_minute', 30 ) );
+			$this->write_budget = new WriteBudget( $this->store(), new Clock(), $per_minute, $priority );
+		}
+		return $this->write_budget;
+	}
+
 	/** Traffic log (every request that reached WordPress). */
 	public function traffic_log(): TrafficLog {
 		if ( null === $this->traffic ) {
@@ -386,7 +433,7 @@ final class Plugin {
 			$this->guard = new LoginGuard(
 				$this->settings->rule( LoginGuard::RULE_ID ),
 				$this->store(),
-				$this->log(),
+				$this->log_writer(),
 				null,
 				static function ( string $name ): ?string {
 					$id   = username_exists( $name );
@@ -556,9 +603,10 @@ final class Plugin {
 			$this->build_rules(),
 			IpUtils::without_broad( (array) $this->settings->get( 'allowlist' ) ),
 			$this->settings->is_monitor_mode(),
-			$this->log(),
+			$this->log_writer(),
 			$this->store(),
-			$this->geo()
+			$this->geo(),
+			$this->write_budget()
 		);
 
 		// Blocking ends the request, so PCRE failures are recorded on shutdown.
@@ -605,7 +653,7 @@ final class Plugin {
 			return;
 		}
 		$request = $this->current_request();
-		$this->log()->record(
+		$this->log_writer()->record(
 			array_merge(
 				$this->log_context(),
 				array(
@@ -621,6 +669,7 @@ final class Plugin {
 	/** Purge old log rows (daily cron). */
 	public function daily_maintenance(): void {
 		update_option( self::LAST_PURGE_OPTION, time(), true );
+		$this->log_writer()->flush_summary();
 		$this->purge_logs();
 	}
 
@@ -721,8 +770,11 @@ final class Plugin {
 		if ( null !== $this->store()->get( $key ) ) {
 			return;
 		}
+		if ( ! $this->write_budget()->peek( LoginGuard::RULE_ID ) ) {
+			return;
+		}
 		$this->store()->set( $key, 1, Firewall::LOG_DEDUPE_SECONDS );
-		$this->log()->record(
+		$this->log_writer()->record(
 			array_merge(
 				$this->log_context(),
 				array(

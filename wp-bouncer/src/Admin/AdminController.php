@@ -1171,6 +1171,8 @@ final class AdminController {
 				return __( 'Lockout', 'wp-bouncer' );
 			case BlockLogInterface::ACTION_ALERT:
 				return __( 'Alert', 'wp-bouncer' );
+			case BlockLogInterface::ACTION_SUPPRESSED:
+				return __( 'Suppressed', 'wp-bouncer' );
 			default:
 				return __( 'Blocked', 'wp-bouncer' );
 		}

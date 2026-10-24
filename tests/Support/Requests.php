@@ -52,6 +52,7 @@ final class Requests {
 				'local'     => (bool) ( $args['local'] ?? false ),
 				'bannable'  => (bool) ( $args['bannable'] ?? true ),
 				'subject'   => (string) ( $args['subject'] ?? '' ),
+				'body_stream' => $args['body_stream'] ?? null,
 				'body'      => static function () use ( $body ) {
 					return $body;
 				},

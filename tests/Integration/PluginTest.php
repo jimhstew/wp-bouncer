@@ -164,6 +164,42 @@ final class PluginTest extends IntegrationTestCase {
 		$this->assertNotSame( $guard, $this->plugin->login_guard() );
 	}
 
+	public function test_the_log_budget_filter_is_floored_at_ten_and_the_priority_budget_at_five(): void {
+		$filter = static fn() => 1;
+		add_filter( 'wp_bouncer_log_budget_per_minute', $filter );
+		add_filter( 'wp_bouncer_log_priority_budget_per_minute', $filter );
+		$plugin = Plugin::instance();
+		$ref    = new \ReflectionProperty( Plugin::class, 'write_budget' );
+		$ref->setValue( $plugin, null );
+		try {
+			$budget = $plugin->write_budget();
+			$this->assertSame( 10, ( new \ReflectionProperty( $budget, 'per_minute' ) )->getValue( $budget ) );
+			$this->assertSame( 5, ( new \ReflectionProperty( $budget, 'priority_per_minute' ) )->getValue( $budget ) );
+		} finally {
+			remove_filter( 'wp_bouncer_log_budget_per_minute', $filter );
+			remove_filter( 'wp_bouncer_log_priority_budget_per_minute', $filter );
+			$ref->setValue( $plugin, null );
+		}
+	}
+
+	public function test_log_writer_stops_writing_once_the_minute_budget_is_spent(): void {
+		$plugin = Plugin::instance();
+		// A fixed clock, far from "now", so a minute boundary cannot split the run.
+		$budget = new \WPBouncer\Log\WriteBudget( $plugin->store(), new \WPBouncer\Tests\Support\FrozenClock( 1800000000 ), 10 );
+		( new \ReflectionProperty( Plugin::class, 'write_budget' ) )->setValue( $plugin, $budget );
+		( new \ReflectionProperty( Plugin::class, 'log_writer' ) )->setValue( $plugin, null );
+		try {
+			$written = 0;
+			for ( $i = 0; $i < 15; $i++ ) {
+				$written += $plugin->log_writer()->record( array( 'ip' => '203.0.113.' . ( $i + 1 ), 'rule' => 'test', 'action' => 'blocked', 'reason' => 'x' ) ) > 0 ? 1 : 0;
+			}
+			$this->assertSame( 10, $written );
+		} finally {
+			( new \ReflectionProperty( Plugin::class, 'write_budget' ) )->setValue( $plugin, null );
+			( new \ReflectionProperty( Plugin::class, 'log_writer' ) )->setValue( $plugin, null );
+		}
+	}
+
 	public function test_geo_uses_the_database_only_once_rows_are_loaded(): void {
 		$this->assertNull( $this->plugin->geo()->lookup( '1.0.0.9' ) );
 

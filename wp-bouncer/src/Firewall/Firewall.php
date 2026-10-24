@@ -9,6 +9,7 @@ namespace WPBouncer\Firewall;
 
 use WPBouncer\Geo\GeoProviderInterface;
 use WPBouncer\Log\BlockLogInterface;
+use WPBouncer\Log\WriteBudget;
 use WPBouncer\Rules\RuleInterface;
 use WPBouncer\Storage\CounterStoreInterface;
 use WPBouncer\Support\IpUtils;
@@ -69,6 +70,12 @@ final class Firewall {
 	 * @var GeoProviderInterface|null
 	 */
 	private ?GeoProviderInterface $geo;
+	/**
+	 * Log write budget.
+	 *
+	 * @var WriteBudget|null
+	 */
+	private ?WriteBudget $budget;
 
 	/**
 	 * Set up the Firewall.
@@ -79,14 +86,16 @@ final class Firewall {
 	 * @param BlockLogInterface         $log       Block log.
 	 * @param CounterStoreInterface     $store     Used for log de-duplication.
 	 * @param GeoProviderInterface|null $geo       Adds the country to log entries.
+	 * @param WriteBudget|null          $budget    Per-minute log write budget.
 	 */
-	public function __construct( array $rules, array $allowlist, bool $monitor, BlockLogInterface $log, CounterStoreInterface $store, ?GeoProviderInterface $geo = null ) {
+	public function __construct( array $rules, array $allowlist, bool $monitor, BlockLogInterface $log, CounterStoreInterface $store, ?GeoProviderInterface $geo = null, ?WriteBudget $budget = null ) {
 		$this->rules     = $rules;
 		$this->allowlist = $allowlist;
 		$this->monitor   = $monitor;
 		$this->log       = $log;
 		$this->store     = $store;
 		$this->geo       = $geo;
+		$this->budget    = $budget;
 	}
 
 	/**
@@ -161,6 +170,19 @@ final class Firewall {
 		if ( null !== $this->store->get( $key ) ) {
 			return 0;
 		}
+		// Over budget: no row and no de-dup key, so a flood of distinct IPs writes nothing.
+		$action = $this->monitor ? BlockLogInterface::ACTION_MONITORED : BlockLogInterface::ACTION_BLOCKED;
+		if ( $this->budget && ! $this->budget->peek(
+			$verdict->rule(),
+			WriteBudget::is_priority(
+				array(
+					'rule'   => $verdict->rule(),
+					'action' => $action,
+				)
+			)
+		) ) {
+			return 0;
+		}
 		$this->store->set( $key, 1, self::LOG_DEDUPE_SECONDS );
 
 		return $this->log->record(
@@ -168,7 +190,7 @@ final class Firewall {
 				'ip'         => $request->ip(),
 				'country'    => $this->geo ? (string) $this->geo->lookup( $request->ip() ) : '',
 				'rule'       => $verdict->rule(),
-				'action'     => $this->monitor ? BlockLogInterface::ACTION_MONITORED : BlockLogInterface::ACTION_BLOCKED,
+				'action'     => $action,
 				'reason'     => $verdict->reason(),
 				'method'     => $request->method(),
 				'uri'        => $request->uri(),

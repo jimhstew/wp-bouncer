@@ -163,7 +163,7 @@ final class UploadsGuard {
 			self::remove_block();
 			self::save_state( $this->wanted_state(), false, true );
 			$request = $this->plugin->current_request();
-			$this->plugin->log()->record(
+			$this->plugin->log_writer()->record(
 				array(
 					'ip'     => '',
 					'rule'   => self::ID,
@@ -285,7 +285,7 @@ final class UploadsGuard {
 		}
 		$name   = (string) ( $file['name'] ?? '' );
 		$reason = UploadsPolicy::dangerous_name( $name );
-		if ( null === $reason && ! empty( $file['tmp_name'] ) && UploadsPolicy::contains_php( (string) $file['tmp_name'] ) ) {
+		if ( null === $reason && ! empty( $file['tmp_name'] ) && UploadsPolicy::contains_php( (string) $file['tmp_name'], 52428800, $name ) ) {
 			$reason = 'contains PHP code';
 		}
 		if ( null === $reason ) {
@@ -293,7 +293,7 @@ final class UploadsGuard {
 		}
 
 		$request = $this->plugin->current_request();
-		$this->plugin->log()->record(
+		$this->plugin->log_writer()->record(
 			array(
 				'ip'         => $request->ip(),
 				'country'    => (string) $this->plugin->geo()->lookup( $request->ip() ),

@@ -11,6 +11,7 @@ use WPBouncer\Admin\LogListTable;
 
 defined( 'ABSPATH' ) || exit;
 
+$plugin->log_writer()->flush_summary(); // A quiet site still records an earlier flood.
 $table = new LogListTable( $plugin->log() );
 $table->prepare_items();
 ?>

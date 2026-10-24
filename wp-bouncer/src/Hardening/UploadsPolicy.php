@@ -85,18 +85,111 @@ final class UploadsPolicy {
 	}
 
 	/**
-	 * Does the text hold "<?php", or a "<?=" that is followed by PHP-looking code?
+	 * Does the text hold "<?php", or a "<?=" that opens PHP code?
 	 *
-	 * A bare "<?=" occurs by chance in compressed data (photos, video), so it
-	 * only counts when a variable, a quote or a function call follows.
+	 * A bare "<?=" occurs by chance in compressed data (photos, video), so
+	 * what counts depends on the kind of file:
 	 *
-	 * @param string $data Bytes to check.
+	 * - Binary media and archives ($binary true): the "<?=" must be followed,
+	 *   within 256 bytes, by a run of printable ASCII (random bytes almost never
+	 *   make one) that holds a terminator ("?>" or ";") and a PHP-looking token
+	 *   ("$", "(" or a backtick). Expected false positives in random data: about
+	 *   one "<?=" per 16 MB, and about 1 in 10,000 of those passes the run test,
+	 *   so a 50 MB video has roughly a 3-in-10,000 chance of a false match.
+	 * - Everything else: "<?=" followed by optional whitespace and anything but ">".
+	 *
+	 * @param string $data   Bytes to check.
+	 * @param bool   $binary True for a media or archive file whose extension and signature agree (see is_binary_media()).
 	 */
-	public static function has_php_tag( string $data ): bool {
+	public static function has_php_tag( string $data, bool $binary = false ): bool {
 		if ( false !== stripos( $data, '<?php' ) ) {
 			return true;
 		}
-		return false !== strpos( $data, '<?=' ) && 1 === preg_match( '/<\?=\s{0,64}(\$|[a-z_\\\\]{1,64}\s{0,64}\(|[\'"])/i', $data );
+		$pos = strpos( $data, '<?=' );
+		if ( false === $pos ) {
+			return false;
+		}
+		if ( ! $binary ) {
+			return 1 === preg_match( '/<\?=\s*[^>\s]/', $data );
+		}
+		while ( false !== $pos ) {
+			$after = substr( $data, $pos + 3, 256 );
+			if ( 1 === preg_match( '/^[\x09\x0a\x0d\x20-\x7e]+/', $after, $m ) && 1 === preg_match( '/;|\?>/', $m[0] ) && 1 === preg_match( '/[$(`]/', $m[0] ) ) {
+				return true;
+			}
+			$pos = strpos( $data, '<?=', $pos + 3 );
+		}
+		return false;
+	}
+
+	/**
+	 * Extensions of media and archive files whose content is compressed or binary, with the
+	 * signatures their first bytes must start with. "ftyp" means that word at offset 4.
+	 */
+	private const MEDIA_SIGNATURES = array(
+		'jpg'  => array( "\xff\xd8\xff" ),
+		'jpeg' => array( "\xff\xd8\xff" ),
+		'jpe'  => array( "\xff\xd8\xff" ),
+		'png'  => array( "\x89PNG" ),
+		'gif'  => array( 'GIF8' ),
+		'bmp'  => array( 'BM' ),
+		'tif'  => array( "II*\x00", "MM\x00*" ),
+		'tiff' => array( "II*\x00", "MM\x00*" ),
+		'webp' => array( 'RIFF' ),
+		'avi'  => array( 'RIFF' ),
+		'wav'  => array( 'RIFF' ),
+		'mp4'  => array( 'ftyp' ),
+		'm4v'  => array( 'ftyp' ),
+		'm4a'  => array( 'ftyp' ),
+		'mov'  => array( 'ftyp' ),
+		'3gp'  => array( 'ftyp' ),
+		'heic' => array( 'ftyp' ),
+		'heif' => array( 'ftyp' ),
+		'avif' => array( 'ftyp' ),
+		'mp3'  => array( 'ID3', "\xff\xfb", "\xff\xf3", "\xff\xf2" ),
+		'ogg'  => array( 'OggS' ),
+		'oga'  => array( 'OggS' ),
+		'ogv'  => array( 'OggS' ),
+		'webm' => array( "\x1a\x45\xdf\xa3" ),
+		'mkv'  => array( "\x1a\x45\xdf\xa3" ),
+		'flac' => array( 'fLaC' ),
+		'zip'  => array( "PK\x03\x04", "PK\x05\x06" ),
+		'docx' => array( "PK\x03\x04" ),
+		'xlsx' => array( "PK\x03\x04" ),
+		'pptx' => array( "PK\x03\x04" ),
+		'odt'  => array( "PK\x03\x04" ),
+		'gz'   => array( "\x1f\x8b" ),
+		'rar'  => array( 'Rar!' ),
+		'7z'   => array( "7z\xbc\xaf" ),
+		'pdf'  => array( '%PDF' ),
+	);
+
+	/**
+	 * May this file be scanned with the relaxed "<?=" rule used for compressed media?
+	 *
+	 * Magic bytes are chosen by the sender, so they are not enough. The file name must
+	 * have no extension a server could run (see dangerous_name()), its last extension
+	 * must be a known media or archive type, and the first bytes must be that type's
+	 * signature. Anything else, including an unknown extension or no name, is scanned strictly.
+	 *
+	 * @param string $head     First bytes of the file (at least 12 are used).
+	 * @param string $filename Name the file will be stored under.
+	 */
+	public static function is_binary_media( string $head, string $filename ): bool {
+		if ( '' === $filename || null !== self::dangerous_name( $filename ) ) {
+			return false;
+		}
+		$ext = strtolower( (string) pathinfo( str_replace( '\\', '/', $filename ), PATHINFO_EXTENSION ) );
+		if ( ! isset( self::MEDIA_SIGNATURES[ $ext ] ) ) {
+			return false;
+		}
+		foreach ( self::MEDIA_SIGNATURES[ $ext ] as $magic ) {
+			$at = 'ftyp' === $magic ? 4 : 0;
+			if ( substr( $head, $at, strlen( $magic ) ) === $magic ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -107,27 +200,32 @@ final class UploadsPolicy {
 	 *
 	 * @param string $path      File to check.
 	 * @param int    $max_bytes How much to read.
+	 * @param string $filename  Name the file will be stored under; decides how strict the "<?=" rule is (see is_binary_media()).
 	 */
-	public static function contains_php( string $path, int $max_bytes = 52428800 ): bool {
+	public static function contains_php( string $path, int $max_bytes = 52428800, string $filename = '' ): bool {
 		$handle = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions -- a failed open is handled by the false check below; plugin-owned local file, WP_Filesystem cannot stream.
 		if ( false === $handle ) {
 			return false;
 		}
-		$tail  = '';
-		$read  = 0;
-		$found = false;
+		$tail   = '';
+		$read   = 0;
+		$found  = false;
+		$binary = false;
 		while ( ! feof( $handle ) && $read < $max_bytes ) {
 			$chunk = fread( $handle, max( 1, min( 1048576, $max_bytes - $read ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- reads only the first bytes of a local file with a size cap; WP_Filesystem has no partial read.
 			if ( false === $chunk || '' === $chunk ) {
 				break;
 			}
+			if ( 0 === $read ) {
+				$binary = self::is_binary_media( $chunk, $filename );
+			}
 			$read += strlen( $chunk );
 			$scan  = $tail . $chunk;
-			if ( self::has_php_tag( $scan ) ) {
+			if ( self::has_php_tag( $scan, $binary ) ) {
 				$found = true;
 				break;
 			}
-			$tail = substr( $chunk, -256 ); // Longer than any tag plus the context checked after "<?=".
+			$tail = substr( $chunk, -300 ); // Longer than a tag plus the 256 bytes of context checked after "<?=".
 		}
 		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- reads only the first bytes of a local file with a size cap; WP_Filesystem has no partial read.
 		return $found;

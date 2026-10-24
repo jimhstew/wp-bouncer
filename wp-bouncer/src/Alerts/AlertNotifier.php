@@ -437,7 +437,7 @@ final class AlertNotifier {
 	private function log( array $event, array $context ): void {
 		$request = $this->plugin->current_request();
 		$detail  = $event['log_detail'] ?? $event['detail'];
-		$this->plugin->log()->record(
+		$this->plugin->log_writer()->record(
 			array(
 				'ip'         => $context['ip'],
 				'country'    => $context['country'],

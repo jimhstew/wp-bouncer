@@ -75,6 +75,8 @@ final class XmlRpcRuleTest extends TestCase {
 			'char reference'   => array( $head . '<methodName>system&#46;multicall</methodName></methodCall>' ),
 			'attributes'       => array( $head . '<methodName x="1" >system.multicall</methodName></methodCall>' ),
 			'self-closing mix' => array( $head . '<methodName/><methodName>system.multicall</methodName></methodCall>' ),
+			'nested methodName' => array( $head . '<methodName><methodName>x</methodName>system.multicall</methodName></methodCall>' ),
+			'text after child' => array( $head . '<methodName>wp.getPosts<a>x</a>system.multicall</methodName></methodCall>' ),
 			'second methodName' => array( $head . '<methodName>wp.getPosts</methodName><params><param><value><struct><member><methodName>system.multicall</methodName></member></struct></value></param></params></methodCall>' ),
 			'leading newline'  => array( "\n  <?xml version=\"1.0\"?>\n<methodCall><methodName>system.multicall</methodName></methodCall>" ),
 			'tag inside name resets text' => array( $head . '<methodName>foo<x/>system.multicall</methodName></methodCall>' ),
@@ -130,5 +132,68 @@ final class XmlRpcRuleTest extends TestCase {
 	public function test_method_names_lists_every_method(): void {
 		$this->assertSame( array( 'a', 'b' ), XmlRpcRule::method_names( '<methodCall><methodName>a</methodName><x><methodName>b</methodName></x></methodCall>' ) );
 		$this->assertNull( XmlRpcRule::method_names( 'not xml' ) );
+	}
+
+	public function test_a_large_upload_is_parsed_in_chunks_with_flat_memory(): void {
+		$path = tempnam( sys_get_temp_dir(), 'wpbx' );
+		$fh   = fopen( $path, 'wb' );
+		fwrite( $fh, '<?xml version="1.0"?><methodCall><methodName>metaWeblog.newMediaObject</methodName><params><param><value><base64>' );
+		$block = str_repeat( 'QUJDREVGR0g=', 8192 ); // 96 KB of base64 text.
+		for ( $i = 0; $i < 320; $i++ ) {
+			fwrite( $fh, $block ); // About 30 MB, well past the 1 MB cap on Request::body().
+		}
+		fwrite( $fh, '</base64></value></param></params></methodCall>' );
+		fclose( $fh );
+
+		$stream = fopen( $path, 'rb' );
+		memory_reset_peak_usage();
+		$before = memory_get_usage();
+		$names  = XmlRpcRule::method_names_from_stream( $stream );
+		$growth = memory_get_peak_usage() - $before;
+		fclose( $stream );
+
+		$request = Requests::make(
+			array(
+				'uri'         => '/xmlrpc.php',
+				'method'      => 'POST',
+				'body_stream' => static function () use ( $path ) {
+					return fopen( $path, 'rb' );
+				},
+			)
+		);
+		$verdict = $this->rule( 'block_abuse' )->inspect( $request );
+		unlink( $path );
+
+		$this->assertSame( array( 'metaWeblog.newMediaObject' ), $names );
+		$this->assertNull( $verdict, 'a large legitimate upload is not refused' );
+		$this->assertLessThan( 8 * 1048576, $growth, 'memory stays flat while parsing 30 MB' );
+	}
+
+	public function test_a_multicall_after_a_large_prefix_is_still_found_and_a_split_doctype_is_refused(): void {
+		$pad = str_repeat( ' ', 70000 );
+		$this->assertSame( array( 'system.multicall' ), XmlRpcRule::method_names( '<methodCall>' . $pad . '<methodName>system.multicall</methodName></methodCall>' ) );
+		// The DOCTYPE keyword straddles a 64 KB read boundary.
+		$body = '<methodCall><a>' . str_repeat( 'x', 65536 - 20 ) . '<!DOC' . 'TYPE x></a><methodName>a</methodName></methodCall>';
+		$this->assertNull( XmlRpcRule::method_names( $body ) );
+	}
+
+	public function test_element_limit_matches_ixr(): void {
+		$many = static function ( int $n ): string {
+			return '<methodCall><methodName>wp.getPosts</methodName><params>' . str_repeat( '<a/>', $n ) . '</params></methodCall>';
+		};
+		$this->assertSame( array( 'wp.getPosts' ), XmlRpcRule::method_names( $many( 29990 ) ) );
+		$this->assertNull( XmlRpcRule::method_names( $many( 30001 ) ) );
+		$this->assertNotNull( $this->rule( 'block_abuse' )->inspect( Requests::make( array( 'uri' => '/xmlrpc.php', 'method' => 'POST', 'body' => $many( 30001 ) ) ) ) );
+	}
+
+	/**
+	 * Known limitation: ext/xml never reports a DOCTYPE to a handler, so a DOCTYPE
+	 * or ENTITY declaration is refused wherever it appears, even inside CDATA.
+	 */
+	public function test_doctype_text_inside_cdata_is_refused_too(): void {
+		$body = '<methodCall><methodName>wp.newPost</methodName><params><![CDATA[<!DOCTYPE html><p>hi</p>]]></params></methodCall>';
+		$this->assertNull( XmlRpcRule::method_names( $body ) );
+		// Escaped markup is ordinary text and is fine.
+		$this->assertSame( array( 'wp.newPost' ), XmlRpcRule::method_names( '<methodCall><methodName>wp.newPost</methodName><params>&lt;!DOCTYPE html&gt;</params></methodCall>' ) );
 	}
 }
