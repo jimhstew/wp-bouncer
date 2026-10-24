@@ -110,4 +110,37 @@ final class AlertFormatterTest extends TestCase {
 		$this->assertSame( 'New administrator account created', $out[0]['title'], 'first one wins' );
 		$this->assertArrayNotHasKey( 'key', $out[0] );
 	}
+
+	public function test_firewall_event_lists_the_changed_keys_and_who_did_it(): void {
+		$mail = AlertFormatter::format(
+			array( array( 'type' => 'firewall', 'title' => 'Firewall settings changed', 'detail' => 'Risky: allowlist, mode' ) ),
+			$this->context()
+		);
+
+		$this->assertStringContainsString( 'Firewall settings changed', $mail['subject'] );
+		$this->assertStringContainsString( 'Risky: allowlist, mode', $mail['body'] );
+		$this->assertStringContainsString( 'Done by:    alice (user ID 1)', $mail['body'] );
+	}
+
+	public function test_several_events_with_a_firewall_change_say_so_in_the_subject(): void {
+		$mail = AlertFormatter::format(
+			array(
+				array( 'type' => 'plugin', 'title' => 'Plugin activated: X', 'detail' => '' ),
+				array( 'type' => 'firewall', 'title' => 'Firewall settings changed', 'detail' => 'Risky: mode' ),
+			),
+			$this->context()
+		);
+
+		$this->assertStringContainsString( '2 security events including firewall changes', $mail['subject'] );
+	}
+
+	public function test_dedupe_keeps_the_critical_logged_and_recipient_fields(): void {
+		$out = AlertFormatter::dedupe(
+			array( array( 'type' => 'firewall', 'title' => 'T', 'detail' => 'D', 'critical' => true, 'logged' => true, 'recipients' => array( 'a@example.org' ) ) )
+		);
+
+		$this->assertTrue( $out[0]['critical'] );
+		$this->assertTrue( $out[0]['logged'] );
+		$this->assertSame( array( 'a@example.org' ), $out[0]['recipients'] );
+	}
 }

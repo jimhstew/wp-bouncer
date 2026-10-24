@@ -291,6 +291,7 @@ final class Plugin {
 			}
 		);
 		add_action( 'admin_init', array( $this, 'maybe_purge' ) );
+		add_action( 'admin_init', array( $this->alerts(), 'on_admin_init' ) );
 
 		// The emergency switch turns off everything that can refuse a visitor,
 		// including login lockouts, but keeps the admin screens so the settings
@@ -806,6 +807,7 @@ final class Plugin {
 	public function daily_maintenance(): void {
 		update_option( self::LAST_PURGE_OPTION, time(), true );
 		$this->log_writer()->flush_summary();
+		$this->alerts()->maybe_remind_disabled();
 		$this->purge_logs();
 		// Safety net: an interrupted upgrade must not leave the data migration unscheduled.
 		RedactionMigration::schedule();

@@ -19,6 +19,7 @@ defined( 'ABSPATH' ) || exit;
  * - new_admin (bool): an account becomes an administrator (created or promoted).
  * - plugin_changes (bool): a plugin is installed, activated, deactivated or deleted.
  * - plugin_updates (bool): a plugin is updated (off by default: updates are routine).
+ * - firewall_changes (bool): risky settings changes, and the WP_BOUNCER_DISABLE reminder (on by default).
  *
  * Events are collected during the request and sent as one email at the end
  * of it, so installing and activating a plugin is one email, not two. At most
@@ -32,10 +33,11 @@ final class AlertNotifier {
 
 	public const LOG_RULE = 'alerts';
 
-	private const MAX_PER_HOUR          = 20;
-	private const THROTTLE_KEY          = 'wpb_alert_count';
-	private const MAX_CRITICAL_PER_HOUR = 20;
-	private const THROTTLE_KEY_CRITICAL = 'wpb_alert_count_critical';
+	private const MAX_PER_HOUR            = 20;
+	private const THROTTLE_KEY            = 'wpb_alert_count';
+	private const MAX_CRITICAL_PER_HOUR   = 20;
+	private const THROTTLE_KEY_CRITICAL   = 'wpb_alert_count_critical';
+	public const DISABLED_REMINDER_OPTION = 'wpb_disabled_alerted';
 
 	/**
 	 * Plugin instance.
@@ -43,6 +45,13 @@ final class AlertNotifier {
 	 * @var Plugin
 	 */
 	private Plugin $plugin;
+
+	/**
+	 * Tells whether WP_BOUNCER_DISABLE is on (replaceable in tests).
+	 *
+	 * @var \Closure
+	 */
+	private \Closure $is_disabled;
 
 	/**
 	 * Alerts waiting to be sent at shutdown.
@@ -61,10 +70,12 @@ final class AlertNotifier {
 	/**
 	 * Set up the AlertNotifier.
 	 *
-	 * @param Plugin $plugin Plugin.
+	 * @param Plugin        $plugin      Plugin.
+	 * @param callable|null $is_disabled Returns true while the emergency switch is on; defaults to Plugin::is_disabled().
 	 */
-	public function __construct( Plugin $plugin ) {
-		$this->plugin = $plugin;
+	public function __construct( Plugin $plugin, ?callable $is_disabled = null ) {
+		$this->plugin      = $plugin;
+		$this->is_disabled = null === $is_disabled ? Plugin::is_disabled( ... ) : \Closure::fromCallable( $is_disabled );
 	}
 
 	/** Hook into WordPress. */
@@ -93,7 +104,7 @@ final class AlertNotifier {
 	/**
 	 * Is this kind of alert switched on?
 	 *
-	 * @param string $kind new_admin|plugin_changes|plugin_updates.
+	 * @param string $kind new_admin|plugin_changes|plugin_updates|firewall_changes.
 	 */
 	private function wants( string $kind ): bool {
 		$s = $this->settings();
@@ -315,6 +326,138 @@ final class AlertNotifier {
 
 	/*
 	 * ------------------------------------------------------------------
+	 * Firewall configuration
+	 * ----------------------------------------------------------------
+	 */
+
+	/**
+	 * Queue an alert for risky settings changes (critical: its own email budget).
+	 *
+	 * Call this BEFORE the new settings are loaded: whether to alert, and who
+	 * gets it, come from the settings in force until now. Otherwise one save
+	 * that switches alerts off, or points them at another address, would
+	 * silence or redirect its own alert. When the recipients changed, both the
+	 * old and the new addresses are mailed.
+	 *
+	 * The caller has already written the audit row to the Activity Log, so the
+	 * event is marked as logged. Only key paths are named, never values.
+	 *
+	 * @param string[]             $risky        The risky changed key paths (see SettingsDiff::risky()).
+	 * @param string[]             $all          Every changed key path.
+	 * @param array<string, mixed> $new_settings The settings being saved.
+	 */
+	public function on_risky_settings_change( array $risky, array $all, array $new_settings = array() ): void {
+		if ( empty( $risky ) || ! $this->wants( 'firewall_changes' ) ) {
+			return;
+		}
+		$detail = 'Risky: ' . implode( ', ', $risky );
+		$other  = array_values( array_diff( $all, $risky ) );
+		if ( ! empty( $other ) ) {
+			$detail .= '. Also changed: ' . implode( ', ', $other );
+		}
+		$new_alerts = isset( $new_settings['alerts'] ) && is_array( $new_settings['alerts'] ) ? $new_settings['alerts'] : array();
+		$this->queue( 'firewall', 'Firewall settings changed', $detail, '', '', true, true, $this->firewall_recipients( $new_alerts ) );
+	}
+
+	/**
+	 * The Activity Log was emptied: tell the owner (critical). The caller writes the audit row.
+	 */
+	public function on_log_cleared(): void {
+		if ( $this->wants( 'firewall_changes' ) ) {
+			$this->queue( 'firewall', 'Activity Log cleared', 'The whole Activity Log was deleted.', 'log_cleared', '', true, true, $this->firewall_recipients() );
+		}
+	}
+
+	/**
+	 * Who gets firewall alerts: the current recipients, the recipients being
+	 * saved, and on multisite the network admin.
+	 *
+	 * @param array<string, mixed> $new_alerts The alerts settings being saved (empty when none).
+	 * @return string[]
+	 */
+	private function firewall_recipients( array $new_alerts = array() ): array {
+		$list = $this->recipients();
+		if ( array_key_exists( 'recipients', $new_alerts ) ) {
+			$incoming = array_values( (array) $new_alerts['recipients'] );
+			$list     = array_merge( $list, ! empty( $incoming ) ? $incoming : array( (string) get_option( 'admin_email' ) ) );
+		}
+		if ( is_multisite() ) {
+			$list[] = (string) get_site_option( 'admin_email' );
+		}
+		$out = array();
+		foreach ( $list as $address ) {
+			$address = trim( (string) $address );
+			if ( '' !== $address ) {
+				$out[ strtolower( $address ) ] = $address;
+			}
+		}
+		return array_values( $out );
+	}
+
+	/** Admin request: remind only a signed-in user who manages the plugin. */
+	public function on_admin_init(): void {
+		if ( current_user_can( 'manage_options' ) ) {
+			$this->maybe_remind_disabled();
+		}
+	}
+
+	/**
+	 * While WP_BOUNCER_DISABLE is defined, remind the owner at most once every 24 hours.
+	 *
+	 * Runs from the daily cron job and (for signed-in managers) from admin
+	 * requests, never from the firewall path. The 24 hour slot is claimed
+	 * atomically in the options table, so concurrent requests send one mail.
+	 */
+	public function maybe_remind_disabled(): void {
+		if ( ! ( $this->is_disabled )() || ! $this->wants( 'firewall_changes' ) || ! $this->claim_reminder_slot() ) {
+			return;
+		}
+		$this->queue( 'firewall', 'WP Bouncer is switched off (WP_BOUNCER_DISABLE)', 'Nothing is being blocked while this constant is set in wp-config.php. This reminder is sent once a day.', 'disabled', '', true, false, $this->firewall_recipients() );
+	}
+
+	/**
+	 * Claim the once-a-day slot.
+	 *
+	 * Adding the option fails if the row exists (unique option name). An old row is
+	 * replaced with a compare-and-swap UPDATE on its previous value, so only
+	 * one of several racing requests changes a row. Plain SQL that MySQL,
+	 * MariaDB and SQLite all run.
+	 *
+	 * @return bool True if this request owns the slot.
+	 */
+	private function claim_reminder_slot(): bool {
+		global $wpdb;
+		$now = (string) time();
+		// Two tries: the second covers a row that vanished (or was never visible) between the steps.
+		for ( $try = 0; $try < 2; $try++ ) {
+			// INSERT IGNORE, not add_option(): core's upsert would let two racing first claims both win.
+			$inserted = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::DISABLED_REMINDER_OPTION, $now ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- atomic claim, see above.
+			if ( 1 === $inserted ) {
+				$this->forget_reminder_cache();
+				return true;
+			}
+			$last = $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, self::DISABLED_REMINDER_OPTION ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- read around the object cache on purpose: the claim must see the latest value.
+			if ( null === $last ) {
+				continue;
+			}
+			if ( (int) $now - (int) $last < DAY_IN_SECONDS ) {
+				return false;
+			}
+			$won = $wpdb->query( $wpdb->prepare( 'UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s', $wpdb->options, $now, self::DISABLED_REMINDER_OPTION, (string) $last ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- compare-and-swap, see above.
+			$this->forget_reminder_cache();
+			return 1 === $won;
+		}
+		return false;
+	}
+
+	/** Drop cached copies of the reminder option so get_option() stays coherent after a direct write. */
+	private function forget_reminder_cache(): void {
+		wp_cache_delete( self::DISABLED_REMINDER_OPTION, 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+	}
+
+	/*
+	 * ------------------------------------------------------------------
 	 * Queue, send, log
 	 * ----------------------------------------------------------------
 	 */
@@ -322,14 +465,16 @@ final class AlertNotifier {
 	/**
 	 * Queue.
 	 *
-	 * @param string $type   admin|plugin.
-	 * @param string $title  What happened.
-	 * @param string $detail More detail.
-	 * @param string $key    De-duplication key.
-	 * @param string $log_detail Detail for the stored log row, when it must differ from the email.
-	 * @param bool   $critical   Uses the separate email budget (new administrators, WP Bouncer switched off).
+	 * @param string   $type   admin|plugin.
+	 * @param string   $title  What happened.
+	 * @param string   $detail More detail.
+	 * @param string   $key    De-duplication key.
+	 * @param string   $log_detail Detail for the stored log row, when it must differ from the email.
+	 * @param bool     $critical   Uses the separate email budget (new administrators, WP Bouncer switched off).
+	 * @param bool     $logged     The caller has already written the Activity Log row.
+	 * @param string[] $recipients Addresses to add to the usual recipients.
 	 */
-	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '', bool $critical = false ): void {
+	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '', bool $critical = false, bool $logged = false, array $recipients = array() ): void {
 		$event = array(
 			'type'   => $type,
 			'title'  => $title,
@@ -337,6 +482,12 @@ final class AlertNotifier {
 		);
 		if ( $critical || 'admin' === $type ) {
 			$event['critical'] = true;
+		}
+		if ( $logged ) {
+			$event['logged'] = true;
+		}
+		if ( ! empty( $recipients ) ) {
+			$event['recipients'] = $recipients;
 		}
 		if ( '' !== $key ) {
 			$event['key'] = $key;
@@ -354,7 +505,7 @@ final class AlertNotifier {
 	/**
 	 * Is this event one of the few that get their own email budget?
 	 *
-	 * @param array{type: string, title: string, detail: string, log_detail?: string, critical?: bool} $event Event.
+	 * @param array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[]} $event Event.
 	 */
 	private static function is_critical( array $event ): bool {
 		return ! empty( $event['critical'] );
@@ -369,7 +520,9 @@ final class AlertNotifier {
 		}
 		$context = $this->context();
 		foreach ( $events as $event ) {
-			$this->log( $event, $context );
+			if ( empty( $event['logged'] ) ) {
+				$this->log( $event, $context );
+			}
 		}
 
 		// Cheap plugin events can't use up the email budget of the alerts that matter most:
@@ -400,7 +553,11 @@ final class AlertNotifier {
 		$events = $send;
 
 		$mail = AlertFormatter::format( $events, $context );
-		wp_mail( $this->recipients(), $mail['subject'], $mail['body'] );
+		$to   = $this->recipients();
+		foreach ( $events as $event ) {
+			$to = array_merge( $to, $event['recipients'] ?? array() );
+		}
+		wp_mail( array_values( array_unique( $to ) ), $mail['subject'], $mail['body'] );
 	}
 
 	/**

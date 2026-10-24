@@ -49,6 +49,7 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		}
 		delete_option( 'wp_bouncer_geo_import' );
 		delete_option( 'wp_bouncer_last_purge' );
+		delete_option( 'wpb_disabled_alerted' );
 		delete_option( 'wp_bouncer_migration_3' );
 		delete_option( 'wp_bouncer_migration_3_lock' );
 		delete_option( 'wp_bouncer_counter_failed' );

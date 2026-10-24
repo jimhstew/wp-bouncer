@@ -665,7 +665,9 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 		$r = $this->call( 'handle_clear_log' );
 
-		$this->assertCount( 0, $this->log_rows() );
+		$rows = $this->log_rows();
+		$this->assertCount( 1, $rows, 'only the audit row of the clearing itself is left' );
+		$this->assertSame( 'settings', $rows[0]['rule'] );
 		$this->assertSame( 'Activity log cleared.', $r->message() );
 		$this->assertStringContainsString( 'tab=log', $r->location );
 	}

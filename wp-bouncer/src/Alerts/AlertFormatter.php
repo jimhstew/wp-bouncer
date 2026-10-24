@@ -13,7 +13,8 @@ defined( 'ABSPATH' ) || exit;
  * Pure PHP: no WordPress calls, so the wording is unit-tested.
  *
  * An event is array{type: string, title: string, detail: string}. type is
- * 'admin' (a new or promoted administrator) or 'plugin' (a plugin change).
+ * 'admin' (a new or promoted administrator), 'plugin' (a plugin change) or
+ * 'firewall' (a change to the firewall's own settings, or the emergency switch).
  */
 final class AlertFormatter {
 
@@ -33,7 +34,7 @@ final class AlertFormatter {
 		if ( 1 === count( $events ) ) {
 			$subject = sprintf( '[%s] WP Bouncer alert: %s', $site, self::clean( $events[0]['title'] ) );
 		} else {
-			$admins  = count(
+			$admins   = count(
 				array_filter(
 					$events,
 					static function ( $e ) {
@@ -41,11 +42,25 @@ final class AlertFormatter {
 					}
 				)
 			);
+			$firewall = count(
+				array_filter(
+					$events,
+					static function ( $e ) {
+						return 'firewall' === $e['type'];
+					}
+				)
+			);
+			$extra    = '';
+			if ( $admins > 0 ) {
+				$extra = ' including a new administrator';
+			} elseif ( $firewall > 0 ) {
+				$extra = ' including firewall changes';
+			}
 			$subject = sprintf(
 				'[%s] WP Bouncer alert: %d security events%s',
 				$site,
 				count( $events ),
-				$admins > 0 ? ' including a new administrator' : ''
+				$extra
 			);
 		}
 
@@ -101,8 +116,8 @@ final class AlertFormatter {
 	 * Merge duplicates. Creating an administrator fires both "user registered"
 	 * and "role set" hooks; only one line should appear.
 	 *
-	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool}> $events Events.
-	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string}>
+	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[]}> $events Events.
+	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[]}>
 	 */
 	public static function dedupe( array $events ): array {
 		$out = array();
@@ -120,6 +135,12 @@ final class AlertFormatter {
 			}
 			if ( ! empty( $event['critical'] ) ) {
 				$out[ $key ]['critical'] = true;
+			}
+			if ( ! empty( $event['recipients'] ) ) {
+				$out[ $key ]['recipients'] = array_values( array_unique( array_merge( $out[ $key ]['recipients'] ?? array(), $event['recipients'] ) ) );
+			}
+			if ( ! empty( $event['logged'] ) ) {
+				$out[ $key ]['logged'] = true;
 			}
 		}
 		return array_values( $out );

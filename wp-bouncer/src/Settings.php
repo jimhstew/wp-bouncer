@@ -85,11 +85,12 @@ final class Settings {
 			'geo_source'         => 'database',
 			'geo_header'         => 'CF-IPCountry',
 			'alerts'             => array(
-				'enabled'        => true,
-				'recipients'     => array(),
-				'new_admin'      => true,
-				'plugin_changes' => true,
-				'plugin_updates' => false,
+				'enabled'          => true,
+				'recipients'       => array(),
+				'new_admin'        => true,
+				'plugin_changes'   => true,
+				'plugin_updates'   => false,
+				'firewall_changes' => true,
 			),
 			'traffic'            => array(
 				'enabled'         => false,
@@ -282,11 +283,12 @@ final class Settings {
 
 		$alerts        = is_array( $in['alerts'] ?? null ) ? $in['alerts'] : array();
 		$out['alerts'] = array(
-			'enabled'        => self::bool( $alerts['enabled'] ?? false ),
-			'recipients'     => self::emails( $alerts['recipients'] ?? array() ),
-			'new_admin'      => self::bool( $alerts['new_admin'] ?? false ),
-			'plugin_changes' => self::bool( $alerts['plugin_changes'] ?? false ),
-			'plugin_updates' => self::bool( $alerts['plugin_updates'] ?? false ),
+			'enabled'          => self::bool( $alerts['enabled'] ?? false ),
+			'recipients'       => self::emails( $alerts['recipients'] ?? array() ),
+			'new_admin'        => self::bool( $alerts['new_admin'] ?? false ),
+			'plugin_changes'   => self::bool( $alerts['plugin_changes'] ?? false ),
+			'plugin_updates'   => self::bool( $alerts['plugin_updates'] ?? false ),
+			'firewall_changes' => self::bool( $alerts['firewall_changes'] ?? false ),
 		);
 
 		$traffic        = is_array( $in['traffic'] ?? null ) ? $in['traffic'] : array();

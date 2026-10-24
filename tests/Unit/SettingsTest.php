@@ -213,6 +213,7 @@ final class SettingsTest extends TestCase {
 		$this->assertTrue( $d['rules']['uploads_php']['enabled'] );
 		$this->assertTrue( $d['alerts']['enabled'] );
 		$this->assertFalse( $d['alerts']['plugin_updates'], 'routine updates do not email by default' );
+		$this->assertTrue( $d['alerts']['firewall_changes'], 'firewall changes email by default' );
 	}
 
 	public function test_sites_upgrading_from_older_settings_get_the_new_defaults(): void {

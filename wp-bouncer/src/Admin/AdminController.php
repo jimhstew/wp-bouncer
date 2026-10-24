@@ -21,6 +21,7 @@ use WPBouncer\Rules\RateLimitRule;
 use WPBouncer\Rules\SensitiveFileRule;
 use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Settings;
+use WPBouncer\SettingsDiff;
 use WPBouncer\Support\CsvSanitizer;
 use WPBouncer\Support\IpUtils;
 use WPBouncer\Traffic\ClientClassifier;
@@ -45,6 +46,9 @@ final class AdminController {
 
 	public const SLUG       = 'wp-bouncer';
 	public const CAPABILITY = 'manage_options';
+
+	/** Rule name on the Activity Log rows written by the configuration audit. */
+	public const SETTINGS_LOG_RULE = 'settings';
 
 	/** Capability for server-wide actions (network admins on multisite). */
 	public const FIREWALL_CAPABILITY = FirewallCapability::NAME;
@@ -128,6 +132,7 @@ final class AdminController {
 			$out[ $id ] = $label[0];
 		}
 		$out[ AlertNotifier::LOG_RULE ] = __( 'Email alerts', 'wp-bouncer' );
+		$out[ self::SETTINGS_LOG_RULE ] = __( 'Settings changes', 'wp-bouncer' );
 		return $out;
 	}
 
@@ -410,8 +415,73 @@ final class AdminController {
 			// Sub-site admins on multisite can't change the .htaccess setting or add regex patterns.
 			$values = Settings::preserve_privileged( $this->plugin->settings()->to_array(), $values );
 		}
+		$old = $this->plugin->settings()->to_array();
 		update_option( Settings::OPTION, $values, true );
+		// Audit BEFORE the new settings load: the request's IP and country, who gets the
+		// alert, and whether alerts are on all come from the settings in force until now.
+		$changes = $this->audit( $old, $values );
 		$this->plugin->reload_settings();
+		if ( ! empty( $changes ) ) {
+			/**
+			 * Fires after the settings were saved and something changed.
+			 *
+			 * @param string[]             $changes Changed key paths, such as "rules.xmlrpc.enabled" (lists count as one path).
+			 * @param array<string, mixed> $old     Settings before.
+			 * @param array<string, mixed> $new     Settings after.
+			 */
+			do_action( 'wp_bouncer_settings_changed', $changes, $old, $values );
+		}
+	}
+
+	/**
+	 * Configuration audit: record and alert on a settings change.
+	 *
+	 * Writes one "alert" row (rule "settings") naming the acting user and the
+	 * changed key paths, never the values. Risky changes also queue a
+	 * firewall_changes email. Nothing happens when nothing changed.
+	 *
+	 * @param array<string, mixed> $before Settings before the save.
+	 * @param array<string, mixed> $after  Settings as saved.
+	 * @return string[] The changed key paths.
+	 */
+	private function audit( array $before, array $after ): array {
+		$changes = SettingsDiff::changes( $before, $after );
+		if ( empty( $changes ) ) {
+			return array();
+		}
+		$risky = SettingsDiff::risky( $changes, $before, $after );
+		$this->write_audit_row( SettingsDiff::describe( $this->actor(), $changes, $risky ) );
+		if ( ! empty( $risky ) ) {
+			$this->plugin->alerts()->on_risky_settings_change( $risky, $changes, $after );
+		}
+		return $changes;
+	}
+
+	/** Login of the signed-in user, for audit rows. */
+	private function actor(): string {
+		$user = wp_get_current_user();
+		return $user->exists() ? $user->user_login : 'unknown';
+	}
+
+	/**
+	 * Write one audit row (alert action, rule "settings") for the current request.
+	 *
+	 * @param string $reason What happened and who did it; no setting values.
+	 */
+	private function write_audit_row( string $reason ): void {
+		$request = $this->plugin->current_request();
+		$this->plugin->log_writer()->record(
+			array(
+				'ip'         => $request->ip(),
+				'country'    => (string) $this->plugin->geo()->lookup( $request->ip() ),
+				'rule'       => self::SETTINGS_LOG_RULE,
+				'action'     => BlockLogInterface::ACTION_ALERT,
+				'reason'     => mb_strimwidth( $reason, 0, 255, '...' ),
+				'method'     => $request->method(),
+				'uri'        => $request->uri(),
+				'user_agent' => $request->user_agent(),
+			)
+		);
 	}
 
 	/** Save one settings tab. */
@@ -753,6 +823,9 @@ final class AdminController {
 	public function handle_clear_log(): void {
 		$this->guard( 'wp_bouncer_clear_log' );
 		$this->plugin->log()->clear();
+		// Clearing the log is how an intruder covers tracks: leave a fresh row and tell the owner.
+		$this->write_audit_row( 'Activity log cleared by ' . $this->actor() );
+		$this->plugin->alerts()->on_log_cleared();
 		$this->back( 'log', 'log_cleared' );
 	}
 
