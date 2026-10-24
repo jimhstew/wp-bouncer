@@ -26,9 +26,16 @@ final class CountryRule extends AbstractRule {
 
 	public const ID = 'country';
 
+	/**
+	 * Country lookup.
+	 *
+	 * @var GeoProviderInterface
+	 */
 	private GeoProviderInterface $geo;
 
 	/**
+	 * Set up the CountryRule.
+	 *
 	 * @param array<string, mixed> $settings Rule settings.
 	 * @param GeoProviderInterface $geo      Country lookup.
 	 */
@@ -51,9 +58,21 @@ final class CountryRule extends AbstractRule {
 		return parent::is_enabled();
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
 		if ( 'login' === $this->setting( 'scope', 'site' ) && ! ( $request->is_login() || $request->is_xmlrpc() || $request->is_admin_area() ) ) {
+			return null;
+		}
+
+		// A request from the server itself has no geography. Skipping on the request
+		// (not on a loopback IP) keeps a loopback proxy's visitors subject to
+		// block_unknown, while health checks and WP-Cron pass.
+		if ( $request->is_local() ) {
 			return null;
 		}
 

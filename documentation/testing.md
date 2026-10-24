@@ -5,14 +5,15 @@ Run all of these before deploying a change.
 | Suite | Command | Needs | What it proves |
 |---|---|---|---|
 | Unit | `make test` | PHP 7.4+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation, uploads policy, alert wording, client types and URL redaction (422 tests, < 1 s) |
-| Static analysis | `make analyse` | `composer install` | No undefined functions or methods and no type mistakes in the WordPress-facing code (PHPStan level 5 + WordPress stubs) |
-| Coding standards | `make lint` | `composer install` | WordPress Coding Standards |
-| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet | The plugin in a real WordPress: 208 live checks |
+| Static analysis | `make analyse` | `composer install` | No undefined functions or methods and no type mistakes in the WordPress-facing code (PHPStan level 6 + WordPress stubs). Blocking in CI. |
+| Coding standards | `make lint` | `composer install` | WordPress Coding Standards. Blocking in CI. |
+| Integration | `make integration` | `composer install`, PHP with `mysqli`, a MySQL or MariaDB server | The plugin inside the WordPress test library, on a real database, single-site and multisite (CI) |
+| End-to-end | `make e2e` | PHP with `pdo_sqlite`, `curl`, `unzip`, internet (or MySQL/MariaDB with `WPB_E2E_DB=mysql`) | The plugin in a real WordPress: 238 live checks |
 | Release check | `make check` | all of the above, plus `zip` | Unit tests, build the zip, then the end-to-end suite against the plugin installed **from that zip** |
 
-The `composer test`, `composer analyse`, `composer lint` and `composer test:e2e` scripts are equivalent. Tests live in `tests/`, outside the `wp-bouncer/` plugin folder, so they never end up in the zip you upload.
+The `composer test`, `composer analyse`, `composer lint`, `composer test:integration` and `composer test:e2e` scripts are equivalent. Tests live in `tests/`, outside the `wp-bouncer/` plugin folder, so they never end up in the zip you upload.
 
-CI (`.github/workflows/tests.yml`) runs the unit tests on PHP 7.4 to 8.4, builds the zip and runs the end-to-end suite against it, and runs lint.
+CI (`.github/workflows/tests.yml`) runs the unit tests on PHP 7.4 to 8.4, PHPStan (level 6) and phpcs, which both block, the integration suite on MySQL and MariaDB in single-site and multisite, and builds the zip and runs the end-to-end suite against it.
 
 ## Unit tests
 
@@ -49,7 +50,7 @@ Conventions:
 
 ## End-to-end
 
-`tests/e2e/run.sh` builds a disposable WordPress using the official SQLite Database Integration plugin, so no MySQL is needed. It activates WP Bouncer and switches the IP source to `X-Real-IP`, because the plugin always lets 127.0.0.1 through, and each scenario needs its own fake visitor IP. Then it checks:
+`tests/e2e/run.sh` builds a disposable WordPress using the official SQLite Database Integration plugin by default, so no MySQL is needed. It activates WP Bouncer and switches the IP source to `X-Real-IP` with 127.0.0.1 listed as the trusted proxy. A loopback request is exempt only when it carries no forwarding header, so the test's requests from 127.0.0.1 are still inspected. Each scenario sends its own fake visitor IP in `X-Real-IP`. Then it checks:
 
 - normal pages, search and the REST posts endpoint load (200)
 - scanner and empty User-Agents, xmlrpc.php, `?author=1`, the REST users list, and XSS/SQLi/traversal payloads are refused (403), and the users sitemap is gone
@@ -71,11 +72,43 @@ Conventions:
 
 The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
 
-Options: `PHP=/path/to/php`, `WPB_E2E_ZIP=builds/wp-bouncer-1.1.1.zip` (install from a built zip instead of linking `wp-bouncer/`), `WPB_E2E_PORT=8899`, `WPB_E2E_DIR=/some/dir` (reused between runs, faster), `WPB_E2E_KEEP=1`.
+Options: `PHP=/path/to/php`, `WPB_E2E_ZIP=builds/wp-bouncer-1.1.2.zip` (install from a built zip instead of linking `wp-bouncer/`), `WPB_E2E_PORT=8899`, `WPB_E2E_DIR=/some/dir` (reused between runs, faster), `WPB_E2E_KEEP=1`.
+
+Database and WordPress version:
+
+- `WPB_E2E_DB=sqlite` (default) or `mysql`. The `mysql` setting covers MariaDB too.
+- `WPB_E2E_DB_HOST` (default `127.0.0.1`, may include a port), `WPB_E2E_DB_USER` (default `root`, needs CREATE and DROP on the database), `WPB_E2E_DB_PASSWORD` (default empty), `WPB_E2E_DB_NAME` (default `wpb_e2e`). The database is **dropped and recreated**, so use a disposable one. The name may only contain letters, digits and `_`.
+- `WPB_E2E_WP_VERSION=latest` (default), `nightly`, or a version such as `6.4` or `5.8.3`.
+
+Example, against a local MariaDB:
+
+```bash
+WPB_E2E_DB=mysql WPB_E2E_DB_USER=root WPB_E2E_DB_PASSWORD=root WPB_E2E_WP_VERSION=6.4 make e2e
+```
+
+## Integration tests
+
+`make integration` runs the PHPUnit suite in `tests/Integration/` inside the WordPress test library, against a real MySQL or MariaDB database. It covers what the unit tests can't: the installer, the block log, the traffic log and its recorder, geo database and import, the uploads guard, alerts, the updater, uninstall, the WordPress hooks in `PluginTest`, and the admin screens and self-lockout guard.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WPB_TESTS_DB_HOST` | `127.0.0.1` | MySQL/MariaDB host, may include a port (`127.0.0.1:3307`) |
+| `WPB_TESTS_DB_USER` | `root` | Database user |
+| `WPB_TESTS_DB_PASSWORD` | empty | Database password |
+| `WPB_TESTS_DB_NAME` | `wpb_tests` | Database name. Use a disposable database. |
+| `WP_VERSION` | `latest` | WordPress version for the test library, for example `6.4`. Set on the command line, as in `make integration WP_VERSION=6.4`. |
+
+On the first run, `tests/Integration/install-wp.sh` downloads the WordPress test library into `builds/wp-core/<version>`. Set `WP_MULTISITE=1` to run the suite as a multisite network. CI runs single-site on MySQL 8.0 and 8.4 and MariaDB 10.6 and 11.4, and multisite on MySQL 8.4 and MariaDB 10.6.
+
+Example:
+
+```bash
+WPB_TESTS_DB_HOST=127.0.0.1 WPB_TESTS_DB_USER=root WPB_TESTS_DB_PASSWORD=root make integration
+```
 
 ## Manual checks on a staging site with MySQL
 
-The e2e suite runs on SQLite. Before a release, also check on MySQL/MariaDB:
+The e2e suite runs on SQLite by default, and CI runs it on MySQL/MariaDB too (see "Database and WordPress version" above). Before a release, also check on MySQL/MariaDB:
 
 1. Activate, then confirm `wp_bouncer_log` and `wp_bouncer_geo` exist.
 2. Tools: import the current DB-IP file by URL, and once more by uploading the .csv.gz. Each time, check that the progress bar advances, the row count is about 710k, and the import finishes in a few minutes.

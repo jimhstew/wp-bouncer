@@ -20,10 +20,22 @@ defined( 'ABSPATH' ) || exit;
  */
 final class HeaderGeoProvider implements GeoProviderInterface {
 
+	/**
+	 * IP of the current request.
+	 *
+	 * @var string
+	 */
 	private string $request_ip;
+	/**
+	 * Header value.
+	 *
+	 * @var string
+	 */
 	private string $value;
 
 	/**
+	 * Set up the HeaderGeoProvider.
+	 *
 	 * @param array<string, mixed> $server     $_SERVER.
 	 * @param string               $name       Header or server variable name.
 	 * @param string               $request_ip IP of the current request.
@@ -35,7 +47,12 @@ final class HeaderGeoProvider implements GeoProviderInterface {
 		$this->value = strtoupper( trim( (string) ( $server[ $key ] ?? $server[ $name ] ?? '' ) ) );
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Find the country for an IP.
+	 *
+	 * @param string $ip IPv4 or IPv6 address.
+	 * @return string|null Upper-case ISO 3166-1 alpha-2 code, or null if unknown.
+	 */
 	public function lookup( string $ip ): ?string {
 		if ( $ip !== $this->request_ip ) {
 			return null;

@@ -1,0 +1,8 @@
+# Same analysis as phpstan.neon.dist, but pretending to run on PHP 7.4 (the
+# plugin's minimum), so newer-PHP-only functions and syntax are reported.
+# Used by the "analyse" job in .github/workflows/tests.yml.
+includes:
+  - phpstan.neon.dist
+
+parameters:
+  phpVersion: 70400

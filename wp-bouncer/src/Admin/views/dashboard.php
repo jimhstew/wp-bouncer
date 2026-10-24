@@ -23,10 +23,30 @@ $by_rule  = $log->top( 'rule', $since7, 10 );
 $top_ips  = $log->top( 'ip', $since7, 10 );
 $top_ctry = $log->top( 'country', $since7, 10 );
 $stats    = array(
-	__( 'Blocked, last 24 hours', 'wp-bouncer' ) => $log->count( array( 'since' => $since24, 'action' => BlockLogInterface::ACTION_BLOCKED ) ),
-	__( 'Blocked, last 7 days', 'wp-bouncer' )   => $log->count( array( 'since' => $since7, 'action' => BlockLogInterface::ACTION_BLOCKED ) ),
-	__( 'Blocked, last 30 days', 'wp-bouncer' )  => $log->count( array( 'since' => $since30, 'action' => BlockLogInterface::ACTION_BLOCKED ) ),
-	__( 'Lockouts, last 7 days', 'wp-bouncer' )  => $log->count( array( 'since' => $since7, 'action' => BlockLogInterface::ACTION_LOCKOUT ) ),
+	__( 'Blocked, last 24 hours', 'wp-bouncer' ) => $log->count(
+		array(
+			'since'  => $since24,
+			'action' => BlockLogInterface::ACTION_BLOCKED,
+		)
+	),
+	__( 'Blocked, last 7 days', 'wp-bouncer' )   => $log->count(
+		array(
+			'since'  => $since7,
+			'action' => BlockLogInterface::ACTION_BLOCKED,
+		)
+	),
+	__( 'Blocked, last 30 days', 'wp-bouncer' )  => $log->count(
+		array(
+			'since'  => $since30,
+			'action' => BlockLogInterface::ACTION_BLOCKED,
+		)
+	),
+	__( 'Lockouts, last 7 days', 'wp-bouncer' )  => $log->count(
+		array(
+			'since'  => $since7,
+			'action' => BlockLogInterface::ACTION_LOCKOUT,
+		)
+	),
 );
 ?>
 <div class="wpb-stats">
@@ -44,8 +64,8 @@ $stats    = array(
 		<p class="description"><?php esc_html_e( 'Each rule can be switched on or off on its own. Configure them on the Rules and Countries tabs.', 'wp-bouncer' ); ?></p>
 		<table class="widefat striped wpb-rule-table">
 			<tbody>
-			<?php foreach ( AdminController::rule_labels() as $id => $label ) : ?>
-				<?php $on = ! empty( $settings['rules'][ $id ]['enabled'] ); ?>
+			<?php foreach ( AdminController::rule_labels() as $rule_id => $label ) : ?>
+				<?php $on = ! empty( $settings['rules'][ $rule_id ]['enabled'] ); ?>
 				<tr>
 					<td>
 						<strong><?php echo esc_html( $label[0] ); ?></strong><br>
@@ -58,7 +78,7 @@ $stats    = array(
 						<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 							<?php wp_nonce_field( 'wp_bouncer_toggle_rule' ); ?>
 							<input type="hidden" name="action" value="wp_bouncer_toggle_rule">
-							<input type="hidden" name="rule" value="<?php echo esc_attr( $id ); ?>">
+							<input type="hidden" name="rule" value="<?php echo esc_attr( $rule_id ); ?>">
 							<button type="submit" class="button button-small"><?php echo $on ? esc_html__( 'Turn off', 'wp-bouncer' ) : esc_html__( 'Turn on', 'wp-bouncer' ); ?></button>
 						</form>
 					</td>
@@ -101,11 +121,23 @@ $stats    = array(
 		<?php else : ?>
 			<table class="widefat striped">
 				<?php foreach ( $top_ips as $ip => $n ) : ?>
+					<?php
+					$wpb_block_url = wp_nonce_url(
+						add_query_arg(
+							array(
+								'action' => 'wp_bouncer_block_ip',
+								'ip'     => rawurlencode( $ip ),
+							),
+							admin_url( 'admin-post.php' )
+						),
+						'wp_bouncer_block_ip'
+					);
+					?>
 					<tr>
 						<td><a href="<?php echo esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ); ?>"><code><?php echo esc_html( $ip ); ?></code></a></td>
 						<td class="num"><?php echo esc_html( number_format_i18n( $n ) ); ?></td>
 						<td class="num">
-							<a class="button button-small" href="<?php echo esc_url( wp_nonce_url( add_query_arg( array( 'action' => 'wp_bouncer_block_ip', 'ip' => rawurlencode( $ip ) ), admin_url( 'admin-post.php' ) ), 'wp_bouncer_block_ip' ) ); ?>"><?php esc_html_e( 'Block', 'wp-bouncer' ); ?></a>
+							<a class="button button-small" href="<?php echo esc_url( $wpb_block_url ); ?>"><?php esc_html_e( 'Block', 'wp-bouncer' ); ?></a>
 						</td>
 					</tr>
 				<?php endforeach; ?>

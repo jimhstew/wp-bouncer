@@ -50,10 +50,18 @@ $wpb_since24 = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
 	<div class="notice notice-info inline"><p><?php esc_html_e( 'Traffic recording is off. Switch it on above to start recording.', 'wp-bouncer' ); ?></p></div>
 <?php endif; ?>
 
+<?php
+$wpb_4xx = $wpb_log->count(
+	array(
+		'since'  => $wpb_since24,
+		'status' => '4xx',
+	)
+);
+?>
 <div class="wpb-stats">
 	<div class="wpb-card wpb-stat"><div class="wpb-stat-value"><?php echo esc_html( number_format_i18n( $wpb_log->count( array( 'since' => $wpb_since24 ) ) ) ); ?></div><div class="wpb-stat-label"><?php esc_html_e( 'Requests, last 24 hours', 'wp-bouncer' ); ?></div></div>
 	<div class="wpb-card wpb-stat"><div class="wpb-stat-value"><?php echo esc_html( number_format_i18n( $wpb_log->unique_ips( $wpb_since24 ) ) ); ?></div><div class="wpb-stat-label"><?php esc_html_e( 'Different IPs, last 24 hours', 'wp-bouncer' ); ?></div></div>
-	<div class="wpb-card wpb-stat"><div class="wpb-stat-value"><?php echo esc_html( number_format_i18n( $wpb_log->count( array( 'since' => $wpb_since24, 'status' => '4xx' ) ) ) ); ?></div><div class="wpb-stat-label"><?php esc_html_e( '4xx responses (not found, blocked), last 24 hours', 'wp-bouncer' ); ?></div></div>
+	<div class="wpb-card wpb-stat"><div class="wpb-stat-value"><?php echo esc_html( number_format_i18n( $wpb_4xx ) ); ?></div><div class="wpb-stat-label"><?php esc_html_e( '4xx responses (not found, blocked), last 24 hours', 'wp-bouncer' ); ?></div></div>
 	<div class="wpb-card wpb-stat">
 		<div class="wpb-stat-label"><?php esc_html_e( 'Clients, last 24 hours', 'wp-bouncer' ); ?></div>
 		<?php foreach ( array_slice( $wpb_log->by_client( $wpb_since24 ), 0, 4, true ) as $wpb_type => $wpb_n ) : ?>

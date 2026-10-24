@@ -8,6 +8,8 @@
 namespace WPBouncer\Admin;
 
 use WPBouncer\Alerts\AlertNotifier;
+use WPBouncer\Firewall\IpResolver;
+use WPBouncer\Firewall\Request;
 use WPBouncer\Geo\Countries;
 use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Log\BlockLogInterface;
@@ -27,13 +29,13 @@ defined( 'ABSPATH' ) || exit;
 /**
  * One top-level "Bouncer" menu with tabs:
  *
- *   dashboard  At-a-glance stats and an on/off switch for every rule.
- *   general    Mode, IP detection, allowlist, retention, block message, geo source.
- *   rules      Settings for each rule.
- *   countries  Country picker.
- *   log        Searchable, filterable activity log with CSV export.
- *   traffic    Every request that reached WordPress (optional, kept up to a week).
- *   tools      Geo database import, unlock an IP.
+ *   Dashboard  At-a-glance stats and an on/off switch for every rule.
+ *   General    Mode, IP detection, allowlist, retention, block message, geo source.
+ *   Rules      Settings for each rule.
+ *   Countries  Country picker.
+ *   Log        Searchable, filterable activity log with CSV export.
+ *   Traffic    Every request that reached WordPress (optional, kept up to a week).
+ *   Tools      Geo database import, unlock an IP.
  *
  * Every state-changing action posts to admin-post.php and is protected by a
  * nonce and the manage_options capability.
@@ -43,9 +45,16 @@ final class AdminController {
 	public const SLUG       = 'wp-bouncer';
 	public const CAPABILITY = 'manage_options';
 
+	/**
+	 * Plugin instance.
+	 *
+	 * @var Plugin
+	 */
 	private Plugin $plugin;
 
 	/**
+	 * Set up the AdminController.
+	 *
 	 * @param Plugin $plugin Plugin instance.
 	 */
 	public function __construct( Plugin $plugin ) {
@@ -58,6 +67,7 @@ final class AdminController {
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_assets' ) );
 		add_action( 'admin_notices', array( $this, 'notices' ) );
 		add_action( 'admin_post_wp_bouncer_save', array( $this, 'handle_save' ) );
+		add_action( 'admin_post_wp_bouncer_ip_setup', array( $this, 'handle_ip_setup' ) );
 		add_action( 'admin_post_wp_bouncer_toggle_rule', array( $this, 'handle_toggle_rule' ) );
 		add_action( 'admin_post_wp_bouncer_block_ip', array( $this, 'handle_block_ip' ) );
 		add_action( 'admin_post_wp_bouncer_unlock_ip', array( $this, 'handle_unlock_ip' ) );
@@ -75,9 +85,11 @@ final class AdminController {
 		add_filter( 'plugin_action_links_' . plugin_basename( $this->plugin->file() ), array( $this, 'action_links' ) );
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Labels shared by the views
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
 	 * Rule id => [ title, one-line description ].
@@ -146,7 +158,11 @@ final class AdminController {
 		return $labels[ $type ] ?? $type;
 	}
 
-	/** @return array<string, string> Tab key => label. */
+	/**
+	 * List the admin tabs.
+	 *
+	 * @return array<string, string> Tab key => label.
+	 */
 	public static function tabs(): array {
 		return array(
 			'dashboard' => __( 'Dashboard', 'wp-bouncer' ),
@@ -159,9 +175,11 @@ final class AdminController {
 		);
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Menu, assets, notices
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/** Add the menu page. */
 	public function add_menu(): void {
@@ -224,9 +242,6 @@ final class AdminController {
 		if ( $s->is_monitor_mode() ) {
 			$this->notice( 'warning', __( 'Monitor mode is on: matching requests are logged but NOT blocked.', 'wp-bouncer' ) );
 		}
-		if ( 'remote_addr' !== $s->get( 'ip_source' ) && empty( $s->get( 'trusted_proxies' ) ) ) {
-			$this->notice( 'warning', __( 'You are reading the client IP from a proxy header with no trusted proxies listed. Anyone can forge that header. Add your proxy or CDN ranges under General → Trusted proxies.', 'wp-bouncer' ) );
-		}
 		$country = $s->rule( 'country' );
 		$meta    = get_option( Plugin::GEO_META_OPTION, array() );
 		if ( ! empty( $country['enabled'] ) && empty( $meta['rows'] ) && 'header' !== $s->get( 'geo_source' ) ) {
@@ -239,11 +254,11 @@ final class AdminController {
 			$this->notice( 'warning', __( 'WP Bouncer could not write its block to wp-content/uploads/.htaccess (the folder may not be writable). See Rules → No PHP in uploads.', 'wp-bouncer' ) );
 		}
 
-		// phpcs:disable WordPress.Security.NonceVerification -- display only.
+		// phpcs:disable WordPress.Security.NonceVerification -- display-only notice text, sanitised and escaped on output; changes no state.
 		if ( isset( $_GET['wpb_msg'] ) ) {
 			$this->notice( isset( $_GET['wpb_err'] ) ? 'error' : 'success', sanitize_text_field( wp_unslash( $_GET['wpb_msg'] ) ) );
 		}
-		// phpcs:enable
+		// phpcs:enable WordPress.Security.NonceVerification
 	}
 
 	/**
@@ -274,12 +289,23 @@ final class AdminController {
 	 * @param array<string, mixed> $args Extra query args.
 	 */
 	public static function url( string $tab = 'dashboard', array $args = array() ): string {
-		return add_query_arg( array_merge( array( 'page' => self::SLUG, 'tab' => $tab ), $args ), admin_url( 'admin.php' ) );
+		return add_query_arg(
+			array_merge(
+				array(
+					'page' => self::SLUG,
+					'tab'  => $tab,
+				),
+				$args
+			),
+			admin_url( 'admin.php' )
+		);
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Rendering
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/** Render the current tab. */
 	public function render(): void {
@@ -302,9 +328,11 @@ final class AdminController {
 		echo '</div>';
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Form handlers (admin-post.php)
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
 	 * Check capability and nonce, or die.
@@ -348,25 +376,45 @@ final class AdminController {
 	/** Save one settings tab. */
 	public function handle_save(): void {
 		$this->guard( 'wp_bouncer_save' );
-		$tab = isset( $_POST['tab'] ) ? sanitize_key( wp_unslash( $_POST['tab'] ) ) : '';
+		$tab = isset( $_POST['tab'] ) ? sanitize_key( wp_unslash( $_POST['tab'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
 		if ( ! isset( Settings::TAB_FIELDS[ $tab ] ) ) {
 			$this->back( 'dashboard', __( 'Unknown settings section.', 'wp-bouncer' ), true );
 		}
 		// Raw input is sanitised field by field in Settings::sanitize().
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-		$input = isset( $_POST['wp_bouncer'] ) && is_array( $_POST['wp_bouncer'] ) ? wp_unslash( $_POST['wp_bouncer'] ) : array();
+		$input = isset( $_POST['wp_bouncer'] ) && is_array( $_POST['wp_bouncer'] ) ? wp_unslash( $_POST['wp_bouncer'] ) : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.NonceVerification.Missing -- sanitised field by field in Settings::sanitize(); nonce and capability checked in $this->guard() at the top of this handler.
 
 		$values  = Settings::apply_form( $this->plugin->settings()->to_array(), $input, $tab );
 		$message = __( 'Settings saved.', 'wp-bouncer' );
 
-		$self_block = $this->would_block_current_admin( $values );
+		if ( 'general' === $tab ) {
+			$dropped = Settings::dropped_broad_ranges( $input );
+			if ( ! empty( $dropped ) ) {
+				$message .= ' ' . sprintf(
+					/* translators: %s: list of IP ranges. */
+					__( 'These entries were removed because they are too broad to be safe: %s.', 'wp-bouncer' ),
+					implode( ', ', $dropped )
+				);
+			}
+			if ( 'remote_addr' !== $values['ip_source'] && empty( $values['trusted_proxies'] ) ) {
+				$message .= ' ' . __( 'Warning: an IP header is selected but no trusted proxies are listed, so the header is ignored and IP bans and lockouts are suspended (login attempts are logged; rate limiting is effectively off) until you add your proxy.', 'wp-bouncer' );
+			}
+		}
+
+		// Test against the request as the NEW settings would see it: saving can change the IP source or proxies.
+		list( $request, $allowlistable ) = $this->request_under( $values );
+		$self_block                      = $this->would_block_current_admin( $values, $request );
 		if ( null !== $self_block ) {
-			$values['allowlist'][] = $this->plugin->client_ip();
+			// An address shared by many visitors (fallback, loopback or proxy) must never
+			// be allowlisted: that would exempt everyone behind it. Refuse instead.
+			if ( ! $allowlistable ) {
+				$this->back( $tab, $this->shared_address_refusal( $self_block ), true );
+			}
+			$values['allowlist'][] = $request->ip();
 			$values                = Settings::sanitize( $values );
 			$message              .= ' ' . sprintf(
 				/* translators: 1: IP address, 2: reason. */
 				__( 'These settings would have blocked you (%2$s), so your IP %1$s was added to the allowlist.', 'wp-bouncer' ),
-				$this->plugin->client_ip(),
+				$request->ip(),
 				$self_block
 			);
 		}
@@ -376,18 +424,161 @@ final class AdminController {
 	}
 
 	/**
+	 * One-click fixes offered by the IP setup notice (SetupNotices).
+	 *
+	 * "trust_peer" lists the address this request came from as a trusted proxy
+	 * (and optionally switches the IP source to a header). "use_remote_addr"
+	 * switches to the connection address. Capability and nonce are checked in
+	 * guard(); the settings go through the normal sanitiser.
+	 */
+	public function handle_ip_setup(): void {
+		$this->guard( SetupNotices::NONCE_ACTION );
+		$fix    = isset( $_POST['fix'] ) ? sanitize_key( wp_unslash( $_POST['fix'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
+		$header = isset( $_POST['header'] ) ? sanitize_key( wp_unslash( $_POST['header'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
+		$values = $this->plugin->settings()->to_array();
+
+		if ( 'use_remote_addr' === $fix ) {
+			$values['ip_source'] = 'remote_addr';
+			$values              = Settings::sanitize( $values );
+			$message             = $this->guard_new_ip_settings( $values );
+			$this->save( $values );
+			$this->back( 'general', __( 'WP Bouncer now uses the connection address as the visitor IP.', 'wp-bouncer' ) . $message );
+		}
+
+		if ( 'trust_peer' === $fix ) {
+			$peer = isset( $_SERVER['REMOTE_ADDR'] ) ? trim( sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) ) : '';
+			if ( '' !== $header && ( 'remote_addr' === $header || ! isset( IpResolver::SOURCES[ $header ] ) ) ) {
+				$this->back( 'general', __( 'Unknown IP header.', 'wp-bouncer' ), true );
+			}
+			$source = '' !== $header ? $header : (string) $values['ip_source'];
+			if ( ! IpUtils::is_valid( $peer ) || 'remote_addr' === $source ) {
+				$this->back( 'general', __( 'Could not work out which proxy to trust. Set the IP header and trusted proxies under General.', 'wp-bouncer' ), true );
+			}
+			// The notice posts the address it showed. If the connection now comes from
+			// somewhere else (a CDN edge, a different proxy), trusting this one would be a guess.
+			$shown = isset( $_POST['peer'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['peer'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
+			if ( IpUtils::is_public( $peer ) ) {
+				$this->back( 'general', __( 'The connection address is a public one, so it looks like a CDN or public proxy. List its full published IP ranges under Trusted proxies instead.', 'wp-bouncer' ), true );
+			}
+			if ( $shown !== $peer ) {
+				$this->back( 'general', __( 'The connection address changed since the notice was shown, so nothing was trusted. Reload the page and try again.', 'wp-bouncer' ), true );
+			}
+			$values['ip_source']       = $source;
+			$values['trusted_proxies'] = array_merge( (array) $values['trusted_proxies'], array( $peer ) );
+			$values                    = Settings::sanitize( $values );
+			$message                   = $this->guard_new_ip_settings( $values );
+			$this->save( $values );
+			$this->back(
+				'general',
+				sprintf(
+					/* translators: %s: IP address. */
+					__( '%s is now a trusted proxy.', 'wp-bouncer' ),
+					$peer
+				) . $message
+			);
+		}
+
+		$this->back( 'general', __( 'Unknown action.', 'wp-bouncer' ), true );
+	}
+
+	/**
+	 * Self-lockout guard for the IP setup fixes.
+	 *
+	 * Changing the IP source changes which address the admin appears to have, so
+	 * the check runs against the NEW settings and the IP they would resolve to,
+	 * not the current one. If the admin would be refused, a bannable address is
+	 * added to the allowlist; a shared one (proxy, loopback) never is, and the
+	 * change is refused instead.
+	 *
+	 * @param array<string, mixed> $values New, sanitised settings. The allowlist may be extended.
+	 * @return string Text to append to the success message ('' if nothing was needed).
+	 */
+	private function guard_new_ip_settings( array &$values ): string {
+		list( $request, $allowlistable ) = $this->request_under( $values );
+		$reason                          = $this->would_block_current_admin( $values, $request );
+		if ( null === $reason ) {
+			return '';
+		}
+		if ( ! $allowlistable ) {
+			$this->back( 'general', $this->shared_address_refusal( $reason ), true );
+		}
+		$values['allowlist'][] = $request->ip();
+		$values                = Settings::sanitize( $values );
+		return ' ' . sprintf(
+			/* translators: 1: IP address, 2: reason. */
+			__( 'These settings would have blocked you (%2$s), so your IP %1$s was added to the allowlist.', 'wp-bouncer' ),
+			$request->ip(),
+			$reason
+		);
+	}
+
+	/**
+	 * The admin's own request as it would look under other settings.
+	 *
+	 * @param array<string, mixed> $values Settings.
+	 * @return array{0: Request, 1: bool} The request, and whether its IP may be put on the allowlist
+	 *                                    (the IP is the counter subject and is not shared, loopback or a proxy).
+	 */
+	private function request_under( array $values ): array {
+		$server   = wp_unslash( $_SERVER );
+		$resolver = new IpResolver( (string) $values['ip_source'], (array) $values['trusted_proxies'], Plugin::allows_private_client_ips() );
+		$ip       = $resolver->resolve( $server );
+		$subject  = $resolver->rejected_subject( $server );
+		$single   = IpUtils::is_bannable( $ip, $resolver->proxies(), $resolver->suspends_bans( $server ) );
+		$bannable = '' !== $subject || $single;
+		// A forwarding header from a peer that is not a listed proxy may be an unlisted CDN edge: never allowlist it.
+		$edge = false;
+		foreach ( IpResolver::FORWARDING_HEADERS as $header ) {
+			if ( isset( $server[ $header ] ) ) {
+				$edge = ! IpUtils::matches_any( trim( (string) ( $server['REMOTE_ADDR'] ?? '' ) ), $resolver->proxies() );
+				break;
+			}
+		}
+		$request = Request::from_globals(
+			$ip,
+			$server,
+			array(),
+			array(),
+			static function (): bool {
+				return false;
+			},
+			static function (): bool {
+				return false;
+			},
+			$resolver->is_local_request( $server ),
+			$bannable,
+			$subject
+		);
+		return array( $request, '' === $subject && $single && ! $edge );
+	}
+
+	/**
+	 * Error text for a save that would lock the admin out from an address that can't be allowlisted.
+	 *
+	 * @param string $reason Why the admin would be blocked.
+	 */
+	private function shared_address_refusal( string $reason ): string {
+		return sprintf(
+			/* translators: %s: reason. */
+			__( 'These settings would block you (%s), but your address cannot be told apart from a shared proxy, so it cannot safely be allowlisted. Nothing was saved. Fix the IP setup notice at the top of the page first.', 'wp-bouncer' ),
+			$reason
+		);
+	}
+
+	/**
 	 * Would the new settings refuse the admin who is saving them?
 	 *
 	 * Checks the rules that apply to every page (IP blocklist, country, User-Agent)
 	 * against the admin's own request.
 	 *
-	 * @param array<string, mixed> $values Proposed settings.
+	 * @param array<string, mixed> $values  Proposed settings.
+	 * @param Request|null         $request The request to test; the current one by default.
 	 * @return string|null The block reason, or null if the admin would get in.
 	 */
-	private function would_block_current_admin( array $values ): ?string {
-		$request = $this->plugin->current_request();
+	private function would_block_current_admin( array $values, ?Request $request = null ): ?string {
+		$request = $request ?? $this->plugin->current_request();
 		$ip      = $request->ip();
-		if ( '' === $ip || IpUtils::is_loopback( $ip ) || IpUtils::matches_any( $ip, (array) $values['allowlist'] ) ) {
+		if ( '' === $ip || $request->is_local() || IpUtils::matches_any( $ip, IpUtils::without_broad( (array) $values['allowlist'] ) ) ) {
 			return null;
 		}
 		$rules = array(
@@ -407,7 +598,7 @@ final class AdminController {
 	/** Flip a single rule on or off from the dashboard. */
 	public function handle_toggle_rule(): void {
 		$this->guard( 'wp_bouncer_toggle_rule' );
-		$id     = isset( $_POST['rule'] ) ? sanitize_key( wp_unslash( $_POST['rule'] ) ) : '';
+		$id     = isset( $_POST['rule'] ) ? sanitize_key( wp_unslash( $_POST['rule'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
 		$values = $this->plugin->settings()->to_array();
 		if ( ! isset( $values['rules'][ $id ] ) ) {
 			$this->back( 'dashboard', __( 'Unknown rule.', 'wp-bouncer' ), true );
@@ -428,16 +619,16 @@ final class AdminController {
 	/** Add an IP to the blocklist (from the log or dashboard). */
 	public function handle_block_ip(): void {
 		$this->guard( 'wp_bouncer_block_ip' );
-		$ip = isset( $_REQUEST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_REQUEST['ip'] ) ) ) : '';
+		$ip = isset( $_REQUEST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_REQUEST['ip'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- nonce and capability checked in $this->guard() at the top of this handler.
 		if ( ! IpUtils::is_valid_range( $ip ) ) {
 			$this->back( 'log', __( 'That is not a valid IP address or range.', 'wp-bouncer' ), true );
 		}
-		$back = isset( $_REQUEST['back'] ) && 'traffic' === $_REQUEST['back'] ? 'traffic' : 'log';
+		$back = isset( $_REQUEST['back'] ) && 'traffic' === $_REQUEST['back'] ? 'traffic' : 'log'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- nonce and capability checked in $this->guard() at the top of this handler.
 		if ( IpUtils::in_range( $this->plugin->client_ip(), $ip ) ) {
 			$this->back( $back, __( 'Refusing to block your own IP address.', 'wp-bouncer' ), true );
 		}
-		$values                                   = $this->plugin->settings()->to_array();
-		$values['rules']['ip_blocklist']['ips'][] = $ip;
+		$values                                     = $this->plugin->settings()->to_array();
+		$values['rules']['ip_blocklist']['ips'][]   = $ip;
 		$values['rules']['ip_blocklist']['enabled'] = true;
 		$this->save( Settings::sanitize( $values ) );
 		/* translators: %s: IP address. */
@@ -447,7 +638,7 @@ final class AdminController {
 	/** Lift login lockouts and every temporary ban for an IP. */
 	public function handle_unlock_ip(): void {
 		$this->guard( 'wp_bouncer_unlock_ip' );
-		$ip = isset( $_POST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['ip'] ) ) ) : '';
+		$ip = isset( $_POST['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['ip'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
 		if ( ! IpUtils::is_valid( $ip ) ) {
 			$this->back( 'tools', __( 'That is not a valid IP address.', 'wp-bouncer' ), true );
 		}
@@ -534,11 +725,11 @@ final class AdminController {
 		header( 'Content-Disposition: attachment; filename="wp-bouncer-log-' . gmdate( 'Ymd-His' ) . '.csv"' );
 
 		$out = fopen( 'php://output', 'w' );
-		fputcsv( $out, array( 'time_utc', 'ip', 'country', 'rule', 'action', 'reason', 'method', 'uri', 'user_agent' ) );
+		self::csv_row( $out, array( 'time_utc', 'ip', 'country', 'rule', 'action', 'reason', 'method', 'uri', 'user_agent' ) );
 		for ( $page = 1; $page <= 100; $page++ ) {
 			$rows = $this->plugin->log()->query( $filters, 1000, $page );
 			foreach ( $rows as $row ) {
-				fputcsv(
+				self::csv_row(
 					$out,
 					array_map(
 						array( self::class, 'csv_safe' ),
@@ -550,8 +741,19 @@ final class AdminController {
 				break;
 			}
 		}
-		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- closes the php://output stream used for the CSV download, not a file on disk.
 		exit;
+	}
+
+	/**
+	 * Write one CSV line. Passes every fputcsv() argument explicitly: PHP 8.4
+	 * deprecates relying on the default escape character.
+	 *
+	 * @param resource          $out    Output stream.
+	 * @param array<int, mixed> $fields Cell values.
+	 */
+	private static function csv_row( $out, array $fields ): void {
+		fputcsv( $out, $fields, ',', '"', '\\' );
 	}
 
 	/** Empty the traffic log. */
@@ -571,11 +773,11 @@ final class AdminController {
 		header( 'Content-Disposition: attachment; filename="wp-bouncer-traffic-' . gmdate( 'Ymd-His' ) . '.csv"' );
 
 		$out = fopen( 'php://output', 'w' );
-		fputcsv( $out, array( 'time_utc', 'ip', 'client', 'method', 'url', 'status', 'referrer', 'user_agent', 'user_id' ) );
+		self::csv_row( $out, array( 'time_utc', 'ip', 'client', 'method', 'url', 'status', 'referrer', 'user_agent', 'user_id' ) );
 		for ( $page = 1; $page <= 500; $page++ ) {
 			$rows = $this->plugin->traffic_log()->query( $filters, 1000, $page );
 			foreach ( $rows as $row ) {
-				fputcsv(
+				self::csv_row(
 					$out,
 					array_map(
 						array( self::class, 'csv_safe' ),
@@ -587,7 +789,7 @@ final class AdminController {
 				break;
 			}
 		}
-		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- closes the php://output stream used for the CSV download, not a file on disk.
 		exit;
 	}
 
@@ -597,7 +799,7 @@ final class AdminController {
 	 * @return array<string, string>
 	 */
 	public static function traffic_filters_from_request(): array {
-		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters.
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters, sanitised here and passed to prepared queries; change no state.
 		$filters = array();
 		$client  = isset( $_REQUEST['client'] ) ? sanitize_key( wp_unslash( $_REQUEST['client'] ) ) : '';
 		if ( in_array( $client, ClientClassifier::types(), true ) ) {
@@ -614,7 +816,7 @@ final class AdminController {
 		if ( ! empty( $_REQUEST['s'] ) ) {
 			$filters['search'] = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) );
 		}
-		// phpcs:enable
+		// phpcs:enable WordPress.Security.NonceVerification
 		return $filters;
 	}
 
@@ -626,7 +828,12 @@ final class AdminController {
 	 */
 	public static function traffic_filters_to_args( array $filters ): array {
 		$args = array();
-		foreach ( array( 'client' => 'client', 'status' => 'status', 'ip' => 'ip', 'search' => 's' ) as $key => $param ) {
+		foreach ( array(
+			'client' => 'client',
+			'status' => 'status',
+			'ip'     => 'ip',
+			'search' => 's',
+		) as $key => $param ) {
 			if ( ! empty( $filters[ $key ] ) ) {
 				$args[ $param ] = rawurlencode( $filters[ $key ] );
 			}
@@ -651,10 +858,14 @@ final class AdminController {
 	 * @return array<string, string>
 	 */
 	public static function log_filters_from_request(): array {
-		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters.
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters, sanitised here and passed to prepared queries; change no state.
 		// Request param => log column. "log_action" avoids clashing with admin-post's "action".
 		$filters = array();
-		foreach ( array( 'rule' => 'rule', 'log_action' => 'action', 'country' => 'country' ) as $param => $column ) {
+		foreach ( array(
+			'rule'       => 'rule',
+			'log_action' => 'action',
+			'country'    => 'country',
+		) as $param => $column ) {
 			if ( ! empty( $_REQUEST[ $param ] ) ) {
 				$filters[ $column ] = sanitize_key( wp_unslash( $_REQUEST[ $param ] ) );
 			}
@@ -665,7 +876,7 @@ final class AdminController {
 		if ( ! empty( $_REQUEST['s'] ) ) {
 			$filters['search'] = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) );
 		}
-		// phpcs:enable
+		// phpcs:enable WordPress.Security.NonceVerification
 		return $filters;
 	}
 
@@ -676,7 +887,12 @@ final class AdminController {
 	 * @return array<string, string>
 	 */
 	public static function log_filters_to_args( array $filters ): array {
-		$map  = array( 'rule' => 'rule', 'action' => 'log_action', 'country' => 'country', 'search' => 's' );
+		$map  = array(
+			'rule'    => 'rule',
+			'action'  => 'log_action',
+			'country' => 'country',
+			'search'  => 's',
+		);
 		$args = array();
 		foreach ( $map as $column => $param ) {
 			if ( ! empty( $filters[ $column ] ) ) {
@@ -708,12 +924,12 @@ final class AdminController {
 	public function handle_geo_import(): void {
 		// A body over post_max_size reaches PHP empty, nonce and all. The form
 		// repeats the action in its URL so we still get here and can say why.
-		if ( empty( $_POST ) && ! empty( $_SERVER['CONTENT_LENGTH'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
+		if ( empty( $_POST ) && ! empty( $_SERVER['CONTENT_LENGTH'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification -- only tests whether a POST body exists (post_max_size overflow); no value is read or used.
 			$this->back( 'tools', self::upload_error_message( UPLOAD_ERR_INI_SIZE ), true );
 		}
 		$this->guard( 'wp_bouncer_geo_import' );
 
-		$file   = isset( $_FILES['geo_file'] ) && is_array( $_FILES['geo_file'] ) ? $_FILES['geo_file'] : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+		$file   = isset( $_FILES['geo_file'] ) && is_array( $_FILES['geo_file'] ) ? $_FILES['geo_file'] : array(); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.NonceVerification.Missing -- only error, name and tmp_name are read, name through sanitize_file_name() and tmp_name through is_uploaded_file(); nonce and capability checked in $this->guard() above.
 		$upload = (int) ( $file['error'] ?? UPLOAD_ERR_NO_FILE );
 
 		$path    = '';
@@ -733,8 +949,8 @@ final class AdminController {
 			}
 			$path   = (string) $file['tmp_name'];
 			$source = $name;
-		} elseif ( ! empty( $_POST['geo_url'] ) ) {
-			$url = esc_url_raw( wp_unslash( $_POST['geo_url'] ) );
+		} elseif ( ! empty( $_POST['geo_url'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
+			$url = esc_url_raw( wp_unslash( $_POST['geo_url'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
 			if ( ! wp_http_validate_url( $url ) ) {
 				$this->back( 'tools', __( 'That URL is not valid.', 'wp-bouncer' ), true );
 			}
@@ -845,9 +1061,11 @@ final class AdminController {
 		);
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * View helpers
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
 	 * Output an on/off switch for a rule's "enabled" flag.

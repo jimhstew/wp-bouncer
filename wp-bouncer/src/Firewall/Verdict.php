@@ -14,12 +14,34 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Verdict {
 
+	/**
+	 * Rule id.
+	 *
+	 * @var string
+	 */
 	private string $rule;
+	/**
+	 * Reason shown in the log.
+	 *
+	 * @var string
+	 */
 	private string $reason;
+	/**
+	 * HTTP status.
+	 *
+	 * @var int
+	 */
 	private int $status;
+	/**
+	 * Seconds until the client may retry.
+	 *
+	 * @var int
+	 */
 	private int $retry_after;
 
 	/**
+	 * Set up the Verdict.
+	 *
 	 * @param string $rule        Rule id that produced the verdict (e.g. "waf").
 	 * @param string $reason      Short human-readable explanation for the log.
 	 * @param int    $status      HTTP status to send (403 by default, 429 for throttling).

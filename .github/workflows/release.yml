@@ -3,56 +3,115 @@
 #   git tag v1.1.0 && git push origin v1.1.0
 #
 # The tag must match the Version header in wp-bouncer/wp-bouncer.php and have a
-# section in documentation/CHANGELOG.md. The release gets two files:
-#   wp-bouncer-<version>.zip  the plugin
-#   update.json               what installed copies read to find the update
+# section in documentation/CHANGELOG.md. The release gets three files:
+#   wp-bouncer-<version>.zip         the plugin
+#   wp-bouncer-<version>.zip.sha256  its checksum (the zip is reproducible: `make build`
+#                                    on the tagged commit gives the same hash)
+#   update.json                      what installed copies read to find the update
 # Installed sites see the update on their Plugins screen within about 12 hours,
 # or straight away after Dashboard > Updates > Check again.
+#
+# Two jobs, on purpose (RT-02):
+#   build    contents: read. Runs all the code (Composer, tests, e2e) and can't write to
+#            the repository or its releases. Its checkout keeps no token.
+#   publish  contents: write. Runs only after build passed, has no checkout and no
+#            third-party code. It downloads build's artifact and runs `gh release create`.
+#            It is in the `release` environment; restrict that environment to `v*` tags
+#            (and optionally add a required reviewer) in the repository settings.
 name: Release
 
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+# Nothing by default; each job asks for what it needs.
+permissions: {}
+
+# One release at a time; never cancel a running one.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    name: Build and test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.3'
-          extensions: pdo_sqlite, zlib
+          extensions: pdo_sqlite, zlib, curl
           coverage: none
 
       - name: Tag matches plugin version
+        id: version
         run: |
           version="$(make -s version)"
           if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
             echo "Tag ${GITHUB_REF_NAME} does not match plugin version ${version} (expected v${version})"
             exit 1
           fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "VERSION=${version}" >> "$GITHUB_ENV"
 
+      # Plugins stay on: phpcs and PHPStan need the WPCS and extension installers. They are
+      # limited to the two listed in composer.json allow-plugins, and this job can't write.
       - run: composer install --no-interaction --no-progress
+      - run: php scripts/ci-selfcheck.php
+      - name: Coding standards (phpcs)
+        run: vendor/bin/phpcs -q
+      - name: PHPStan
+        run: composer analyse -- --no-progress --memory-limit=1G
       - run: composer test
       - run: make manifest
       - name: End-to-end tests against the release zip
         run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-${VERSION}.zip" tests/e2e/run.sh
 
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-files
+          path: |
+            builds/wp-bouncer-${{ steps.version.outputs.version }}.zip
+            builds/wp-bouncer-${{ steps.version.outputs.version }}.zip.sha256
+            builds/update.json
+            builds/release-notes.md
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-files
+          path: files/
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
+          # Corruption check on the downloaded artifact before anything is published.
+          (cd files && sha256sum -c "wp-bouncer-${VERSION}.zip.sha256")
           prerelease=""
           case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" \
-            "builds/wp-bouncer-${VERSION}.zip" \
-            "builds/wp-bouncer-${VERSION}.zip.sha256" \
-            builds/update.json \
+            "files/wp-bouncer-${VERSION}.zip" \
+            "files/wp-bouncer-${VERSION}.zip.sha256" \
+            files/update.json \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
             --title "WP Bouncer ${VERSION}" \
-            --notes-file builds/release-notes.md \
+            --notes-file files/release-notes.md \
             $prerelease

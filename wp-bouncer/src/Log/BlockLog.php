@@ -29,11 +29,22 @@ final class BlockLog implements BlockLogInterface {
 		'user_agent' => 512,
 	);
 
-	/** @var \wpdb */
+	/**
+	 * WordPress database handle.
+	 *
+	 * @var \wpdb
+	 */
 	private $db;
+	/**
+	 * Fully prefixed table name.
+	 *
+	 * @var string
+	 */
 	private string $table;
 
 	/**
+	 * Set up the BlockLog.
+	 *
 	 * @param \wpdb $db WordPress database handle.
 	 */
 	public function __construct( $db ) {
@@ -65,7 +76,12 @@ final class BlockLog implements BlockLogInterface {
 		return $out;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Record one event.
+	 *
+	 * @param array<string, string> $entry Event fields: ip, country, rule, action, reason, method, uri, user_agent.
+	 * @return int Inserted row id (0 when not stored).
+	 */
 	public function record( array $entry ): int {
 		$row               = self::normalize( $entry );
 		$row['created_at'] = gmdate( 'Y-m-d H:i:s' );
@@ -131,7 +147,7 @@ final class BlockLog implements BlockLogInterface {
 		$offset               = ( max( 1, $page ) - 1 ) * $per_page;
 
 		$sql = "SELECT * FROM {$this->table} WHERE {$where} ORDER BY {$orderby} {$order}, id {$order} LIMIT {$per_page} OFFSET {$offset}";
-		return (array) $this->db->get_results( $this->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (array) $this->db->get_results( $this->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL -- $sql only interpolates the $wpdb->prefix table name, $where (fixed fragments with %s placeholders from where()), an allow-listed column, ASC/DESC and int-cast limit/offset; user values are bound via prepare().
 	}
 
 	/**
@@ -141,7 +157,7 @@ final class BlockLog implements BlockLogInterface {
 	 */
 	public function count( array $filters = array() ): int {
 		list( $where, $args ) = $this->where( $filters );
-		return (int) $this->db->get_var( $this->prepare( "SELECT COUNT(*) FROM {$this->table} WHERE {$where}", $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (int) $this->db->get_var( $this->prepare( "SELECT COUNT(*) FROM {$this->table} WHERE {$where}", $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL -- $where is built from fixed fragments with %s placeholders in where() and its values are bound via prepare(); the table name is built from $wpdb->prefix.
 	}
 
 	/**
@@ -158,10 +174,10 @@ final class BlockLog implements BlockLogInterface {
 		}
 		$limit = max( 1, min( 100, $limit ) );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert' GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $since ), // phpcs:ignore WordPress.DB.PreparedSQL
+			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert' GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $since ), // phpcs:ignore WordPress.DB.PreparedSQL -- $column is checked against an allow-list above, $limit is an int clamped to 1-100 and $since is bound with %s; the table name is built from $wpdb->prefix.
 			ARRAY_A
 		);
-		$out = array();
+		$out   = array();
 		foreach ( (array) $rows as $row ) {
 			$out[ (string) $row['k'] ] = (int) $row['n'];
 		}
@@ -179,10 +195,10 @@ final class BlockLog implements BlockLogInterface {
 		$days  = max( 1, min( 365, $days ) );
 		$start = gmdate( 'Y-m-d 00:00:00', time() - ( $days - 1 ) * DAY_IN_SECONDS );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND action <> 'alert' GROUP BY DATE(created_at)", $start ), // phpcs:ignore WordPress.DB.PreparedSQL
+			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND action <> 'alert' GROUP BY DATE(created_at)", $start ), // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 			ARRAY_A
 		);
-		$out = array();
+		$out   = array();
 		for ( $i = $days - 1; $i >= 0; $i-- ) {
 			$out[ gmdate( 'Y-m-d', time() - $i * DAY_IN_SECONDS ) ] = 0;
 		}
@@ -202,11 +218,11 @@ final class BlockLog implements BlockLogInterface {
 	 */
 	public function purge_older_than( int $days ): int {
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - max( 1, $days ) * DAY_IN_SECONDS );
-		return (int) $this->db->query( $this->db->prepare( "DELETE FROM {$this->table} WHERE created_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (int) $this->db->query( $this->db->prepare( "DELETE FROM {$this->table} WHERE created_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 	}
 
 	/** Delete every row. */
 	public function clear(): void {
-		$this->db->query( "TRUNCATE TABLE {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$this->db->query( "TRUNCATE TABLE {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL -- no user input; the table name is built from $wpdb->prefix and these statements take no placeholders.
 	}
 }

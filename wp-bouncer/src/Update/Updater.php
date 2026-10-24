@@ -48,9 +48,16 @@ final class Updater {
 	/** How long to wait before retrying after a failed check. */
 	private const ERROR_TTL = HOUR_IN_SECONDS;
 
+	/**
+	 * Plugin file.
+	 *
+	 * @var string
+	 */
 	private string $plugin_file;
 
 	/**
+	 * Set up the Updater.
+	 *
 	 * @param string $plugin_file Absolute path of wp-bouncer.php.
 	 */
 	public function __construct( string $plugin_file ) {
@@ -73,29 +80,51 @@ final class Updater {
 		add_action( 'load-update-core.php', array( $this, 'maybe_forget_on_force_check' ) );
 	}
 
-	/** https://github.com/<owner>/<repo> */
+	/** URL of the GitHub repository, https://github.com/<owner>/<repo>. */
 	public static function repository_url(): string {
 		return 'https://github.com/' . self::REPOSITORY;
 	}
 
 	/** Where update.json is read from: always the latest (non-draft, non-prerelease) release. */
 	public static function manifest_url(): string {
+		$url = self::repository_url() . '/releases/latest/download/update.json';
+		if ( ! self::source_filters_allowed() ) {
+			return $url;
+		}
 		/**
 		 * Filters the URL of the release manifest. For testing and forks.
 		 *
+		 * Only applied when WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS is true in wp-config.php.
+		 *
 		 * @param string $url Default https://github.com/<repo>/releases/latest/download/update.json.
 		 */
-		return (string) apply_filters( 'wp_bouncer_update_manifest_url', self::repository_url() . '/releases/latest/download/update.json' );
+		return (string) apply_filters( 'wp_bouncer_update_manifest_url', $url );
 	}
 
 	/** Every update zip must start with this URL. */
 	public static function package_prefix(): string {
+		$prefix = self::repository_url() . '/releases/download/';
+		if ( ! self::source_filters_allowed() ) {
+			return $prefix;
+		}
 		/**
 		 * Filters where update zips may be downloaded from. For testing and forks.
 		 *
+		 * Only applied when WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS is true in wp-config.php.
+		 *
 		 * @param string $prefix Default https://github.com/<repo>/releases/download/.
 		 */
-		return (string) apply_filters( 'wp_bouncer_update_package_prefix', self::repository_url() . '/releases/download/' );
+		return (string) apply_filters( 'wp_bouncer_update_package_prefix', $prefix );
+	}
+
+	/**
+	 * Are the update-source filters honoured?
+	 *
+	 * A plugin that can add a filter could otherwise redirect updates to its
+	 * own server, so the filters only work when wp-config.php opts in.
+	 */
+	public static function source_filters_allowed(): bool {
+		return SourcePolicy::filters_allowed( defined( 'WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS' ), defined( 'WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS' ) ? WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS : null );
 	}
 
 	/**
@@ -147,7 +176,7 @@ final class Updater {
 
 	/** Clear the cache when an admin clicks "Check again". */
 	public function maybe_forget_on_force_check(): void {
-		// phpcs:ignore WordPress.Security.NonceVerification -- core's own link, read-only.
+		// phpcs:ignore WordPress.Security.NonceVerification -- core's own "Check again" link; it only clears a cache and is capability-checked.
 		if ( ! empty( $_GET['force-check'] ) && current_user_can( 'update_plugins' ) ) {
 			$this->forget();
 		}
@@ -165,9 +194,9 @@ final class Updater {
 	 * plugin in the "no update" list, which is what makes WordPress show the
 	 * auto-update toggle for it.
 	 *
-	 * @param array|false          $update      Update data so far.
-	 * @param array<string, mixed> $plugin_data Plugin headers.
-	 * @param string               $plugin_file Plugin being checked.
+	 * @param array<string, mixed>|false $update      Update data so far.
+	 * @param array<string, mixed>       $plugin_data Plugin headers.
+	 * @param string                     $plugin_file Plugin being checked.
 	 * @return array<string, mixed>|false
 	 */
 	public function filter_update( $update, $plugin_data, $plugin_file ) {
@@ -193,10 +222,10 @@ final class Updater {
 	/**
 	 * Fill the "View details" window.
 	 *
-	 * @param false|object|array $result Result so far.
-	 * @param string             $action plugins_api action.
-	 * @param object             $args   Request arguments.
-	 * @return false|object|array
+	 * @param false|object|array<string, mixed> $result Result so far.
+	 * @param string                            $action plugins_api action.
+	 * @param object                            $args   Request arguments.
+	 * @return false|object|array<string, mixed>
 	 */
 	public function filter_plugin_info( $result, $action, $args ) {
 		if ( 'plugin_information' !== $action || ! is_object( $args ) || ( $args->slug ?? '' ) !== self::SLUG ) {
@@ -237,7 +266,7 @@ final class Updater {
 	 * @param array<string, mixed>   $hook_extra Context.
 	 * @return false|string|\WP_Error Path to the verified zip, an error, or $reply unchanged.
 	 */
-	public function filter_pre_download( $reply, $package, $upgrader, $hook_extra ) {
+	public function filter_pre_download( $reply, $package, $upgrader, $hook_extra ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed -- fixed signature of the upgrader_pre_download filter.
 		if ( false !== $reply || ! is_string( $package ) || 0 !== strpos( $package, self::package_prefix() ) ) {
 			return $reply;
 		}

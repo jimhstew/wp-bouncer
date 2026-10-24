@@ -31,13 +31,34 @@ final class LoginGuard {
 
 	public const RULE_ID = 'login_lockout';
 
-	/** @var array<string, mixed> */
+	/**
+	 * Settings for this component.
+	 *
+	 * @var array<string, mixed>
+	 */
 	private array $settings;
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface
+	 */
 	private CounterStoreInterface $store;
+	/**
+	 * Block log.
+	 *
+	 * @var BlockLogInterface
+	 */
 	private BlockLogInterface $log;
+	/**
+	 * Time source.
+	 *
+	 * @var Clock
+	 */
 	private Clock $clock;
 
 	/**
+	 * Set up the LoginGuard.
+	 *
 	 * @param array<string, mixed>  $settings Login lockout settings.
 	 * @param CounterStoreInterface $store    Where counters and lockouts live.
 	 * @param BlockLogInterface     $log      Where lockout events are recorded.
@@ -154,7 +175,7 @@ final class LoginGuard {
 				),
 				$context,
 				array(
-					'ip'     => $ip,
+					'ip'     => (string) ( $context['ip'] ?? $ip ),
 					'rule'   => self::RULE_ID,
 					'action' => BlockLogInterface::ACTION_LOCKOUT,
 					'reason' => $reason . sprintf( ' – locked out for %d min', $duration / 60 ),

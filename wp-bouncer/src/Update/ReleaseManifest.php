@@ -29,16 +29,58 @@ defined( 'ABSPATH' ) || exit;
  */
 final class ReleaseManifest {
 
+	/**
+	 * Version number.
+	 *
+	 * @var string
+	 */
 	private string $version;
+	/**
+	 * Download URL of the zip.
+	 *
+	 * @var string
+	 */
 	private string $package;
+	/**
+	 * SHA-256 checksum of the zip.
+	 *
+	 * @var string
+	 */
 	private string $sha256;
+	/**
+	 * Minimum WordPress version.
+	 *
+	 * @var string
+	 */
 	private string $requires;
+	/**
+	 * Minimum PHP version.
+	 *
+	 * @var string
+	 */
 	private string $requires_php;
+	/**
+	 * WordPress version tested up to.
+	 *
+	 * @var string
+	 */
 	private string $tested;
+	/**
+	 * Release date.
+	 *
+	 * @var string
+	 */
 	private string $released;
+	/**
+	 * Changelog text.
+	 *
+	 * @var string
+	 */
 	private string $changelog;
 
 	/**
+	 * Set up the ReleaseManifest.
+	 *
 	 * @param array<string, string> $f Validated fields.
 	 */
 	private function __construct( array $f ) {
@@ -56,7 +98,8 @@ final class ReleaseManifest {
 	 * Parse and validate a manifest.
 	 *
 	 * @param string $json           Raw update.json.
-	 * @param string $package_prefix The package URL must start with this, e.g.
+	 * @param string $package_prefix The package URL must be this prefix followed by
+	 *                               v<version>/wp-bouncer-<version>.zip, e.g. a prefix of
 	 *                               https://github.com/<owner>/<repo>/releases/download/.
 	 */
 	public static function from_json( string $json, string $package_prefix ): ?self {
@@ -82,7 +125,9 @@ final class ReleaseManifest {
 		if ( ! self::is_version( $f['version'] ) ) {
 			return null;
 		}
-		if ( '' === $package_prefix || 0 !== strpos( $f['package'], $package_prefix ) || ! preg_match( '#\.zip$#i', $f['package'] ) ) {
+		// The package must be exactly the URL the release process produces. Exact
+		// equality removes dot-segment, %2e and query-string tricks without parsing.
+		if ( '' === $package_prefix || false !== strpos( $package_prefix, '..' ) || self::expected_package( $package_prefix, $f['version'] ) !== $f['package'] ) {
 			return null;
 		}
 		if ( ! preg_match( '/^[0-9a-f]{64}$/', $f['sha256'] ) ) {
@@ -102,12 +147,34 @@ final class ReleaseManifest {
 		return new self( $f );
 	}
 
-	/** A plain dotted version such as 1.2.3, optionally with a -beta.1 style suffix. */
+	/**
+	 * The one package URL a release of $version may use.
+	 *
+	 * @param string $package_prefix Download prefix, ending in a slash.
+	 * @param string $version        Release version from the manifest.
+	 */
+	public static function expected_package( string $package_prefix, string $version ): string {
+		return $package_prefix . 'v' . $version . '/wp-bouncer-' . $version . '.zip';
+	}
+
+	/**
+	 * Whether a string is a plain dotted version.
+	 *
+	 * Accepts values such as 1.2.3, optionally with a -beta.1 style suffix.
+	 *
+	 * @param string $v Candidate version.
+	 * @return bool
+	 */
 	public static function is_version( string $v ): bool {
 		return (bool) preg_match( '/^\d+\.\d+(\.\d+)?(-[0-9A-Za-z.]+)?$/', $v );
 	}
 
-	/** Is this release newer than $installed? */
+	/**
+	 * Is this release newer than $installed?
+	 *
+	 * @param string $installed Installed version.
+	 * @return bool
+	 */
 	public function is_newer_than( string $installed ): bool {
 		return version_compare( $this->version, $installed, '>' );
 	}
@@ -162,7 +229,8 @@ final class ReleaseManifest {
 	public function changelog_html(): string {
 		$html    = '';
 		$in_list = false;
-		foreach ( preg_split( '/\r?\n/', $this->changelog ) ?: array() as $line ) {
+		$lines   = preg_split( '/\r?\n/', $this->changelog );
+		foreach ( false !== $lines ? $lines : array() as $line ) {
 			$line = rtrim( $line );
 			if ( preg_match( '/^\s*[-*] (.+)$/', $line, $m ) ) {
 				if ( ! $in_list ) {

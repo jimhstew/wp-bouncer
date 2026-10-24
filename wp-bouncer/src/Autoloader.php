@@ -28,11 +28,11 @@ final class Autoloader {
 		$base_dir = rtrim( $base_dir, '/\\' ) . '/';
 
 		spl_autoload_register(
-			static function ( string $class ) use ( $base_dir ): void {
-				if ( 0 !== strpos( $class, self::PREFIX ) ) {
+			static function ( string $class_name ) use ( $base_dir ): void {
+				if ( 0 !== strpos( $class_name, self::PREFIX ) ) {
 					return;
 				}
-				$relative = substr( $class, strlen( self::PREFIX ) );
+				$relative = substr( $class_name, strlen( self::PREFIX ) );
 				$file     = $base_dir . str_replace( '\\', '/', $relative ) . '.php';
 				if ( is_readable( $file ) ) {
 					require_once $file;

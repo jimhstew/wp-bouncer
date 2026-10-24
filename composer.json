@@ -7,13 +7,15 @@
         "php": ">=7.4"
     },
     "require-dev": {
+        "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
         "phpstan/extension-installer": "^1.4",
         "phpstan/phpstan": "^2.1",
         "phpunit/phpunit": "^9.6",
         "squizlabs/php_codesniffer": "^3.10",
         "szepeviktor/phpstan-wordpress": "^2.0",
         "wp-coding-standards/wpcs": "^3.1",
-        "dealerdirect/phpcodesniffer-composer-installer": "^1.0"
+        "wp-phpunit/wp-phpunit": "^5.9 || ^6.0 || ^7.0",
+        "yoast/phpunit-polyfills": "^1.1 || ^2.0 || ^3.0"
     },
     "autoload-dev": {
         "psr-4": {
@@ -23,6 +25,7 @@
     },
     "scripts": {
         "test": "phpunit",
+        "test:integration": "phpunit -c phpunit-integration.xml.dist",
         "test:e2e": "tests/e2e/run.sh",
         "test:coverage": "XDEBUG_MODE=coverage phpunit --coverage-html builds/coverage",
         "lint": "phpcs",

@@ -30,9 +30,9 @@ Also included:
 - **Activity log.** Every block, lockout and monitored match, with time, IP, country, rule, reason, request and User-Agent. You can search and filter it, export it to CSV, and block an IP straight from a log row. Entries are kept for a set number of days.
 - **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries.
 - **Monitor mode.** Logs what *would* be blocked without blocking it. Use it for a few days after setup.
-- **Allowlist.** IPs and ranges that skip every rule. Loopback (WP-Cron) is always allowed.
-- **Lockout protection.** If saving settings would block your own IP, your IP is added to the allowlist automatically and you're told. `define( 'WP_BOUNCER_DISABLE', true );` in wp-config.php switches the firewall off in an emergency.
-- **Proxy/CDN support.** Reads the client IP from X-Forwarded-For, CF-Connecting-IP or X-Real-IP, but only believes those headers from proxies you list.
+- **Allowlist.** IPs and ranges that skip every rule. Loopback requests (WP-Cron, same-host proxies) skip every rule only when they carry no forwarding header. Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored and dropped on save.
+- **Lockout protection.** If saving settings would block your own IP, your IP is added to the allowlist automatically and you're told. If your address is shared (a proxy, CDN or the IP fallback), the save is refused and you're pointed to IP detection instead. `define( 'WP_BOUNCER_DISABLE', true );` in wp-config.php switches the firewall off in an emergency.
+- **Proxy/CDN support.** Reads the client IP from X-Forwarded-For, CF-Connecting-IP or X-Real-IP, but only believes those headers from proxies you list. With a header source and no trusted proxies, the header is ignored, the connection address is used, bans and lockouts are suspended, and an admin notice explains the fix. Private, loopback, link-local, CGNAT, unique-local and unspecified header values are refused; `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS` (wp-config.php, `true`) allows private, non-loopback values from a trusted proxy.
 - **Local geolocation.** Import the free DB-IP or IP2Location LITE CSV (download by URL or upload), or use a country header your CDN already sets (Cloudflare `CF-IPCountry`, nginx/Apache GeoIP).
 
 ### What it deliberately doesn't do
@@ -142,7 +142,7 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   └── CHANGELOG.md
 │
 ├── composer.json, phpunit.xml.dist, phpcs.xml.dist, phpstan.neon.dist   Dev tooling
-├── .github/workflows/tests.yml    CI: unit tests on PHP 7.4–8.4, e2e against the built zip, lint
+├── .github/workflows/tests.yml    CI: unit tests on PHP 7.4–8.4, PHPStan and phpcs (both blocking), integration tests on MySQL/MariaDB (single-site and multisite), e2e against the built zip
 └── .github/workflows/release.yml  On a vX.Y.Z tag: test, build, publish the GitHub release
 ```
 
@@ -168,17 +168,24 @@ Installed copies (1.1.0 and later) update themselves from this repository's GitH
 3. Optionally run `make check` locally.
 4. Commit and push, then tag:
    ```bash
-   git tag v1.1.1
-   git push origin v1.1.1
+   git tag v1.1.2
+   git push origin v1.1.2
    ```
-5. `.github/workflows/release.yml` then:
-   - checks that the tag matches the plugin version
-   - runs the unit tests
-   - builds the zip and `update.json` (`make manifest`)
-   - runs the end-to-end suite against that zip
-   - publishes the GitHub release with `wp-bouncer-X.Y.Z.zip`, its `.sha256` and `update.json` attached
+5. `.github/workflows/release.yml` then runs two jobs:
+   - **Build and test** checks that the tag matches the plugin version, runs the unit tests, builds the zip and `update.json` (`make manifest`), and runs the end-to-end suite against that zip.
+   - **Publish the release** is a separate job that runs in the `release` GitHub environment. It publishes the GitHub release with `wp-bouncer-X.Y.Z.zip`, its `.sha256` and `update.json` attached.
 
    A version with a suffix (`1.2.0-beta.1`) is published as a pre-release, which installed sites ignore.
+
+### Owner release checklist
+
+These are one-time repository settings on GitHub. Check them before the first release, and again after changing the repository's settings or workflows.
+
+- [ ] The `release` environment only accepts tags matching `v*`. Only the publish job uses it.
+- [ ] Branch protection on the default branch requires these CI checks to pass before merging: **Coding standards (phpcs, blocking)** and **CI self-check (pins and permissions)**.
+- [ ] Private vulnerability reporting is enabled, so security reports reach the maintainer privately.
+
+Status at 1.1.2: all three are configured. This was reported by the repository owner, and the repository files alone don't prove it.
 
 ### How updates reach sites
 
@@ -186,7 +193,7 @@ Installed copies (1.1.0 and later) update themselves from this repository's GitH
 - `Updater` reads `https://github.com/jimhstew/wp-bouncer/releases/latest/download/update.json`. That address always points at the newest full release, and it isn't subject to GitHub's API rate limits. The answer is cached for 6 hours, or 1 hour after a failure, and "Check again" on Dashboard → Updates clears the cache. `Update\ReleaseManifest` validates the file. The zip must come from `…/releases/download/` and the SHA-256 must be present.
 - Everything after that is WordPress's own updater: the notices, Update now, bulk update, auto-updates and `wp plugin update`. The one addition is `upgrader_pre_download`: `Updater` downloads our zip itself and refuses it if its SHA-256 doesn't match `update.json`, before WordPress removes the installed copy.
 - The zip has a single `wp-bouncer/` folder, so the plugin keeps its folder name and stays active through updates.
-- Testing and forks: the `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` filters change where updates come from. The e2e suite uses them with a local server. `WP_BOUNCER_DISABLE_UPDATES` switches the check off.
+- Testing and forks: the `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` filters change where updates come from, but only when `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS` is defined as `true` in wp-config.php. Otherwise they are ignored. The package URL must match the expected release URL exactly. The e2e suite uses the filters with a local server. `WP_BOUNCER_DISABLE_UPDATES` switches the check off.
 
 Do not delete or replace the assets of a published release. Sites may be part-way through updating from it. To fix a bad release, publish a new version.
 
@@ -196,15 +203,16 @@ Do not delete or replace the assets of a published release. Sites may be part-wa
 composer install
 
 make test       # 422 PHPUnit unit tests, under a second, no WordPress or DB needed
-make analyse    # PHPStan static analysis with WordPress stubs
-make lint       # WordPress Coding Standards (checks wp-bouncer/ only)
+make analyse    # PHPStan level 6 static analysis with WordPress stubs (blocking in CI)
+make lint       # WordPress Coding Standards (checks wp-bouncer/ only; blocking in CI)
+make integration  # WordPress integration tests on MySQL/MariaDB (set WPB_TESTS_DB_* first)
 make e2e        # Throwaway WordPress on SQLite + live HTTP checks, using wp-bouncer/ directly
 make check      # unit tests, build the zip, then the e2e suite against the installed zip
 ```
 
-The `composer test`, `composer analyse`, `composer lint` and `composer test:e2e` scripts do the same.
+The `composer test`, `composer analyse`, `composer lint`, `composer test:integration` and `composer test:e2e` scripts do the same.
 
-The end-to-end script downloads WordPress, the SQLite integration plugin and WP-CLI into a temp directory. It installs the plugin, sends real benign and malicious requests through PHP's built-in server, logs into wp-admin, loads every admin tab, imports a geo database through the Tools screen, and fails if any PHP warning is logged. It needs `curl`, `unzip` and PHP with `pdo_sqlite`. See [testing.md](testing.md).
+The end-to-end script downloads WordPress, the SQLite integration plugin and WP-CLI into a temp directory. It installs the plugin, sends real benign and malicious requests through PHP's built-in server, logs into wp-admin, loads every admin tab, imports a geo database through the Tools screen, and fails if any PHP warning is logged. It needs `curl`, `unzip` and PHP with `pdo_sqlite`. To run it on MySQL or MariaDB instead, set `WPB_E2E_DB=mysql` with `WPB_E2E_DB_HOST`, `WPB_E2E_DB_USER`, `WPB_E2E_DB_PASSWORD` and `WPB_E2E_DB_NAME` (that database is dropped and recreated), and choose the WordPress version with `WPB_E2E_WP_VERSION`. See [testing.md](testing.md).
 
 ## Documentation
 

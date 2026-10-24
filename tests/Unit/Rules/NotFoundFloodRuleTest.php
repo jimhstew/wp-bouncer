@@ -121,4 +121,18 @@ final class NotFoundFloodRuleTest extends TestCase {
 		$this->miss( $rule, 6 );
 		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '198.51.100.7' ) ) ) );
 	}
+
+	public function test_404s_from_a_client_that_cannot_be_banned_are_not_counted(): void {
+		$rule = $this->rule();
+		$this->assertNull( $this->miss( $rule, 50, array( 'ip' => '127.0.0.1', 'bannable' => false ) ) );
+		$this->assertNull( $this->store->get( NotFoundFloodRule::ban_key( '127.0.0.1' ) ) );
+		$this->assertNull( $this->store->get( NotFoundFloodRule::counter_key( '127.0.0.1' ) ) );
+	}
+
+	public function test_an_existing_ban_is_not_enforced_against_a_client_that_cannot_be_banned(): void {
+		$this->store->set( NotFoundFloodRule::ban_key( '192.0.2.5' ), 1, 600 );
+		$rule = $this->rule();
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '192.0.2.5', 'bannable' => false ) ) ) );
+		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ip' => '192.0.2.5' ) ) ) );
+	}
 }

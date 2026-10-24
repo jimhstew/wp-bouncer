@@ -22,9 +22,16 @@ if ( ! class_exists( '\WP_List_Table' ) ) {
  */
 final class LogListTable extends \WP_List_Table {
 
+	/**
+	 * Log store.
+	 *
+	 * @var BlockLog
+	 */
 	private BlockLog $log;
 
 	/**
+	 * Set up the LogListTable.
+	 *
 	 * @param BlockLog $log Log store.
 	 */
 	public function __construct( BlockLog $log ) {
@@ -63,14 +70,18 @@ final class LogListTable extends \WP_List_Table {
 		);
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Load the rows for the current page.
+	 *
+	 * @return void
+	 */
 	public function prepare_items() {
 		$per_page = 50;
 		$filters  = AdminController::log_filters_from_request();
-		// phpcs:disable WordPress.Security.NonceVerification -- read-only.
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only list parameters, sanitised here and never used to change state.
 		$orderby = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : 'created_at';
 		$order   = isset( $_GET['order'] ) ? sanitize_key( wp_unslash( $_GET['order'] ) ) : 'desc';
-		// phpcs:enable
+		// phpcs:enable WordPress.Security.NonceVerification
 
 		$this->_column_headers = array( $this->get_columns(), array(), $this->get_sortable_columns(), 'created_at' );
 		$this->items           = $this->log->query( $filters, $per_page, $this->get_pagenum(), $orderby, strtoupper( $order ) );
@@ -82,7 +93,11 @@ final class LogListTable extends \WP_List_Table {
 		);
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Message shown when there are no rows.
+	 *
+	 * @return void
+	 */
 	public function no_items() {
 		esc_html_e( 'Nothing has been turned away yet.', 'wp-bouncer' );
 	}
@@ -91,6 +106,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Filter dropdowns and export/clear buttons above the table.
 	 *
 	 * @param string $which top|bottom.
+	 * @return void
 	 */
 	protected function extra_tablenav( $which ) {
 		if ( 'top' !== $which ) {
@@ -126,6 +142,7 @@ final class LogListTable extends \WP_List_Table {
 	 *
 	 * @param array<string, string> $item        Row.
 	 * @param string                $column_name Column.
+	 * @return string
 	 */
 	protected function column_default( $item, $column_name ) {
 		return esc_html( $item[ $column_name ] ?? '' );
@@ -135,6 +152,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Local time with the UTC value in a tooltip.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_created_at( $item ) {
 		$local = get_date_from_gmt( $item['created_at'], get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) );
@@ -145,6 +163,7 @@ final class LogListTable extends \WP_List_Table {
 	 * IP with "filter" and "block" row actions.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_ip( $item ) {
 		$ip      = $item['ip'];
@@ -152,7 +171,18 @@ final class LogListTable extends \WP_List_Table {
 			'filter' => sprintf( '<a href="%s">%s</a>', esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ), esc_html__( 'Show all', 'wp-bouncer' ) ),
 			'block'  => sprintf(
 				'<a href="%s">%s</a>',
-				esc_url( wp_nonce_url( add_query_arg( array( 'action' => 'wp_bouncer_block_ip', 'ip' => rawurlencode( $ip ) ), admin_url( 'admin-post.php' ) ), 'wp_bouncer_block_ip' ) ),
+				esc_url(
+					wp_nonce_url(
+						add_query_arg(
+							array(
+								'action' => 'wp_bouncer_block_ip',
+								'ip'     => rawurlencode( $ip ),
+							),
+							admin_url( 'admin-post.php' )
+						),
+						'wp_bouncer_block_ip'
+					)
+				),
 				esc_html__( 'Block IP', 'wp-bouncer' )
 			),
 		);
@@ -163,6 +193,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Flag and code.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_country( $item ) {
 		if ( '' === $item['country'] ) {
@@ -175,6 +206,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Rule title.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_rule( $item ) {
 		return esc_html( AdminController::rule_title( $item['rule'] ) );
@@ -184,6 +216,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Badge.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_action( $item ) {
 		return sprintf( '<span class="wpb-badge wpb-badge-%s">%s</span>', esc_attr( $item['action'] ), esc_html( AdminController::action_label( $item['action'] ) ) );
@@ -193,6 +226,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Method + URI.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_request( $item ) {
 		if ( '' === $item['uri'] ) {
@@ -205,6 +239,7 @@ final class LogListTable extends \WP_List_Table {
 	 * Truncated User-Agent.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_user_agent( $item ) {
 		return sprintf( '<span class="wpb-trunc" title="%1$s">%1$s</span>', esc_attr( $item['user_agent'] ) );

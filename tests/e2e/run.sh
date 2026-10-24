@@ -1,19 +1,32 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke test: installs a throwaway WordPress (SQLite, no MySQL needed),
-# activates WP Bouncer, fires real HTTP requests at it and checks the responses.
+# End-to-end smoke test: installs a throwaway WordPress (SQLite by default, or a
+# real MySQL/MariaDB database), activates WP Bouncer, fires real HTTP requests at it and checks the responses.
 #
 # Usage:   tests/e2e/run.sh
 # Options (environment variables):
-#   PHP=/path/to/php      PHP binary (default: php on PATH). Needs pdo_sqlite.
+#   PHP=/path/to/php      PHP binary (default: php on PATH). Needs pdo_sqlite (sqlite mode)
+#                         or mysqli (mysql mode).
 #   WPB_E2E_DIR=/tmp/x    Work directory (default: a new temp dir, deleted afterwards).
 #   WPB_E2E_PORT=8899     Port for PHP's built-in web server.
 #   WPB_E2E_KEEP=1        Keep the work directory and server log for debugging.
 #   WPB_E2E_ZIP=file.zip  Install the plugin from a built zip (make build) instead of
 #                         linking the wp-bouncer/ source folder. Proves the package works.
+#   WPB_E2E_DB=sqlite|mysql   Database (default sqlite). "mysql" covers MariaDB too. In mysql
+#                         mode the database is dropped and recreated at the start of every run,
+#                         through PHP's mysqli (no mysql client needed). Use a dedicated name!
+#   WPB_E2E_DB_HOST=127.0.0.1 MySQL host, may include a port (127.0.0.1:3307).
+#   WPB_E2E_DB_USER=root      MySQL user (needs CREATE/DROP on the database).
+#   WPB_E2E_DB_PASSWORD=      MySQL password (default empty).
+#   WPB_E2E_DB_NAME=wpb_e2e   MySQL database name (DROPPED and recreated).
+#   WPB_E2E_WP_VERSION=latest latest | nightly | a version such as 6.4 or 5.8.3.
+#                         WordPress is unpacked into $WPB_E2E_DIR/wordpress-<db>-<version>, so a
+#                         reused work directory never mixes databases or versions.
 #
-# Requests come from 127.0.0.1, which the plugin always lets through, so the test
-# switches the IP source to X-Real-IP and sends a different fake IP for each scenario.
+# Requests come from 127.0.0.1. A request from loopback with no forwarding header is the
+# server itself and skips every rule, so the test switches the IP source to X-Real-IP,
+# lists 127.0.0.1 as the trusted proxy (the header is ignored without one) and sends a
+# different fake IP for each scenario.
 
 set -uo pipefail
 
@@ -24,7 +37,21 @@ PLUGIN_DIR="$REPO_DIR/wp-bouncer"
 FIXTURES="$REPO_DIR/tests/fixtures"
 WORK=${WPB_E2E_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/wpb-e2e.XXXXXX")}
 U="http://127.0.0.1:${PORT}"
-W="$WORK/wordpress"
+DB=${WPB_E2E_DB:-sqlite}
+WPV=${WPB_E2E_WP_VERSION:-latest}
+DB_HOST=${WPB_E2E_DB_HOST:-127.0.0.1}
+DB_USER=${WPB_E2E_DB_USER:-root}
+DB_PASSWORD=${WPB_E2E_DB_PASSWORD:-}
+DB_NAME=${WPB_E2E_DB_NAME:-wpb_e2e}
+case "$DB" in sqlite|mysql) ;; *) echo "WPB_E2E_DB must be sqlite or mysql"; exit 1 ;; esac
+case "$WPV" in
+	latest)  WP_URL="https://wordpress.org/latest.tar.gz" ;;
+	nightly) WP_URL="https://wordpress.org/nightly-builds/wordpress-latest.zip" ;;
+	[0-9]*.[0-9]*) WP_URL="https://wordpress.org/wordpress-${WPV}.tar.gz" ;;
+	*) echo "WPB_E2E_WP_VERSION must be latest, nightly or a version like 6.4"; exit 1 ;;
+esac
+case "$DB_NAME" in ""|*[!A-Za-z0-9_]*) echo "WPB_E2E_DB_NAME may only contain letters, digits and _"; exit 1 ;; esac
+W="$WORK/wordpress-$DB-$WPV"
 WP="$PHP -d memory_limit=512M $WORK/wp-cli.phar --path=$W --quiet"
 
 pass=0
@@ -34,6 +61,7 @@ FILES_PID=""
 
 cleanup() {
 	for pid in $SERVER_PID $FILES_PID; do
+		pkill -P "$pid" 2>/dev/null   # PHP_CLI_SERVER_WORKERS children outlive the parent otherwise
 		kill "$pid" 2>/dev/null
 		wait "$pid" 2>/dev/null
 	done
@@ -71,13 +99,58 @@ set_settings() { # set_settings 'PHP code that edits $s'
 echo "==> Setting up WordPress in $WORK"
 mkdir -p "$WORK"
 cd "$WORK" || exit 1
-[ -f wp-cli.phar ] || curl -sfLO https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar || { echo "download wp-cli failed"; exit 1; }
+# Downloaded tools are pinned and verified (RT-02, SB-25). To bump wp-cli, change the version and
+# the SHA-512 together: the digest is published at <phar URL>.sha512 on the GitHub release.
+WPCLI_VERSION="2.12.0"
+WPCLI_SHA512="be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832"
+# SQLite Database Integration plugin: exact version, SHA-256 of the downloads.wordpress.org zip.
+SQLITE_PLUGIN_VERSION="3.1.1"
+SQLITE_PLUGIN_SHA256="5681502868907644ecc472739a75c72453b662c44bcc5dd7c1b1410f988bad44"
+
+hash_of() { # hash_of ALGO FILE -> hex digest
+	if command -v "sha${1}sum" > /dev/null; then "sha${1}sum" "$2" | cut -d' ' -f1; else shasum -a "$1" "$2" | cut -d' ' -f1; fi
+}
+verify() { # verify ALGO FILE EXPECTED LABEL
+	[ "$(hash_of "$1" "$2")" = "$3" ] || { echo "checksum mismatch for $4 (expected sha$1 $3)"; rm -f "$2"; exit 1; }
+}
+# WordPress.org publishes a .sha1 next to each release tarball (not for nightly builds).
+fetch_wordpress() { # fetch_wordpress URL OUTFILE
+	curl -sfLo "$2" "$1" || return 1
+	case "$1" in
+		*nightly-builds*) ;;
+		*) local want; want=$(curl -sfL "$1.sha1" | tr -d '[:space:]') || return 1
+		   [ -n "$want" ] || return 1
+		   verify 1 "$2" "$want" "WordPress ($WPV)" ;;
+	esac
+}
+
+if [ ! -f wp-cli.phar ]; then
+	curl -sfLo wp-cli.phar.part "https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar" || { echo "download wp-cli failed"; exit 1; }
+	verify 512 wp-cli.phar.part "$WPCLI_SHA512" "wp-cli ${WPCLI_VERSION}"
+	mv wp-cli.phar.part wp-cli.phar
+fi
+# A phar left over from an older run must match the pin too.
+verify 512 wp-cli.phar "$WPCLI_SHA512" "wp-cli ${WPCLI_VERSION}"
+if [ "$WPV" = nightly ]; then rm -rf "$W"; fi   # a moving target: always fetch it again
 if [ ! -d "$W" ]; then
-	curl -sfL https://wordpress.org/latest.tar.gz | tar xz || { echo "download WordPress failed"; exit 1; }
-	curl -sfLo sqlite.zip https://downloads.wordpress.org/plugin/sqlite-database-integration.latest-stable.zip
-	unzip -q sqlite.zip -d "$W/wp-content/plugins/"
-	sed "s#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#$W/wp-content/plugins/sqlite-database-integration#; s#{SQLITE_PLUGIN}#sqlite-database-integration/load.php#" \
-		"$W/wp-content/plugins/sqlite-database-integration/db.copy" > "$W/wp-content/db.php"
+	DL="$WORK/download.$$"
+	rm -rf "$DL"; mkdir -p "$DL"
+	if [ "$WPV" = nightly ]; then
+		{ fetch_wordpress "$WP_URL" "$DL/wp.zip" && unzip -q "$DL/wp.zip" -d "$DL"; } || { echo "download WordPress ($WPV) failed"; exit 1; }
+	else
+		{ fetch_wordpress "$WP_URL" "$DL/wp.tar.gz" && tar xzf "$DL/wp.tar.gz" -C "$DL"; } || { echo "download WordPress ($WPV) failed"; exit 1; }
+	fi
+	mv "$DL/wordpress" "$W" || { echo "unpacking WordPress ($WPV) failed"; exit 1; }
+	rm -rf "$DL"
+fi
+if [ "$DB" = sqlite ]; then
+	if [ ! -d "$W/wp-content/plugins/sqlite-database-integration" ]; then
+		curl -sfLo sqlite.zip "https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip" || { echo "download SQLite plugin failed"; exit 1; }
+		verify 256 sqlite.zip "$SQLITE_PLUGIN_SHA256" "sqlite-database-integration ${SQLITE_PLUGIN_VERSION}"
+		unzip -q sqlite.zip -d "$W/wp-content/plugins/"
+		sed "s#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#$W/wp-content/plugins/sqlite-database-integration#; s#{SQLITE_PLUGIN}#sqlite-database-integration/load.php#" \
+			"$W/wp-content/plugins/sqlite-database-integration/db.copy" > "$W/wp-content/db.php"
+	fi
 	cat > "$W/wp-config.php" <<'EOF'
 <?php
 define( 'DB_NAME', 'wp' ); define( 'DB_USER', '' ); define( 'DB_PASSWORD', '' ); define( 'DB_HOST', '' );
@@ -88,6 +161,32 @@ define( 'DISABLE_WP_CRON', true );
 if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', __DIR__ . '/' ); }
 require_once ABSPATH . 'wp-settings.php';
 EOF
+else
+	# Real MySQL/MariaDB: start from an empty database every run (mysqli, no client binary).
+	# Credentials travel in the environment, not on the command line.
+	WPB_H="$DB_HOST" WPB_U="$DB_USER" WPB_P="$DB_PASSWORD" WPB_N="$DB_NAME" "$PHP" -r '
+		mysqli_report( MYSQLI_REPORT_OFF );
+		$h = getenv( "WPB_H" ); $port = 3306;
+		if ( preg_match( "/^(.*):([0-9]+)$/", $h, $m ) ) { $h = $m[1]; $port = (int) $m[2]; }
+		$c = mysqli_init();
+		if ( ! @$c->real_connect( $h, getenv( "WPB_U" ), getenv( "WPB_P" ), null, $port ) ) { fwrite( STDERR, "MySQL connect failed: " . mysqli_connect_error() . "\n" ); exit( 1 ); }
+		$n = getenv( "WPB_N" );
+		if ( ! $c->query( "DROP DATABASE IF EXISTS `$n`" ) || ! $c->query( "CREATE DATABASE `$n` CHARACTER SET utf8mb4" ) ) { fwrite( STDERR, "MySQL error: " . $c->error . "\n" ); exit( 1 ); }
+	' || { echo "could not reset database $DB_NAME on $DB_HOST"; exit 1; }
+	rm -f "$W/wp-content/db.php"
+	php_str() { printf "'%s'" "$(printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\\'/g")"; }   # PHP single-quoted literal
+	{
+		echo '<?php'
+		echo "define( 'DB_NAME', $(php_str "$DB_NAME") ); define( 'DB_USER', $(php_str "$DB_USER") ); define( 'DB_PASSWORD', $(php_str "$DB_PASSWORD") ); define( 'DB_HOST', $(php_str "$DB_HOST") );"
+		echo "define( 'DB_CHARSET', 'utf8mb4' ); define( 'DB_COLLATE', '' );"
+		cat <<'EOF'
+$table_prefix = 'wp_';
+define( 'WP_DEBUG', true ); define( 'WP_DEBUG_LOG', __DIR__ . '/debug.log' ); define( 'WP_DEBUG_DISPLAY', false );
+define( 'DISABLE_WP_CRON', true );
+if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', __DIR__ . '/' ); }
+require_once ABSPATH . 'wp-settings.php';
+EOF
+	} > "$W/wp-config.php"
 fi
 INSTALLED="$W/wp-content/plugins/wp-bouncer"
 if [ -L "$INSTALLED" ]; then
@@ -109,7 +208,7 @@ $WP option update home "$U"
 # answers most unknown paths with the home page or a redirect, not a 404.
 $WP rewrite structure '/%postname%/'
 $WP plugin activate wp-bouncer
-$WP eval '$d = WPBouncer\Settings::defaults(); $d["ip_source"] = "x_real_ip"; update_option("wp_bouncer_settings", $d); global $wpdb; $wpdb->query("DELETE FROM {$wpdb->prefix}bouncer_log"); $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%transient%wpb\_%\"");'
+$WP eval '$d = WPBouncer\Settings::defaults(); $d["ip_source"] = "x_real_ip"; $d["trusted_proxies"] = ["127.0.0.1"]; update_option("wp_bouncer_settings", $d); global $wpdb; $wpdb->query("DELETE FROM {$wpdb->prefix}bouncer_log"); $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%transient%wpb\_%\"");'
 rm -f "$W/debug.log"
 
 # Capture outgoing mail instead of sending it: one JSON line per email.
@@ -171,10 +270,16 @@ PHPEOF
 # display_errors is off as on a production host; PHP's own start-up warnings
 # (such as "POST too large") would otherwise land in the page and break redirects.
 # Several workers, so the site can make a request to itself (the uploads test does).
+# opcache.enable=0: the update tests swap the linked plugin folder for a copy. OPcache (on by
+# default in the built-in server when the extension is loaded) would keep serving the compiled
+# plugin under the old, linked path, so __FILE__ would point at the source folder and the
+# updater could not recognise its own plugin file ("The plugin is at the latest version").
 PHP_CLI_SERVER_WORKERS=4 "$PHP" -d max_execution_time=30 -d upload_max_filesize=2M -d post_max_size=8M -d display_errors=0 \
-	-S "127.0.0.1:$PORT" -t "$W" "$WORK/router.php" > "$WORK/server.log" 2>&1 &
+	-d opcache.enable=0 -S "127.0.0.1:$PORT" -t "$W" "$WORK/router.php" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "$U/" && break; sleep 0.1; done
+sleep 0.2
+kill -0 "$SERVER_PID" 2>/dev/null || { echo "web server did not start (port $PORT in use?):"; cat "$WORK/server.log"; exit 1; }
 
 # A second server that stands in for download.db-ip.com in the import-by-URL test.
 FILES="$WORK/geo-files"
@@ -619,6 +724,49 @@ set_settings '$s["traffic"]["enabled"] = false'
 status 203.0.113.89 "$MOZ" "$U/" > /dev/null
 check "switched off: not recorded"   0 "$(traffic_count "ip = '203.0.113.89'")"
 
+echo "==> IP trust (header ignored without trusted proxies, loopback, setup notice)"
+ipsetup_nonce() { nonce_for wp_bouncer_ip_setup dashboard; }
+stored_ip() { $WP eval '$s = get_option( "wp_bouncer_settings" ); echo $s["ip_source"] . "|" . implode( ",", $s["trusted_proxies"] );'; }
+# Loopback as the forwarded address is refused: the request resolves to the proxy, which is never
+# banned itself; requests carrying a refused header are counted and banned under "rejected:<proxy>".
+check "loopback header: probe refused"  403 "$(status 127.0.0.1 "$MOZ" "$U/.env")"
+check "  ...refused-header subject banned" 403 "$(status 127.0.0.1 "$MOZ" "$U/")"
+check "  ...but visitors via the proxy fine" 200 "$(status 203.0.113.150 "$MOZ" "$U/")"
+check "private header: probe refused"   403 "$(status 10.1.2.3 "$MOZ" "$U/.env")"
+check "  ...proxy is not banned"        200 "$(status 203.0.113.151 "$MOZ" "$U/")"
+# No trusted proxies: the header is ignored, the connection address (127.0.0.1) is used and not banned.
+set_settings '$s["trusted_proxies"] = []'
+check "no proxies: probe still refused" 403 "$(status 203.0.113.141 "$MOZ" "$U/.env")"
+check "  ...but nobody is banned"       200 "$(status 203.0.113.141 "$MOZ" "$U/")"
+check "  ...and not the proxy either"   200 "$(status 203.0.113.142 "$MOZ" "$U/")"
+# The notice, on every admin screen.
+check "dashboard loads"                 200 "$(admin "$U/wp-admin/index.php")"
+check "setup notice shown"              1 "$(grep -c 'wpb-ip-setup' "$WORK/admin.html")"
+check "  ...not dismissible"            0 "$(grep 'wpb-ip-setup' "$WORK/admin.html" | grep -c 'is-dismissible')"
+check "  ...offers to trust the peer"   1 "$(grep -c 'Trust 127.0.0.1 as my proxy' "$WORK/admin.html")"
+check "  ...or to use the connection"   1 "$(grep -c 'I have no proxy' "$WORK/admin.html")"
+check "no PHP errors in the notice"     0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
+check "fix needs a valid nonce"         403 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=deadbeef00&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip")"
+check "  ...nothing changed"            "x_real_ip|" "$(stored_ip)"
+check "fix is not reachable logged out"   400 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip" "$U/wp-admin/admin-post.php")"
+check "  ...and changed nothing"        "x_real_ip|" "$(stored_ip)"
+check "Trust-peer button works"         302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip&peer=127.0.0.1")"
+check "  ...proxy added"                "x_real_ip|127.0.0.1" "$(stored_ip)"
+check "  ...visitor IPs honoured again" 403 "$(status 203.0.113.143 "$MOZ" "$U/.env")"
+check "  ...and bans work again"        403 "$(status 203.0.113.143 "$MOZ" "$U/")"
+check "  ...notice gone"                0 "$(admin "$U/wp-admin/index.php" > /dev/null; grep -c 'wpb-ip-setup' "$WORK/admin.html")"
+set_settings '$s["trusted_proxies"] = []'
+check "No-proxy button works"           302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=use_remote_addr")"
+check "  ...source is the connection"   "remote_addr|" "$(stored_ip)"
+# remote_addr behind a same-host proxy: loopback plus a forwarding header is not the server itself.
+check "remote_addr: forwarded probe"    403 "$(status 203.0.113.144 "$MOZ" "$U/.env")"
+check "  ...notice offers the header"   1 "$(admin "$U/wp-admin/index.php" > /dev/null; grep -c 'Read the IP from X-Real-IP and trust 127.0.0.1' "$WORK/admin.html")"
+# A request from the server itself (loopback, no forwarding header) still skips every rule.
+check "server itself: not a probe"      404 "$(curl -s -o /dev/null -w '%{http_code}' -A "$MOZ" "$U/.env")"
+set_settings '$s["ip_source"] = "x_real_ip"; $s["trusted_proxies"] = ["127.0.0.1"]'
+check "restored: header honoured"       403 "$(status 203.0.113.145 "$MOZ" "$U/.env")"
+check "  ...others unaffected"          200 "$(status 203.0.113.146 "$MOZ" "$U/")"
+
 echo "==> Updates (a local server stands in for GitHub releases)"
 # An update deletes the installed plugin folder and unpacks the new one. When the
 # plugin is a link to the source folder, that would delete the source, so switch
@@ -635,6 +783,7 @@ $WP plugin auto-updates disable wp-bouncer > /dev/null 2>&1   # left on by an ea
 
 cat > "$W/wp-content/mu-plugins/wpb-e2e-update.php" <<PHPEOF
 <?php
+define( 'WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS', true );
 add_filter( 'wp_bouncer_update_manifest_url', function () { return 'http://127.0.0.1:$FILES_PORT/update.json'; } );
 add_filter( 'wp_bouncer_update_package_prefix', function () { return 'http://127.0.0.1:$FILES_PORT/'; } );
 add_filter( 'http_request_host_is_external', '__return_true' );
@@ -649,10 +798,12 @@ publish() { # publish VERSION -> a plugin zip with that version and its update.j
 	sed -i.bak -e "s/VERSION = '[^']*'/VERSION = '$v'/" "$rel/src/Plugin.php"
 	find "$rel" -name '*.bak' -delete
 	printf '## [%s] - 2026-01-01\n\n### Added\n- Release %s for the e2e update test.\n' "$v" "$v" > "$WORK/release/CHANGELOG.md"
-	rm -f "$FILES/wp-bouncer-$v.zip"
-	(cd "$WORK/release" && zip -qrX "$FILES/wp-bouncer-$v.zip" wp-bouncer)
-	"$PHP" "$REPO_DIR/scripts/build-manifest.php" --zip "$FILES/wp-bouncer-$v.zip" --plugin-dir "$rel" \
-		--changelog "$WORK/release/CHANGELOG.md" --package-url "http://127.0.0.1:$FILES_PORT/wp-bouncer-$v.zip" \
+	# The manifest check wants exactly <prefix>v<version>/wp-bouncer-<version>.zip.
+	mkdir -p "$FILES/v$v"
+	rm -f "$FILES/v$v/wp-bouncer-$v.zip"
+	(cd "$WORK/release" && zip -qrX "$FILES/v$v/wp-bouncer-$v.zip" wp-bouncer)
+	"$PHP" "$REPO_DIR/scripts/build-manifest.php" --zip "$FILES/v$v/wp-bouncer-$v.zip" --plugin-dir "$rel" \
+		--changelog "$WORK/release/CHANGELOG.md" --package-url "http://127.0.0.1:$FILES_PORT/v$v/wp-bouncer-$v.zip" \
 		--out "$FILES/update.json" --notes-out "$WORK/release/notes.md" > /dev/null
 }
 refresh_updates() { $WP eval 'delete_site_transient( "update_plugins" ); delete_site_transient( WPBouncer\Update\Updater::CACHE ); wp_update_plugins();'; }
@@ -665,7 +816,7 @@ update_now() { # update_now -> the JSON from the Plugins screen's "Update now" (
 	local nonce
 	nonce=$(grep -o '"ajax_nonce":"[0-9a-f]*"' "$WORK/admin.html" | head -1 | cut -d'"' -f4)
 	curl -s -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" \
-		-d "action=update-plugin&plugin=wp-bouncer%2Fwp-bouncer.php&slug=wp-bouncer&_ajax_nonce=$nonce" "$U/wp-admin/admin-ajax.php"
+		-d "action=update-plugin&plugin=wp-bouncer%2Fwp-bouncer.php&slug=wp-bouncer&_ajax_nonce=$nonce" "$U/wp-admin/admin-ajax.php" | tee "$WORK/update-now.json"
 }
 
 publish "$CURRENT"

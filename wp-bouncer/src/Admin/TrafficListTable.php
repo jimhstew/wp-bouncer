@@ -21,12 +21,23 @@ if ( ! class_exists( '\WP_List_Table' ) ) {
  */
 final class TrafficListTable extends \WP_List_Table {
 
+	/**
+	 * Log store.
+	 *
+	 * @var TrafficLog
+	 */
 	private TrafficLog $log;
 
-	/** @var array<int, string> User id => login, filled per page. */
+	/**
+	 * User id => login, filled per page.
+	 *
+	 * @var array<int, string>
+	 */
 	private array $users = array();
 
 	/**
+	 * Set up the TrafficListTable.
+	 *
 	 * @param TrafficLog $log Traffic store.
 	 */
 	public function __construct( TrafficLog $log ) {
@@ -63,14 +74,18 @@ final class TrafficListTable extends \WP_List_Table {
 		);
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Load the rows for the current page.
+	 *
+	 * @return void
+	 */
 	public function prepare_items() {
 		$per_page = 50;
 		$filters  = AdminController::traffic_filters_from_request();
-		// phpcs:disable WordPress.Security.NonceVerification -- read-only.
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only list parameters, sanitised here and never used to change state.
 		$orderby = isset( $_GET['orderby'] ) ? sanitize_key( wp_unslash( $_GET['orderby'] ) ) : 'created_at';
 		$order   = isset( $_GET['order'] ) ? sanitize_key( wp_unslash( $_GET['order'] ) ) : 'desc';
-		// phpcs:enable
+		// phpcs:enable WordPress.Security.NonceVerification
 
 		$this->_column_headers = array( $this->get_columns(), array(), $this->get_sortable_columns(), 'created_at' );
 		$this->items           = $this->log->query( $filters, $per_page, $this->get_pagenum(), $orderby, strtoupper( $order ) );
@@ -83,13 +98,22 @@ final class TrafficListTable extends \WP_List_Table {
 
 		$ids = array_unique( array_filter( array_map( 'intval', wp_list_pluck( $this->items, 'user_id' ) ) ) );
 		if ( $ids ) {
-			foreach ( get_users( array( 'include' => $ids, 'fields' => array( 'ID', 'user_login' ) ) ) as $user ) {
+			foreach ( get_users(
+				array(
+					'include' => $ids,
+					'fields'  => array( 'ID', 'user_login' ),
+				)
+			) as $user ) {
 				$this->users[ (int) $user->ID ] = (string) $user->user_login;
 			}
 		}
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Message shown when there are no rows.
+	 *
+	 * @return void
+	 */
 	public function no_items() {
 		esc_html_e( 'No requests recorded yet.', 'wp-bouncer' );
 	}
@@ -98,6 +122,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Filter dropdowns and the export button.
 	 *
 	 * @param string $which top|bottom.
+	 * @return void
 	 */
 	protected function extra_tablenav( $which ) {
 		if ( 'top' !== $which ) {
@@ -139,6 +164,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 *
 	 * @param array<string, string> $item        Row.
 	 * @param string                $column_name Column.
+	 * @return string
 	 */
 	protected function column_default( $item, $column_name ) {
 		return esc_html( $item[ $column_name ] ?? '' );
@@ -148,6 +174,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Local time, UTC in a tooltip.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_created_at( $item ) {
 		$local = get_date_from_gmt( $item['created_at'], get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) );
@@ -158,6 +185,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * IP with row actions.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_ip( $item ) {
 		$ip = $item['ip'];
@@ -169,7 +197,19 @@ final class TrafficListTable extends \WP_List_Table {
 			'blocks' => sprintf( '<a href="%s">%s</a>', esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ), esc_html__( 'Its blocks', 'wp-bouncer' ) ),
 			'block'  => sprintf(
 				'<a href="%s">%s</a>',
-				esc_url( wp_nonce_url( add_query_arg( array( 'action' => 'wp_bouncer_block_ip', 'ip' => rawurlencode( $ip ), 'back' => 'traffic' ), admin_url( 'admin-post.php' ) ), 'wp_bouncer_block_ip' ) ),
+				esc_url(
+					wp_nonce_url(
+						add_query_arg(
+							array(
+								'action' => 'wp_bouncer_block_ip',
+								'ip'     => rawurlencode( $ip ),
+								'back'   => 'traffic',
+							),
+							admin_url( 'admin-post.php' )
+						),
+						'wp_bouncer_block_ip'
+					)
+				),
 				esc_html__( 'Block IP', 'wp-bouncer' )
 			),
 		);
@@ -180,6 +220,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Client type, with the User-Agent in a tooltip and below.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_client( $item ) {
 		return sprintf(
@@ -194,6 +235,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Method and URL.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_request( $item ) {
 		return sprintf( '<code class="wpb-trunc" title="%2$s">%1$s %2$s</code>', esc_html( $item['method'] ), esc_attr( $item['uri'] ) );
@@ -203,6 +245,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Response code badge.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_status( $item ) {
 		$code = (int) $item['status'];
@@ -216,6 +259,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Referrer.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_referrer( $item ) {
 		if ( '' === $item['referrer'] ) {
@@ -228,6 +272,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 * Logged-in user, if any.
 	 *
 	 * @param array<string, string> $item Row.
+	 * @return string
 	 */
 	protected function column_user( $item ) {
 		$id = (int) $item['user_id'];

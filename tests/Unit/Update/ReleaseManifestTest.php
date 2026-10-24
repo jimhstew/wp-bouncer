@@ -71,11 +71,29 @@ final class ReleaseManifestTest extends TestCase {
 			'package from another repo'  => array( $this->json( array( 'package' => 'https://github.com/someone/wp-bouncer/releases/download/v1/wp-bouncer.zip' ) ) ),
 			'package over http'          => array( $this->json( array( 'package' => 'http://github.com/jimhstew/wp-bouncer/releases/download/v1.2.0/wp-bouncer-1.2.0.zip' ) ) ),
 			'package not a zip'          => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/wp-bouncer-1.2.0.tar.gz' ) ) ),
+			'dot-segment in path'        => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/../../../../evil/x/raw/wp-bouncer-1.2.0.zip' ) ) ),
+			'encoded dot-segment'        => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/%2e%2e/wp-bouncer-1.2.0.zip' ) ) ),
+			'tag of a different version' => array( $this->json( array( 'package' => self::PREFIX . 'v1.1.0/wp-bouncer-1.2.0.zip' ) ) ),
+			'file of a different version' => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/wp-bouncer-1.1.0.zip' ) ) ),
+			'query string'               => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/wp-bouncer-1.2.0.zip?x=1' ) ) ),
+			'extra path segment'         => array( $this->json( array( 'package' => self::PREFIX . 'extra/v1.2.0/wp-bouncer-1.2.0.zip' ) ) ),
+			'other file name'            => array( $this->json( array( 'package' => self::PREFIX . 'v1.2.0/other.zip' ) ) ),
+			'tag without v'              => array( $this->json( array( 'package' => self::PREFIX . '1.2.0/wp-bouncer-1.2.0.zip' ) ) ),
 			'missing sha256'             => array( $this->json( array( 'sha256' => '' ) ) ),
 			'short sha256'               => array( $this->json( array( 'sha256' => 'abc123' ) ) ),
 			'sha256 not hex'             => array( $this->json( array( 'sha256' => str_repeat( 'zz', 32 ) ) ) ),
 			'version is an array'        => array( $this->json( array( 'version' => array( '1.2.0' ) ) ) ),
 		);
+	}
+
+	public function test_prefix_containing_dot_dot_is_rejected(): void {
+		$prefix = 'https://github.com/jimhstew/wp-bouncer/releases/download/../';
+		$json   = $this->json( array( 'package' => $prefix . 'v1.2.0/wp-bouncer-1.2.0.zip' ) );
+		$this->assertNull( ReleaseManifest::from_json( $json, $prefix ) );
+	}
+
+	public function test_expected_package_url_is_exact(): void {
+		$this->assertSame( self::PREFIX . 'v3.4.5/wp-bouncer-3.4.5.zip', ReleaseManifest::expected_package( self::PREFIX, '3.4.5' ) );
 	}
 
 	public function test_empty_prefix_rejects_everything(): void {
@@ -111,7 +129,7 @@ final class ReleaseManifestTest extends TestCase {
 	}
 
 	public function test_prerelease_versions_are_accepted_and_ordered(): void {
-		$m = ReleaseManifest::from_json( $this->json( array( 'version' => '1.3.0-beta.1' ) ), self::PREFIX );
+		$m = ReleaseManifest::from_json( $this->json( array( 'version' => '1.3.0-beta.1', 'package' => self::PREFIX . 'v1.3.0-beta.1/wp-bouncer-1.3.0-beta.1.zip' ) ), self::PREFIX );
 		$this->assertNotNull( $m );
 		$this->assertTrue( $m->is_newer_than( '1.2.0' ) );
 		$this->assertFalse( $m->is_newer_than( '1.3.0' ) );

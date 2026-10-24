@@ -125,8 +125,9 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 		} elseif ( null !== $wpb_latest ) {
 			esc_html_e( 'This is the latest release.', 'wp-bouncer' );
 		} else {
+			$wpb_last_error = \WPBouncer\Update\Updater::last_error();
 			/* translators: %s: error message. */
-			printf( esc_html__( 'Could not check for updates (%s). WordPress will try again later.', 'wp-bouncer' ), esc_html( \WPBouncer\Update\Updater::last_error() ?: __( 'no answer', 'wp-bouncer' ) ) );
+			printf( esc_html__( 'Could not check for updates (%s). WordPress will try again later.', 'wp-bouncer' ), esc_html( ! empty( $wpb_last_error ) ? $wpb_last_error : __( 'no answer', 'wp-bouncer' ) ) );
 		}
 		?>
 	</p>

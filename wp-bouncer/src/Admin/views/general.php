@@ -45,7 +45,7 @@ $your_ip = $plugin->client_ip();
 				<p class="description">
 					<?php
 					/* translators: %s: detected IP address. */
-					printf( esc_html__( 'Your IP as currently detected: %s. If this shows your proxy\'s address instead of yours, change the source.', 'wp-bouncer' ), '<code>' . esc_html( $your_ip ?: '?' ) . '</code>' );
+					printf( esc_html__( 'Your IP as currently detected: %s. If this shows your proxy\'s address instead of yours, change the source.', 'wp-bouncer' ), '<code>' . esc_html( ! empty( $your_ip ) ? $your_ip : '?' ) . '</code>' );
 					?>
 				</p>
 			</td>
@@ -54,7 +54,7 @@ $your_ip = $plugin->client_ip();
 			<th scope="row"><label for="wpb-proxies"><?php esc_html_e( 'Trusted proxies', 'wp-bouncer' ); ?></label></th>
 			<td>
 				<textarea id="wpb-proxies" name="wp_bouncer[trusted_proxies]" rows="4" class="large-text code" placeholder="173.245.48.0/20"><?php echo esc_textarea( implode( "\n", $settings['trusted_proxies'] ) ); ?></textarea>
-				<p class="description"><?php esc_html_e( 'IPs or CIDR ranges of your proxy or CDN, one per line. The IP header above is only believed when the request comes from one of these.', 'wp-bouncer' ); ?></p>
+				<p class="description"><?php esc_html_e( 'IPs or CIDR ranges of your proxy or CDN, one per line. The IP header above is only believed when the request comes from one of these. With a header selected and this list empty, the header is ignored, the connection address is used, and IP bans and lockouts are suspended (login attempts are logged; rate limiting is effectively off). A proxy header from an unlisted private or local address also suspends bans; from an unlisted public address it does not (that address is treated as the visitor), so list your CDN\'s ranges. Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored.', 'wp-bouncer' ); ?></p>
 			</td>
 		</tr>
 		<tr>
@@ -62,7 +62,7 @@ $your_ip = $plugin->client_ip();
 			<td>
 				<textarea id="wpb-allowlist" name="wp_bouncer[allowlist]" rows="5" class="large-text code"><?php echo esc_textarea( implode( "\n", $settings['allowlist'] ) ); ?></textarea>
 				<p class="description">
-					<?php esc_html_e( 'IPs or CIDR ranges that skip every rule, one per line. Loopback addresses (WP-Cron, health checks) are always allowed.', 'wp-bouncer' ); ?>
+					<?php esc_html_e( 'IPs or CIDR ranges that skip every rule, one per line. Loopback requests (WP-Cron, health checks) skip every rule only when they carry no proxy header (X-Forwarded-For, X-Real-IP, CF-Connecting-IP or Forwarded), and a loopback address is never banned. Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored.', 'wp-bouncer' ); ?>
 					<?php if ( $your_ip ) : ?>
 						<button type="button" class="button button-small" data-wpb-add-ip="#wpb-allowlist"><?php esc_html_e( 'Add my IP', 'wp-bouncer' ); ?></button>
 					<?php endif; ?>

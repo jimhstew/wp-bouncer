@@ -4,47 +4,313 @@ on:
   push:
   pull_request:
 
+# Read-only by default; every job also states its own permissions (checked by ci-selfcheck).
+permissions:
+  contents: read
+
 jobs:
   unit:
+    name: Unit (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4']
+        php: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: ${{ matrix.php }}
           coverage: none
-      - run: composer install --no-interaction --no-progress
+      # --no-plugins: PHPUnit needs no Composer plugin. analyse and lint do (extension and
+      # standards installers), so they install with plugins; allow-plugins lists exactly those.
+      - run: composer install --no-interaction --no-progress --no-plugins
       - run: composer test
 
-  e2e:
+  # Supply-chain guard for the workflows themselves (RT-02): fails if an action isn't pinned to
+  # a full commit SHA, a job has no `permissions`, `contents: write` is held by a job with a
+  # step other than `gh release`, or the wp-cli / SQLite downloads lose their checksums.
+  ci-selfcheck:
+    name: CI self-check (pins and permissions)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.3'
-          extensions: pdo_sqlite, zlib
           coverage: none
-      # Test the package users actually upload, not just the source folder.
-      - run: make build
-      - run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-$(make -s version).zip" tests/e2e/run.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wp-bouncer-zip
-          path: builds/
+      - run: php scripts/ci-selfcheck.php
 
-  lint:
+  # Blocking. Runs PHPStan twice: as configured (phpstan.neon.dist, on the
+  # newest PHP), then again as if on PHP 7.4 (phpstan-php74.neon sets
+  # phpVersion: 70400) so syntax and functions newer than the plugin's minimum
+  # PHP are reported.
+  analyse:
+    name: Static analysis (PHPStan)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          coverage: none
+      - run: composer install --no-interaction --no-progress
+      - name: PHPStan
+        run: composer analyse -- --no-progress --memory-limit=1G
+      - name: PHPStan as PHP 7.4
+        run: composer analyse -- --configuration=phpstan-php74.neon --no-progress --memory-limit=1G
+
+  # Blocking (RT-29): the plugin source passes phpcs with 0 errors and 0 warnings.
+  # Make "Coding standards (phpcs, blocking)" a required check in branch protection.
+  lint:
+    name: Coding standards (phpcs, blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.3'
           tools: cs2pr
       - run: composer install --no-interaction --no-progress
-      - run: vendor/bin/phpcs -q --report=checkstyle | cs2pr
-        continue-on-error: true
+      # pipefail so a phpcs failure fails the step even though cs2pr succeeds.
+      - run: set -o pipefail; vendor/bin/phpcs -q --report=checkstyle | cs2pr
+        shell: bash
+
+  # PHPUnit integration suite (tests/Integration): the WordPress test library
+  # (WP_UnitTestCase) against a real MySQL or MariaDB. The test library's
+  # floor is WordPress 5.9 (5.8's predates PHPUnit 9 support); the e2e matrix
+  # below still covers 5.8. For an older WordPress, wp-phpunit is pinned to
+  # the same minor version and the polyfills to 1.x.
+  integration:
+    name: Integration ${{ matrix.db_name }} / PHP ${{ matrix.php }} / WP ${{ matrix.wp }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db_name: mysql 8.4
+            db_image: mysql:8.4
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '8.4'
+            wp: latest
+            experimental: false
+          - db_name: mariadb 11.4
+            db_image: mariadb:11.4
+            db_health: healthcheck.sh --connect --innodb_initialized
+            php: '8.2'
+            wp: latest
+            experimental: false
+          - db_name: mysql 8.0
+            db_image: mysql:8.0
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '7.4'
+            wp: '5.9'
+            experimental: false
+          - db_name: mariadb 10.6
+            db_image: mariadb:10.6
+            db_health: healthcheck.sh --connect --innodb_initialized
+            php: '8.1'
+            wp: '6.4'
+            experimental: false
+          - db_name: mysql 8.4
+            db_image: mysql:8.4
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '8.4'
+            wp: nightly
+            experimental: true
+          # Multisite: the same suite with WP_MULTISITE=1 (the test library's switch), for the
+          # network-capability and multisite-uninstall tests.
+          - db_name: mysql 8.4 multisite
+            db_image: mysql:8.4
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '8.4'
+            wp: latest
+            multisite: '1'
+            experimental: false
+          - db_name: mariadb 10.6 multisite
+            db_image: mariadb:10.6
+            db_health: healthcheck.sh --connect --innodb_initialized
+            php: '8.1'
+            wp: '6.4'
+            multisite: '1'
+            experimental: false
+    services:
+      db:
+        image: ${{ matrix.db_image }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "${{ matrix.db_health }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      WPB_TESTS_DB_HOST: 127.0.0.1:3306
+      WPB_TESTS_DB_USER: root
+      WPB_TESTS_DB_PASSWORD: root
+      WPB_TESTS_DB_NAME: wpb_tests
+      WP_CORE_DIR: ${{ github.workspace }}/builds/wp-core/${{ matrix.wp }}
+      # Empty on the single-site rows; the test library treats only "1" as multisite.
+      WP_MULTISITE: ${{ matrix.multisite }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli, zlib, curl
+          coverage: none
+      - run: composer install --no-interaction --no-progress --no-plugins
+      - name: Pin the WordPress test library to this WordPress version
+        if: matrix.wp != 'latest' && matrix.wp != 'nightly'
+        run: composer require --dev -W --no-interaction --no-progress --no-plugins "wp-phpunit/wp-phpunit:${{ matrix.wp }}.*" "yoast/phpunit-polyfills:^1.1"
+      - run: tests/Integration/install-wp.sh "${{ matrix.wp }}"
+      - run: composer test:integration
+
+  # Build the package once. Every e2e job below tests this exact zip, which is
+  # the file users upload, not just the source folder.
+  build:
+    name: Build zip
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          coverage: none
+      - run: make build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wp-bouncer-zip
+          path: builds/
+          if-no-files-found: error
+
+  # SQLite (no database server), the original e2e setup.
+  e2e-sqlite:
+    name: E2E sqlite / PHP 8.3 / WP latest
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, zlib, curl
+          coverage: none
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wp-bouncer-zip
+          path: builds/
+      - run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-$(make -s version).zip" tests/e2e/run.sh
+
+  # Real MySQL / MariaDB service containers across PHP and WordPress versions.
+  e2e-db:
+    name: E2E ${{ matrix.db_name }} / PHP ${{ matrix.php }} / WP ${{ matrix.wp }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - db_name: mysql 8.4
+            db_image: mysql:8.4
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '8.4'
+            wp: latest
+            experimental: false
+          - db_name: mariadb 11.4
+            db_image: mariadb:11.4
+            db_health: healthcheck.sh --connect --innodb_initialized
+            php: '8.2'
+            wp: latest
+            experimental: false
+          # The plugin's declared minimums: PHP 7.4 and WordPress 5.8.
+          - db_name: mysql 8.0
+            db_image: mysql:8.0
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '7.4'
+            wp: '5.8'
+            experimental: false
+          - db_name: mariadb 10.6
+            db_image: mariadb:10.6
+            db_health: healthcheck.sh --connect --innodb_initialized
+            php: '8.1'
+            wp: '6.4'
+            experimental: false
+          # WordPress nightly can break at any time: informational only.
+          - db_name: mysql 8.4
+            db_image: mysql:8.4
+            db_health: mysqladmin ping -h 127.0.0.1 -proot
+            php: '8.4'
+            wp: nightly
+            experimental: true
+    services:
+      db:
+        image: ${{ matrix.db_image }}
+        env:
+          # Both spellings: the mysql image reads MYSQL_*, mariadb reads either.
+          MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "${{ matrix.db_health }}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mysqli, zlib, curl
+          coverage: none
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wp-bouncer-zip
+          path: builds/
+      - name: End-to-end tests
+        env:
+          WPB_E2E_DB: mysql
+          WPB_E2E_DB_HOST: 127.0.0.1:3306
+          WPB_E2E_DB_USER: root
+          WPB_E2E_DB_PASSWORD: root
+          WPB_E2E_DB_NAME: wpb_e2e
+          WPB_E2E_WP_VERSION: ${{ matrix.wp }}
+        run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-$(make -s version).zip" tests/e2e/run.sh

@@ -5,3 +5,8 @@
 composer.lock
 *.phar
 .DS_Store
+
+# Security review notes stay private until the fixes ship (WPB-3).
+documentation/security/
+# The security-fix plan describes open issues in detail; publish after 1.2.0 ships.
+documentation/architecture/security-fixes.md

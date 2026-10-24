@@ -35,14 +35,30 @@ final class AlertNotifier {
 	private const MAX_PER_HOUR = 20;
 	private const THROTTLE_KEY = 'wpb_alert_count';
 
+	/**
+	 * Plugin instance.
+	 *
+	 * @var Plugin
+	 */
 	private Plugin $plugin;
 
-	/** @var array<int, array{type: string, title: string, detail: string, key?: string}> */
+	/**
+	 * Alerts waiting to be sent at shutdown.
+	 *
+	 * @var array<int, array{type: string, title: string, detail: string, key?: string}>
+	 */
 	private array $queue = array();
 
+	/**
+	 * Whether the shutdown hook is registered.
+	 *
+	 * @var bool
+	 */
 	private bool $shutdown_hooked = false;
 
 	/**
+	 * Set up the AlertNotifier.
+	 *
 	 * @param Plugin $plugin Plugin.
 	 */
 	public function __construct( Plugin $plugin ) {
@@ -62,7 +78,11 @@ final class AlertNotifier {
 		add_action( 'upgrader_process_complete', array( $this, 'on_upgrader_complete' ), 20, 2 );
 	}
 
-	/** @return array<string, mixed> */
+	/**
+	 * Get this component's settings.
+	 *
+	 * @return array<string, mixed>
+	 */
 	private function settings(): array {
 		$s = $this->plugin->settings()->get( 'alerts' );
 		return is_array( $s ) ? $s : array();
@@ -78,9 +98,11 @@ final class AlertNotifier {
 		return ! empty( $s['enabled'] ) && ! empty( $s[ $kind ] );
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Administrators
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
 	 * A new account; alert if it can manage the site.
@@ -179,11 +201,15 @@ final class AlertNotifier {
 		$this->queue( 'admin', $title, $detail, $key );
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Plugins
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
+	 * On activated plugin.
+	 *
 	 * @param string $plugin       Plugin file.
 	 * @param bool   $network_wide Network activation.
 	 */
@@ -194,6 +220,8 @@ final class AlertNotifier {
 	}
 
 	/**
+	 * On deactivated plugin.
+	 *
 	 * @param string $plugin       Plugin file.
 	 * @param bool   $network_wide Network deactivation.
 	 */
@@ -205,6 +233,8 @@ final class AlertNotifier {
 	}
 
 	/**
+	 * On deleted plugin.
+	 *
 	 * @param string $plugin  Plugin file.
 	 * @param bool   $deleted Whether it was deleted.
 	 */
@@ -247,11 +277,13 @@ final class AlertNotifier {
 	}
 
 	/**
+	 * Plugin detail.
+	 *
 	 * @param string $file    Plugin file.
 	 * @param bool   $network Network-wide.
 	 */
 	private function plugin_detail( string $file, bool $network ): string {
-		$data   = $this->plugin_data( $file );
+		$data    = $this->plugin_data( $file );
 		$detail  = $file;
 		$version = (string) ( $data['Version'] ?? '' );
 		if ( '' !== $version ) {
@@ -261,6 +293,8 @@ final class AlertNotifier {
 	}
 
 	/**
+	 * Plugin data.
+	 *
 	 * @param string $file Plugin file.
 	 * @return array<string, bool|string> Header fields from get_plugin_data().
 	 */
@@ -275,11 +309,15 @@ final class AlertNotifier {
 		return (array) get_plugin_data( $path, false, false );
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Queue, send, log
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
+	 * Queue.
+	 *
 	 * @param string $type   admin|plugin.
 	 * @param string $title  What happened.
 	 * @param string $detail More detail.
@@ -344,7 +382,7 @@ final class AlertNotifier {
 			),
 			$this->context()
 		);
-		$ok = wp_mail( $this->recipients(), $mail['subject'], $mail['body'] );
+		$ok   = wp_mail( $this->recipients(), $mail['subject'], $mail['body'] );
 		remove_action( 'wp_mail_failed', $capture );
 		if ( $ok ) {
 			return true;
@@ -352,13 +390,21 @@ final class AlertNotifier {
 		return '' !== $error ? $error : __( 'WordPress could not send the email. Check your site\'s mail setup (an SMTP plugin is often needed).', 'wp-bouncer' );
 	}
 
-	/** @return string[] Where alerts go. */
+	/**
+	 * Get the alert recipients.
+	 *
+	 * @return string[] Where alerts go.
+	 */
 	public function recipients(): array {
 		$list = (array) ( $this->settings()['recipients'] ?? array() );
 		return ! empty( $list ) ? array_values( $list ) : array( (string) get_option( 'admin_email' ) );
 	}
 
-	/** @return array<string, string> Who, where, when. */
+	/**
+	 * Describe who, where and when.
+	 *
+	 * @return array<string, string> Who, where, when.
+	 */
 	private function context(): array {
 		$user    = function_exists( 'wp_get_current_user' ) ? wp_get_current_user() : null;
 		$actor   = $user && $user->exists() ? sprintf( '%s (user ID %d)', $user->user_login, $user->ID ) : 'no logged-in user (WP-CLI, a scheduled task, or code)';

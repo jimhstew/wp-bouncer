@@ -32,9 +32,16 @@ final class TrafficRecorder {
 	/** Hourly cron hook that removes old rows. */
 	public const PURGE_HOOK = 'wp_bouncer_traffic_purge';
 
+	/**
+	 * Plugin instance.
+	 *
+	 * @var Plugin
+	 */
 	private Plugin $plugin;
 
 	/**
+	 * Set up the TrafficRecorder.
+	 *
 	 * @param Plugin $plugin Plugin.
 	 */
 	public function __construct( Plugin $plugin ) {
@@ -50,7 +57,11 @@ final class TrafficRecorder {
 		}
 	}
 
-	/** @return array<string, mixed> */
+	/**
+	 * Get this component's settings.
+	 *
+	 * @return array<string, mixed>
+	 */
 	private function settings(): array {
 		$s = $this->plugin->settings()->get( 'traffic' );
 		return is_array( $s ) ? $s : array();

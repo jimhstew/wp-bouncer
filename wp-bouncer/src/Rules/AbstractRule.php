@@ -24,6 +24,8 @@ abstract class AbstractRule implements RuleInterface {
 	protected array $settings;
 
 	/**
+	 * Set up the AbstractRule.
+	 *
 	 * @param array<string, mixed> $settings Rule settings; must contain 'enabled'.
 	 */
 	public function __construct( array $settings ) {
@@ -39,11 +41,11 @@ abstract class AbstractRule implements RuleInterface {
 	 * Read one setting with a fallback.
 	 *
 	 * @param string $key     Setting key.
-	 * @param mixed  $default Fallback.
+	 * @param mixed  $fallback Fallback.
 	 * @return mixed
 	 */
-	protected function setting( string $key, $default = null ) {
-		return array_key_exists( $key, $this->settings ) ? $this->settings[ $key ] : $default;
+	protected function setting( string $key, $fallback = null ) {
+		return array_key_exists( $key, $this->settings ) ? $this->settings[ $key ] : $fallback;
 	}
 
 	/**

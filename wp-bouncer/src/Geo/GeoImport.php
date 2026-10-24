@@ -37,9 +37,16 @@ final class GeoImport {
 	/** Rows per INSERT. */
 	private const BATCH = 500;
 
+	/**
+	 * WordPress database handle.
+	 *
+	 * @var GeoDatabase
+	 */
 	private GeoDatabase $db;
 
 	/**
+	 * Set up the GeoImport.
+	 *
 	 * @param GeoDatabase $db Geo table.
 	 */
 	public function __construct( GeoDatabase $db ) {
@@ -59,7 +66,12 @@ final class GeoImport {
 		return $state;
 	}
 
-	/** Percentage done, 0-100. */
+	/**
+	 * Percentage done, 0-100.
+	 *
+	 * @param array<string, mixed> $state Import state, as returned by status().
+	 * @return int
+	 */
 	public static function percent( array $state ): int {
 		if ( empty( $state['size'] ) ) {
 			return 0;
@@ -111,7 +123,7 @@ final class GeoImport {
 	public function step( float $seconds ): array {
 		$state = $this->status();
 		if ( null === $state ) {
-			throw new \RuntimeException( __( 'No geo database import is running.', 'wp-bouncer' ) );
+			throw new \RuntimeException( __( 'No geo database import is running.', 'wp-bouncer' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- translated string literal, not user input; the message is escaped by whoever prints it.
 		}
 
 		$deadline = microtime( true ) + $seconds;
@@ -197,10 +209,10 @@ final class GeoImport {
 			$dir = $uploads['basedir'] . '/' . self::WORK_DIR;
 			if ( wp_mkdir_p( $dir ) && wp_is_writable( $dir ) ) {
 				if ( ! file_exists( $dir . '/index.php' ) ) {
-					file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+					file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- writes a fixed hardening file into the plugin's own uploads folder; WP_Filesystem needs credentials and is not loaded in cron.
 				}
 				if ( ! file_exists( $dir . '/.htaccess' ) ) {
-					file_put_contents( $dir . '/.htaccess', "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+					file_put_contents( $dir . '/.htaccess', "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- writes a fixed hardening file into the plugin's own uploads folder; WP_Filesystem needs credentials and is not loaded in cron.
 				}
 				return $dir;
 			}

@@ -23,11 +23,22 @@ final class TrafficLog {
 	/** Columns the list can be sorted by. */
 	private const SORTABLE = array( 'created_at', 'ip', 'client', 'status', 'method' );
 
-	/** @var \wpdb */
+	/**
+	 * WordPress database handle.
+	 *
+	 * @var \wpdb
+	 */
 	private $db;
+	/**
+	 * Fully prefixed table name.
+	 *
+	 * @var string
+	 */
 	private string $table;
 
 	/**
+	 * Set up the TrafficLog.
+	 *
 	 * @param \wpdb $db WordPress database handle.
 	 */
 	public function __construct( $db ) {
@@ -122,7 +133,7 @@ final class TrafficLog {
 		$offset               = ( max( 1, $page ) - 1 ) * $per_page;
 
 		$sql = "SELECT * FROM {$this->table} WHERE {$where} ORDER BY {$orderby} {$order}, id {$order} LIMIT {$per_page} OFFSET {$offset}";
-		return (array) $this->db->get_results( $this->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (array) $this->db->get_results( $this->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL -- $sql only interpolates the $wpdb->prefix table name, $where (fixed fragments with %s placeholders from where()), an allow-listed column, ASC/DESC and int-cast limit/offset; user values are bound via prepare().
 	}
 
 	/**
@@ -132,7 +143,7 @@ final class TrafficLog {
 	 */
 	public function count( array $filters = array() ): int {
 		list( $where, $args ) = $this->where( $filters );
-		return (int) $this->db->get_var( $this->prepare( "SELECT COUNT(*) FROM {$this->table} WHERE {$where}", $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (int) $this->db->get_var( $this->prepare( "SELECT COUNT(*) FROM {$this->table} WHERE {$where}", $args ) ); // phpcs:ignore WordPress.DB.PreparedSQL -- $where is built from fixed fragments with %s placeholders in where() and its values are bound via prepare(); the table name is built from $wpdb->prefix.
 	}
 
 	/**
@@ -141,7 +152,7 @@ final class TrafficLog {
 	 * @param string $since UTC datetime.
 	 */
 	public function unique_ips( string $since ): int {
-		return (int) $this->db->get_var( $this->db->prepare( "SELECT COUNT(DISTINCT ip) FROM {$this->table} WHERE created_at >= %s", $since ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (int) $this->db->get_var( $this->db->prepare( "SELECT COUNT(DISTINCT ip) FROM {$this->table} WHERE created_at >= %s", $since ) ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 	}
 
 	/**
@@ -151,7 +162,7 @@ final class TrafficLog {
 	 * @return array<string, int> Type => count, largest first.
 	 */
 	public function by_client( string $since ): array {
-		$rows = $this->db->get_results( $this->db->prepare( "SELECT client AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s GROUP BY client ORDER BY n DESC", $since ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$rows = $this->db->get_results( $this->db->prepare( "SELECT client AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s GROUP BY client ORDER BY n DESC", $since ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 		$out  = array();
 		foreach ( (array) $rows as $row ) {
 			$out[ (string) $row['k'] ] = (int) $row['n'];
@@ -168,11 +179,11 @@ final class TrafficLog {
 	public function purge_older_than( int $days ): int {
 		$days   = max( 1, min( self::MAX_DAYS, $days ) );
 		$cutoff = gmdate( 'Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS );
-		return (int) $this->db->query( $this->db->prepare( "DELETE FROM {$this->table} WHERE created_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return (int) $this->db->query( $this->db->prepare( "DELETE FROM {$this->table} WHERE created_at < %s", $cutoff ) ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 	}
 
 	/** Delete every row. */
 	public function clear(): void {
-		$this->db->query( "DELETE FROM {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL
+		$this->db->query( "DELETE FROM {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL -- no user input; the table name is built from $wpdb->prefix and these statements take no placeholders.
 	}
 }

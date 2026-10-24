@@ -79,7 +79,12 @@ final class WafRule extends AbstractRule {
 		return self::ID;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
 		if ( $request->is_trusted() ) {
 			return null;

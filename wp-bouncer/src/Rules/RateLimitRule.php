@@ -29,9 +29,16 @@ final class RateLimitRule extends AbstractRule {
 
 	public const ID = 'rate_limit';
 
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface
+	 */
 	private CounterStoreInterface $store;
 
 	/**
+	 * Set up the RateLimitRule.
+	 *
 	 * @param array<string, mixed>  $settings Rule settings.
 	 * @param CounterStoreInterface $store    Counter storage.
 	 */
@@ -45,10 +52,16 @@ final class RateLimitRule extends AbstractRule {
 		return self::ID;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
-		$ip = $request->ip();
-		if ( '' === $ip || $request->is_trusted() ) {
+		$ip = $request->key_ip();
+		// Nothing is counted or banned for loopback, proxy or shared (fallback) addresses.
+		if ( '' === $ip || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return null;
 		}
 

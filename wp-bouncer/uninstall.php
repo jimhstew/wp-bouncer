@@ -14,7 +14,7 @@ require_once __DIR__ . '/src/Autoloader.php';
 \WPBouncer\Autoloader::register( __DIR__ . '/src' );
 \WPBouncer\Hardening\UploadsGuard::teardown();
 
-// phpcs:disable WordPress.DB.DirectDatabaseQuery
+// phpcs:disable WordPress.DB.DirectDatabaseQuery -- one-off uninstall cleanup of the plugin's own tables and transients; nothing to cache.
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_log" );
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_geo" );
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_traffic" );
@@ -38,12 +38,12 @@ if ( is_dir( $wpb_dir ) ) {
 			wp_delete_file( $wpb_dir . '/' . $wpb_name );
 		}
 	}
-	@rmdir( $wpb_dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+	@rmdir( $wpb_dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions -- best-effort cleanup: the folder may be missing or not empty, and failure is harmless.
 }
 
 // Counters, lockouts and bans are transients named wpb_<md5>.
 $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%' OR option_name LIKE '\\_transient\\_timeout\\_wpb\\_%'" );
-// phpcs:enable
+// phpcs:enable WordPress.DB.DirectDatabaseQuery
 
 wp_clear_scheduled_hook( 'wp_bouncer_daily_maintenance' );
 wp_clear_scheduled_hook( 'wp_bouncer_uploads_check' );

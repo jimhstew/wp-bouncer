@@ -14,7 +14,7 @@ plugins_loaded (priority 1) ──► Plugin::run_firewall()
    │   Request::from_globals()        snapshot: IP (via IpResolver), method, URI, GET, POST, headers
    │   Plugin::build_rules()          10 rules, cheapest first, + "wp_bouncer_rules" filter
    │   Firewall::handle()
-   │      ├─ allowlisted or loopback?  ──► let in
+   │      ├─ allowlisted, or loopback with no forwarding header?  ──► let in
    │      ├─ for each enabled rule: inspect(Request) → Verdict|null
    │      │     first Verdict wins; later rules don't run
    │      ├─ log (at most once per IP+rule per 60 s)
@@ -72,7 +72,7 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 **Self-lockout guard.** Before saving, `AdminController` runs the IP-blocklist, country and User-Agent rules from the *new* settings against the admin's own request. If any of them would block it, the admin's IP is added to the allowlist and the admin is told.
 
-**IP spoofing.** Proxy headers are only trusted when `REMOTE_ADDR` is a listed trusted proxy, or no proxies are listed (the admin screen warns about the latter). For `X-Forwarded-For` the resolver walks right to left and takes the first hop that isn't a trusted proxy. Anything further left could have been written by the client.
+**IP spoofing.** Proxy headers are only trusted when `REMOTE_ADDR` is a listed trusted proxy. If a header source is chosen but no trusted proxies are listed, the header is ignored, the connection address is used, and an admin notice offers fixes; bans and lockouts are suspended while that holds. Header values that are private, loopback, link-local, carrier-grade NAT, unique-local or unspecified are refused, unless `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS` is `true` (private values only, never loopback). Trusted proxy and allowlist ranges wider than /8 (IPv4) or /16 (IPv6) are ignored and dropped on save. For `X-Forwarded-For` the resolver walks right to left and takes the first hop that isn't a trusted proxy. Anything further left could have been written by the client.
 
 ## Data
 

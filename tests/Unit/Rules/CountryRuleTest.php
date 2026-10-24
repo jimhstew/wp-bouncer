@@ -97,4 +97,22 @@ final class CountryRuleTest extends TestCase {
 		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ip' => '1.1.1.1', 'uri' => '/xmlrpc.php' ) ) ) );
 		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ip' => '1.1.1.1', 'uri' => '/wp-admin/' ) ) ) );
 	}
+
+	/** RT-04: a request from the server itself has no geography; a loopback proxy's visitors do not escape block_unknown. */
+	public function test_only_local_requests_skip_the_country_check(): void {
+		$rule = $this->rule( array( 'block_unknown' => true ) );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '127.0.0.1', 'local' => true ) ) ) );
+		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ip' => '127.0.0.1' ) ) ), 'loopback IP but not local' );
+		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ip' => '9.9.9.9' ) ) ) );
+	}
+
+	/** NEW-5: a trusted loopback proxy forwarding a refused header value must not skip the country rule. */
+	public function test_a_refused_forwarded_header_still_gets_the_country_decision(): void {
+		$resolver = new \WPBouncer\Firewall\IpResolver( 'x_real_ip', array( '127.0.0.1' ) );
+		$server   = array( 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '10.0.0.1' );
+		$request  = Requests::make( array( 'ip' => $resolver->resolve( $server ), 'local' => $resolver->is_local_request( $server ), 'server' => $server ) );
+		$rule     = $this->rule( array( 'mode' => 'allow', 'countries' => array( 'DE' ), 'block_unknown' => true ) );
+
+		$this->assertNotNull( $rule->inspect( $request ) );
+	}
 }

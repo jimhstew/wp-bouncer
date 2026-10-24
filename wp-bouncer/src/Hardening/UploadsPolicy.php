@@ -94,7 +94,7 @@ final class UploadsPolicy {
 	 * @param int    $max_bytes How much to read.
 	 */
 	public static function contains_php( string $path, int $max_bytes = 52428800 ): bool {
-		$handle = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+		$handle = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions -- a failed open is handled by the false check below; plugin-owned local file, WP_Filesystem cannot stream.
 		if ( false === $handle ) {
 			return false;
 		}
@@ -102,7 +102,7 @@ final class UploadsPolicy {
 		$read  = 0;
 		$found = false;
 		while ( ! feof( $handle ) && $read < $max_bytes ) {
-			$chunk = fread( $handle, max( 1, min( 1048576, $max_bytes - $read ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+			$chunk = fread( $handle, max( 1, min( 1048576, $max_bytes - $read ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- reads only the first bytes of a local file with a size cap; WP_Filesystem has no partial read.
 			if ( false === $chunk || '' === $chunk ) {
 				break;
 			}
@@ -113,7 +113,7 @@ final class UploadsPolicy {
 			}
 			$tail = substr( $chunk, -4 );
 		}
-		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- reads only the first bytes of a local file with a size cap; WP_Filesystem has no partial read.
 		return $found;
 	}
 

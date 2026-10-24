@@ -27,7 +27,10 @@ defined( 'ABSPATH' ) || exit;
  * - ban_minutes (int): how long a prober is refused everywhere; 0 refuses only the probe.
  * - extra_paths (string[]): more path fragments to treat as probes, e.g. "/old-admin/".
  *
- * Logged-in administrators are never banned.
+ * Logged-in administrators are never banned. Neither are loopback or proxy
+ * addresses, nor anyone while the client IP can't be told apart from a shared
+ * proxy (Request::can_be_banned()): such a probe is still refused, but no ban
+ * is placed or enforced.
  */
 final class SensitiveFileRule extends AbstractRule {
 
@@ -58,9 +61,16 @@ final class SensitiveFileRule extends AbstractRule {
 	/** Real WordPress files that look like probes but aren't secret. */
 	private const NOT_PROBES = array( '/wp-config.php', '/wp-config-sample.php' );
 
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface
+	 */
 	private CounterStoreInterface $store;
 
 	/**
+	 * Set up the SensitiveFileRule.
+	 *
 	 * @param array<string, mixed>  $settings Rule settings.
 	 * @param CounterStoreInterface $store    Ban storage.
 	 */
@@ -74,14 +84,19 @@ final class SensitiveFileRule extends AbstractRule {
 		return self::ID;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
-		$ip = $request->ip();
+		$ip = $request->key_ip();
 		if ( '' === $ip || $request->is_trusted() ) {
 			return null;
 		}
 
-		$ban_minutes = max( 0, (int) $this->setting( 'ban_minutes', 60 ) );
+		$ban_minutes = $request->can_be_banned() ? max( 0, (int) $this->setting( 'ban_minutes', 60 ) ) : 0;
 		if ( $ban_minutes > 0 && null !== $this->store->get( self::ban_key( $ip ) ) ) {
 			return $this->deny( 'Banned after probing for sensitive files' );
 		}

@@ -8,6 +8,7 @@
 namespace WPBouncer;
 
 use WPBouncer\Admin\AdminController;
+use WPBouncer\Admin\SetupNotices;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\HttpResponder;
@@ -52,28 +53,101 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.1.1';
+	public const VERSION = '1.1.2';
 
 	/** Option holding metadata about the imported geo database. */
 	public const GEO_META_OPTION = 'wp_bouncer_geo_meta';
 
+	/**
+	 * Shared plugin instance.
+	 *
+	 * @var Plugin|null
+	 */
 	private static ?Plugin $instance = null;
 
+	/**
+	 * Main plugin file.
+	 *
+	 * @var string
+	 */
 	private string $file;
+	/**
+	 * Settings for this component.
+	 *
+	 * @var Settings
+	 */
 	private Settings $settings;
 
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface|null
+	 */
 	private ?CounterStoreInterface $store = null;
-	private ?BlockLog $log                = null;
-	private ?GeoProviderInterface $geo    = null;
-	private ?GeoDatabase $geo_db          = null;
-	private ?LoginGuard $guard            = null;
-	private ?Request $request             = null;
-	private ?string $client_ip            = null;
-	private ?UploadsGuard $uploads        = null;
-	private ?AlertNotifier $alerts        = null;
-	private ?TrafficLog $traffic          = null;
+	/**
+	 * Block log.
+	 *
+	 * @var BlockLog|null
+	 */
+	private ?BlockLog $log = null;
+	/**
+	 * Country lookup.
+	 *
+	 * @var GeoProviderInterface|null
+	 */
+	private ?GeoProviderInterface $geo = null;
+	/**
+	 * Geo database table.
+	 *
+	 * @var GeoDatabase|null
+	 */
+	private ?GeoDatabase $geo_db = null;
+	/**
+	 * Login failure tracker.
+	 *
+	 * @var LoginGuard|null
+	 */
+	private ?LoginGuard $guard = null;
+	/**
+	 * Cached request.
+	 *
+	 * @var Request|null
+	 */
+	private ?Request $request = null;
+	/**
+	 * Cached client IP.
+	 *
+	 * @var string|null
+	 */
+	private ?string $client_ip = null;
+	/**
+	 * Client IP resolver.
+	 *
+	 * @var IpResolver|null
+	 */
+	private ?IpResolver $resolver = null;
+	/**
+	 * Uploads guard.
+	 *
+	 * @var UploadsGuard|null
+	 */
+	private ?UploadsGuard $uploads = null;
+	/**
+	 * Alert notifier.
+	 *
+	 * @var AlertNotifier|null
+	 */
+	private ?AlertNotifier $alerts = null;
+	/**
+	 * Traffic log.
+	 *
+	 * @var TrafficLog|null
+	 */
+	private ?TrafficLog $traffic = null;
 
 	/**
+	 * Set up the Plugin.
+	 *
 	 * @param string $file Main plugin file.
 	 */
 	private function __construct( string $file ) {
@@ -133,6 +207,7 @@ final class Plugin {
 		}
 
 		if ( is_admin() ) {
+			( new SetupNotices( $this ) )->register();
 			( new AdminController( $this ) )->register();
 		}
 	}
@@ -147,9 +222,11 @@ final class Plugin {
 		load_plugin_textdomain( 'wp-bouncer', false, dirname( plugin_basename( $this->file ) ) . '/languages' );
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Services (built lazily)
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/** Current settings. */
 	public function settings(): Settings {
@@ -161,6 +238,10 @@ final class Plugin {
 		$this->settings = Settings::load();
 		$this->guard    = null;
 		$this->geo      = null;
+		// The IP settings may have changed, so resolve the client again.
+		$this->resolver  = null;
+		$this->client_ip = null;
+		$this->request   = null;
 	}
 
 	/** Main plugin file path. */
@@ -253,19 +334,82 @@ final class Plugin {
 		return $this->guard;
 	}
 
+	/** True when wp-config.php defines WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS as true. */
+	public static function allows_private_client_ips(): bool {
+		return defined( 'WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS' ) && WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS;
+	}
+
+	/**
+	 * Client IP resolver for the current settings.
+	 *
+	 * Honours the wp-config constant WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS, for
+	 * intranet sites whose proxy forwards private client addresses.
+	 */
+	public function ip_resolver(): IpResolver {
+		if ( null === $this->resolver ) {
+			$this->resolver = new IpResolver( (string) $this->settings->get( 'ip_source' ), (array) $this->settings->get( 'trusted_proxies' ), self::allows_private_client_ips() );
+		}
+		return $this->resolver;
+	}
+
 	/** Resolved client IP for this request. */
 	public function client_ip(): string {
 		if ( null === $this->client_ip ) {
-			$resolver        = new IpResolver( (string) $this->settings->get( 'ip_source' ), (array) $this->settings->get( 'trusted_proxies' ) );
-			$this->client_ip = $resolver->resolve( wp_unslash( $_SERVER ) );
+			$this->client_ip = $this->ip_resolver()->resolve( wp_unslash( $_SERVER ) );
 		}
 		return $this->client_ip;
 	}
 
-	/** Is the current client on the allowlist (or loopback)? */
-	public function client_is_allowlisted(): bool {
+	/**
+	 * Does the current request skip every rule?
+	 *
+	 * True for a request from the server itself (loopback with no forwarding
+	 * header) and for allowlisted IPs. Firewall::is_exempt() applies the same rule.
+	 *
+	 * @param string[]|null $allowlist Allowlist to test against; the saved one when null.
+	 */
+	public function client_is_exempt( ?array $allowlist = null ): bool {
+		if ( $this->ip_resolver()->is_local_request( wp_unslash( $_SERVER ) ) ) {
+			return true;
+		}
 		$ip = $this->client_ip();
-		return '' !== $ip && ( IpUtils::is_loopback( $ip ) || IpUtils::matches_any( $ip, (array) $this->settings->get( 'allowlist' ) ) );
+		return '' !== $ip && IpUtils::matches_any( $ip, IpUtils::without_broad( $allowlist ?? (array) $this->settings->get( 'allowlist' ) ) );
+	}
+
+	/**
+	 * Is the current client exempt from the rules (allowlisted, or the server itself)?
+	 *
+	 * @deprecated 1.1.2 The name is misleading since loopback is no longer an allowlist
+	 *             entry. Use client_is_exempt().
+	 */
+	public function client_is_allowlisted(): bool {
+		return $this->client_is_exempt();
+	}
+
+	/**
+	 * May bans, lockouts and counters be kept against the current client?
+	 *
+	 * Not for loopback or trusted-proxy addresses, and not while a header IP
+	 * source has no trusted proxies (the address is then a shared proxy).
+	 */
+	public function client_can_be_banned(): bool {
+		$server = wp_unslash( $_SERVER );
+		if ( '' !== $this->ip_resolver()->rejected_subject( $server ) ) {
+			return true; // The "rejected:<proxy>" subject only matches requests that carry a refused header.
+		}
+		return IpUtils::is_bannable( $this->client_ip(), $this->ip_resolver()->proxies(), $this->ip_resolver()->suspends_bans( $server ) );
+	}
+
+	/**
+	 * What bans, lockouts and counters are keyed on for the current client.
+	 *
+	 * The client IP, except when a trusted proxy forwarded a header whose value
+	 * was refused: then "rejected:<proxy>", so such requests are still counted
+	 * without ever banning the proxy itself.
+	 */
+	public function client_key(): string {
+		$subject = $this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) );
+		return '' !== $subject ? $subject : $this->client_ip();
 	}
 
 	/** Snapshot of the current request. */
@@ -275,14 +419,17 @@ final class Plugin {
 			$this->request = Request::from_globals(
 				$this->client_ip(),
 				wp_unslash( $_SERVER ),
-				wp_unslash( $_GET ),  // phpcs:ignore WordPress.Security.NonceVerification
-				wp_unslash( $_POST ), // phpcs:ignore WordPress.Security.NonceVerification
+				wp_unslash( $_GET ),  // phpcs:ignore WordPress.Security.NonceVerification -- the firewall inspects every request, including those that can never carry a nonce; read-only inspection. The request URI (with query string) and parameter names can reach the block log, which escapes them on output.
+				wp_unslash( $_POST ), // phpcs:ignore WordPress.Security.NonceVerification -- the firewall inspects every request, including those that can never carry a nonce; read-only inspection. The request URI (with query string) and parameter names can reach the block log, which escapes them on output.
 				static function (): bool {
 					return function_exists( 'is_user_logged_in' ) && is_user_logged_in();
 				},
 				static function (): bool {
 					return function_exists( 'current_user_can' ) && current_user_can( 'manage_options' );
-				}
+				},
+				$this->ip_resolver()->is_local_request( wp_unslash( $_SERVER ) ),
+				$this->client_can_be_banned(),
+				$this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) )
 			);
 		}
 		return $this->request;
@@ -329,9 +476,11 @@ final class Plugin {
 		);
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Hook callbacks
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/** Run the bouncer for the current request (plugins_loaded, priority 1). */
 	public function run_firewall(): void {
@@ -341,7 +490,7 @@ final class Plugin {
 
 		$firewall = new Firewall(
 			$this->build_rules(),
-			(array) $this->settings->get( 'allowlist' ),
+			IpUtils::without_broad( (array) $this->settings->get( 'allowlist' ) ),
 			$this->settings->is_monitor_mode(),
 			$this->log(),
 			$this->store(),
@@ -392,7 +541,11 @@ final class Plugin {
 				if ( $this->client_is_allowlisted() ) {
 					return;
 				}
-				$this->login_guard()->record_failure( $this->client_ip(), (string) $username, $this->log_context() );
+				if ( ! $this->client_can_be_banned() ) {
+					$this->log_suspended_lockout();
+					return;
+				}
+				$this->login_guard()->record_failure( $this->client_key(), (string) $username, array_merge( $this->log_context(), array( 'ip' => $this->client_ip() ) ) );
 			}
 		);
 
@@ -415,8 +568,8 @@ final class Plugin {
 			return $user;
 		}
 
-		if ( ! $this->settings->is_monitor_mode() && ! $this->client_is_allowlisted() ) {
-			$remaining = $guard->lockout_remaining( $this->client_ip() );
+		if ( ! $this->settings->is_monitor_mode() && ! $this->client_is_allowlisted() && $this->client_can_be_banned() ) {
+			$remaining = $guard->lockout_remaining( $this->client_key() );
 			if ( $remaining > 0 ) {
 				return new \WP_Error(
 					'wp_bouncer_locked_out',
@@ -433,6 +586,37 @@ final class Plugin {
 			return new \WP_Error( 'wp_bouncer_invalid_credentials', __( '<strong>Error:</strong> The username or password you entered is incorrect.', 'wp-bouncer' ) );
 		}
 		return $user;
+	}
+
+	/**
+	 * Note, instead of counting, a failed login whose lockout is suspended.
+	 *
+	 * While a header IP source has no trusted proxies every visitor appears to
+	 * come from the proxy, so a lockout would refuse them all. The failure is
+	 * logged as "monitored" (once a minute per address) so the admin can see
+	 * what would have happened.
+	 */
+	private function log_suspended_lockout(): void {
+		$ip = $this->client_ip();
+		if ( '' === $ip || ! $this->ip_resolver()->suspends_bans( wp_unslash( $_SERVER ) ) || ! $this->login_guard()->is_enabled() ) {
+			return;
+		}
+		$key = 'fb_login_log:' . $ip;
+		if ( null !== $this->store()->get( $key ) ) {
+			return;
+		}
+		$this->store()->set( $key, 1, Firewall::LOG_DEDUPE_SECONDS );
+		$this->log()->record(
+			array_merge(
+				$this->log_context(),
+				array(
+					'ip'     => $ip,
+					'rule'   => LoginGuard::RULE_ID,
+					'action' => BlockLogInterface::ACTION_MONITORED,
+					'reason' => 'Failed login. Lockouts are suspended because the client IP cannot be told apart from a shared proxy (IP header set, but the connection is not from a listed trusted proxy).',
+				)
+			)
+		);
 	}
 
 	/** XML-RPC hardening that complements XmlRpcRule. */

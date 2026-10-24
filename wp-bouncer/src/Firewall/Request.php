@@ -19,32 +19,113 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Request {
 
+	/**
+	 * Client IP address.
+	 *
+	 * @var string
+	 */
 	private string $ip;
+	/**
+	 * HTTP method.
+	 *
+	 * @var string
+	 */
 	private string $method;
+	/**
+	 * Request URI.
+	 *
+	 * @var string
+	 */
 	private string $uri;
+	/**
+	 * Request path.
+	 *
+	 * @var string
+	 */
 	private string $path;
-	/** @var array<string, mixed> */
+	/**
+	 * Query parameters.
+	 *
+	 * @var array<string, mixed>
+	 */
 	private array $query;
-	/** @var array<string, mixed> */
+	/**
+	 * POST parameters.
+	 *
+	 * @var array<string, mixed>
+	 */
 	private array $post;
-	/** @var array<string, mixed> */
+	/**
+	 * The $_SERVER array.
+	 *
+	 * @var array<string, mixed>
+	 */
 	private array $server;
 
-	/** @var callable(): bool */
+	/**
+	 * Tells whether the current user is logged in.
+	 *
+	 * @var callable(): bool
+	 */
 	private $logged_in_resolver;
-	/** @var callable(): bool */
+	/**
+	 * Tells whether the current user is trusted.
+	 *
+	 * @var callable(): bool
+	 */
 	private $trusted_resolver;
-	/** @var callable(): string */
+	/**
+	 * Reads the raw request body.
+	 *
+	 * @var callable(): string
+	 */
 	private $body_reader;
 
+	/**
+	 * Is this a request from the server itself?
+	 *
+	 * @var bool
+	 */
+	private bool $local;
+	/**
+	 * May bans and counters be kept for this client?
+	 *
+	 * @var bool
+	 */
+	private bool $bannable;
+
+	/**
+	 * Subject that bans and counters are keyed on instead of the IP.
+	 *
+	 * @var string
+	 */
+	private string $subject;
+
+	/**
+	 * Cached logged-in result.
+	 *
+	 * @var bool|null
+	 */
 	private ?bool $logged_in = null;
-	private ?bool $trusted   = null;
-	private ?string $body    = null;
+	/**
+	 * Cached trusted result.
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $trusted = null;
+	/**
+	 * Cached request body.
+	 *
+	 * @var string|null
+	 */
+	private ?string $body = null;
 
 	/**
 	 * Build a request.
 	 *
 	 * @param array<string, mixed> $args {
+	 *     Request fields.
+	 *
 	 *     @type string   $ip          Client IP (already resolved by IpResolver).
 	 *     @type string   $method      HTTP method.
 	 *     @type string   $uri         Raw REQUEST_URI.
@@ -54,6 +135,9 @@ final class Request {
 	 *     @type callable $logged_in   Returns whether a user is logged in.
 	 *     @type callable $trusted     Returns whether the user is a site administrator.
 	 *     @type callable $body        Returns the raw request body.
+	 *     @type bool     $local       Request from the server itself (loopback, no forwarding header). Default false.
+	 *     @type bool     $bannable    Bans, lockouts and counters may be kept for this client. Default true.
+	 *     @type string   $subject     Key for bans and counters when it must differ from the IP. Default ''.
 	 * }
 	 */
 	public function __construct( array $args ) {
@@ -64,6 +148,10 @@ final class Request {
 		$this->post   = is_array( $args['post'] ?? null ) ? $args['post'] : array();
 		$this->server = is_array( $args['server'] ?? null ) ? $args['server'] : array();
 		$this->path   = self::normalize_path( $this->uri );
+
+		$this->local    = ! empty( $args['local'] );
+		$this->subject  = (string) ( $args['subject'] ?? '' );
+		$this->bannable = ! array_key_exists( 'bannable', $args ) || ! empty( $args['bannable'] );
 
 		$this->logged_in_resolver = $args['logged_in'] ?? static function (): bool {
 			return false;
@@ -85,8 +173,11 @@ final class Request {
 	 * @param array<string, mixed> $post      $_POST.
 	 * @param callable             $logged_in Login-state resolver.
 	 * @param callable             $trusted   Admin-state resolver.
+	 * @param bool                 $local     Request from the server itself.
+	 * @param bool                 $bannable  Bans and counters may be kept for this client.
+	 * @param string               $subject   Key for bans and counters when it must differ from the IP.
 	 */
-	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted ): self {
+	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '' ): self {
 		return new self(
 			array(
 				'ip'        => $ip,
@@ -97,6 +188,9 @@ final class Request {
 				'server'    => $server,
 				'logged_in' => $logged_in,
 				'trusted'   => $trusted,
+				'local'     => $local,
+				'bannable'  => $bannable,
+				'subject'   => $subject,
 				'body'      => static function (): string {
 					// php://input can be read more than once on PHP >= 5.6, so WordPress still sees it later.
 					$body = file_get_contents( 'php://input', false, null, 0, 1048576 );
@@ -114,7 +208,7 @@ final class Request {
 	 * @param string $uri Raw request URI.
 	 */
 	public static function normalize_path( string $uri ): string {
-		$path = (string) parse_url( 'http://x' . ( '/' === substr( $uri, 0, 1 ) ? '' : '/' ) . $uri, PHP_URL_PATH );
+		$path = (string) parse_url( 'http://x' . ( '/' === substr( $uri, 0, 1 ) ? '' : '/' ) . $uri, PHP_URL_PATH ); // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- pure-PHP class unit-tested without WordPress; only the path component of a fixed-scheme URL is read, so PHP-version differences do not matter.
 		$path = rawurldecode( $path );
 		$path = str_replace( '\\', '/', $path );
 		$path = (string) preg_replace( '#/+#', '/', $path );
@@ -124,6 +218,34 @@ final class Request {
 	/** Client IP address. */
 	public function ip(): string {
 		return $this->ip;
+	}
+
+	/**
+	 * Did the request come from the server itself (WP-Cron, health checks)?
+	 *
+	 * Set by the caller from IpResolver::is_local_request(); local requests skip every rule.
+	 */
+	public function is_local(): bool {
+		return $this->local;
+	}
+
+	/**
+	 * May this client be banned, locked out or counted?
+	 *
+	 * False for loopback and trusted-proxy addresses, and while the client IP
+	 * can't be told apart from a shared proxy. Rules must still refuse the
+	 * current request when it matches, but must not keep state against the IP.
+	 */
+	public function can_be_banned(): bool {
+		return $this->bannable;
+	}
+
+	/**
+	 * What bans, lockouts and counters are keyed on: the IP, or a distinct
+	 * subject such as "rejected:<proxy>" (see IpResolver::rejected_subject()).
+	 */
+	public function key_ip(): string {
+		return '' !== $this->subject ? $this->subject : $this->ip;
 	}
 
 	/** Upper-case HTTP method. */
@@ -141,12 +263,20 @@ final class Request {
 		return $this->path;
 	}
 
-	/** @return array<string, mixed> Query parameters. */
+	/**
+	 * Get the query parameters.
+	 *
+	 * @return array<string, mixed> Query parameters.
+	 */
 	public function query(): array {
 		return $this->query;
 	}
 
-	/** @return array<string, mixed> POST parameters. */
+	/**
+	 * Get the POST parameters.
+	 *
+	 * @return array<string, mixed> POST parameters.
+	 */
 	public function post(): array {
 		return $this->post;
 	}

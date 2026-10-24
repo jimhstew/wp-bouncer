@@ -1,6 +1,6 @@
 # Static analysis with WordPress function stubs: composer analyse
 parameters:
-  level: 5
+  level: 6
   paths:
     - wp-bouncer/src
     - wp-bouncer/uninstall.php

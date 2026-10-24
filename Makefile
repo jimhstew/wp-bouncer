@@ -4,6 +4,8 @@
 #   make manifest   Also write builds/update.json and release-notes.md (needs PHP). The release
 #                   workflow attaches these to the GitHub release; installed sites read update.json.
 #   make test       Unit tests (needs PHP and `composer install`)
+#   make integration  WordPress integration tests (needs PHP with mysqli and a MySQL/MariaDB;
+#                   set WPB_TESTS_DB_HOST/USER/PASSWORD/NAME, optionally WP_VERSION=6.4)
 #   make analyse    PHPStan static analysis
 #   make lint       WordPress Coding Standards
 #   make e2e        End-to-end tests against the wp-bouncer/ source folder
@@ -13,6 +15,11 @@
 # Only the wp-bouncer/ folder goes into the zip. Tests (including the WAF test
 # payloads that some hosts' malware scanners flag), documentation and tooling
 # stay out of it, and the build fails if anything test-like slips in.
+#
+# The zip is reproducible (SB-13): file order, modes, owners and timestamps are fixed, so building
+# the same commit anywhere gives the same sha256. Timestamps come from SOURCE_DATE_EPOCH, which
+# defaults to the last commit's time (outside a git checkout, set it yourself or a fixed fallback
+# date is used). Compare a local build with the published .sha256 to check a release.
 #
 # Override tools if they aren't on PATH, e.g. `make test PHP=/opt/php/bin/php`.
 
@@ -25,12 +32,18 @@ BUILDS   := builds
 VERSION  := $(shell sed -n 's/^ \* Version: *//p' $(SRC)/$(PLUGIN).php | tr -d '[:space:]')
 ZIP      := $(BUILDS)/$(PLUGIN)-$(VERSION).zip
 STAGE    := $(BUILDS)/.stage
+# Seconds since the epoch: the environment, else the last commit, else 2020-01-01 UTC.
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null)
+ifeq ($(strip $(SOURCE_DATE_EPOCH)),)
+SOURCE_DATE_EPOCH := 1577836800
+endif
+export SOURCE_DATE_EPOCH
 SOURCES  := $(shell find $(SRC) -type f ! -name '.DS_Store')
 
 # Files that must never ship.
 FORBIDDEN := -e '/tests/' -e 'Test\.php$$' -e '/fixtures/' -e 'phpunit' -e '\.phar$$' -e '/\.' -e 'composer\.'
 
-.PHONY: all build manifest test analyse lint e2e check clean version
+.PHONY: all build manifest test integration analyse lint e2e check clean version
 
 all: build
 
@@ -46,14 +59,19 @@ $(ZIP): $(SOURCES) Makefile
 		echo "($(PHP) not found: skipping the PHP syntax check)"; \
 	fi
 	@rm -rf $(STAGE) && mkdir -p $(STAGE)
-	@# Copy without dotfiles (.DS_Store, .gitkeep and the like).
-	@cd $(SRC) && find . -type f ! -name '.*' | while read -r f; do \
+	@# Copy without dotfiles (.DS_Store, .gitkeep and the like), then normalise modes and mtimes.
+	@umask 022; cd $(SRC) && find . -type f ! -name '.*' | while read -r f; do \
 		mkdir -p "$(CURDIR)/$(STAGE)/$(PLUGIN)/$$(dirname "$$f")"; \
-		cp -p "$$f" "$(CURDIR)/$(STAGE)/$(PLUGIN)/$$f"; \
+		cp "$$f" "$(CURDIR)/$(STAGE)/$(PLUGIN)/$$f"; \
 	done
 	@mkdir -p $(STAGE)/$(PLUGIN)/languages
+	@find $(STAGE) -type d -exec chmod 755 {} + && find $(STAGE) -type f -exec chmod 644 {} +
+	@stamp=$$(date -u -d @$(SOURCE_DATE_EPOCH) +%Y%m%d%H%M.%S 2>/dev/null || date -u -r $(SOURCE_DATE_EPOCH) +%Y%m%d%H%M.%S) \
+		&& find $(STAGE) -exec env TZ=UTC touch -h -t "$$stamp" {} +
 	@rm -f $@
-	@cd $(STAGE) && zip -qrX "$(CURDIR)/$@" $(PLUGIN)
+	@# Sorted list (directories included, so the empty languages/ folder survives), no extra
+	@# attributes (-X), UTC so the stored times do not depend on the builder's time zone.
+	@cd $(STAGE) && find $(PLUGIN) | LC_ALL=C sort | TZ=UTC zip -q -X "$(CURDIR)/$@" -@
 	@rm -rf $(STAGE)
 	@if unzip -Z1 $@ | grep -q $(FORBIDDEN); then \
 		echo "Refusing to ship test or tooling files:"; unzip -Z1 $@ | grep $(FORBIDDEN); rm -f $@; exit 1; \
@@ -74,6 +92,13 @@ vendor/autoload.php: composer.json
 
 test: vendor/autoload.php
 	$(PHP) vendor/bin/phpunit
+
+WP_VERSION  ?= latest
+WP_CORE_DIR ?= $(CURDIR)/builds/wp-core/$(WP_VERSION)
+
+integration: vendor/autoload.php
+	@test -f "$(WP_CORE_DIR)/wp-settings.php" || PHP=$(PHP) COMPOSER="$(COMPOSER)" WP_CORE_DIR="$(WP_CORE_DIR)" tests/Integration/install-wp.sh $(WP_VERSION)
+	WP_CORE_DIR="$(WP_CORE_DIR)" $(PHP) vendor/bin/phpunit -c phpunit-integration.xml.dist
 
 analyse: vendor/autoload.php
 	$(PHP) vendor/bin/phpstan analyse

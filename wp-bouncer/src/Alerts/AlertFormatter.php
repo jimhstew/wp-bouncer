@@ -21,7 +21,7 @@ final class AlertFormatter {
 	 * Build the email.
 	 *
 	 * @param array<int, array{type: string, title: string, detail: string}> $events  What happened.
-	 * @param array<string, string>                                         $context site_name, site_url, time, actor, ip, country, user_agent, settings_url.
+	 * @param array<string, string>                                          $context site_name, site_url, time, actor, ip, country, user_agent, settings_url.
 	 * @return array{subject: string, body: string}
 	 */
 	public static function format( array $events, array $context ): array {
@@ -33,9 +33,14 @@ final class AlertFormatter {
 		if ( 1 === count( $events ) ) {
 			$subject = sprintf( '[%s] WP Bouncer alert: %s', $site, self::clean( $events[0]['title'] ) );
 		} else {
-			$admins  = count( array_filter( $events, static function ( $e ) {
-				return 'admin' === $e['type'];
-			} ) );
+			$admins  = count(
+				array_filter(
+					$events,
+					static function ( $e ) {
+						return 'admin' === $e['type'];
+					}
+				)
+			);
 			$subject = sprintf(
 				'[%s] WP Bouncer alert: %d security events%s',
 				$site,

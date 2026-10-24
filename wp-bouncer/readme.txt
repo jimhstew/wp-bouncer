@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.1
+Stable tag: 1.1.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -37,7 +37,7 @@ Country lookups are done locally against a free database you import (DB-IP Lite 
 == Installation ==
 
 1. Upload the `wp-bouncer` folder to `/wp-content/plugins/` and activate it.
-2. Go to **Bouncer → General** and check that "Your IP as currently detected" is correct. If you're behind a proxy or CDN, set the IP source and trusted proxies.
+2. Go to **Bouncer → General** and check that "Your IP as currently detected" is correct. If you're behind a proxy or CDN, set the IP source and list the proxy's addresses under trusted proxies (the **IP detection** notice on each admin screen helps with this).
 3. Optionally switch to Monitor mode for a few days and review the Activity Log.
 4. For country blocking, import a geo database under **Bouncer → Tools**, then pick countries on the **Countries** tab.
 
@@ -55,6 +55,14 @@ It sends nothing about your site or visitors. It makes two kinds of outbound req
 
 It only adds a marked block to wp-content/uploads/.htaccess that refuses to run script files there; images and other uploads are unaffected, and anything else in that file is left alone. Right after writing it, the plugin checks that a file in uploads still loads; on a host that doesn't allow the rule and answers with errors, the block is taken out again and the Bouncer screens tell you. Untick it under Rules → No PHP in uploads to remove the block. It is also removed when WP Bouncer is deactivated or WP_BOUNCER_DISABLE is on. On nginx, which ignores .htaccess, the Rules tab shows the rule to add to your server config.
 
+= Why does WP Bouncer show an IP detection notice? =
+
+Your Client IP source is set to read a forwarding header (such as X-Forwarded-For or CF-Connecting-IP), but no trusted proxies are listed. Without a list, the header can't be trusted, so WP Bouncer uses the connection address instead and suspends bans and lockouts until you fix it. The notice offers buttons for the common cases:
+
+* **I have no proxy: use the connection address** if nothing sits in front of your site.
+* **Trust the address shown as my proxy** if the connection comes from a private or same-server proxy.
+* For a public address (a CDN), list the CDN's full published IP ranges under General → Trusted proxies. Don't trust a single public address.
+
 = I'm not getting alert emails =
 
 Use **Send a test email** under Bouncer → General → Email alerts. If it doesn't arrive, your site can't send mail; many hosts need an SMTP plugin. Every alert is also written to the Activity Log.
@@ -64,6 +72,16 @@ Use **Send a test email** under Bouncer → General → Email alerts. If it does
 It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
 
 == Changelog ==
+
+= 1.1.2 =
+* Security fix: a forwarding header (X-Forwarded-For, X-Real-IP, CF-Connecting-IP and similar) is ignored unless its sender is a listed trusted proxy. Without any trusted proxies, the connection address is used and an admin notice explains how to fix the setup. While this fallback is active, bans and lockouts are suspended; failed logins are still logged.
+* Security fix: private, loopback, link-local, carrier-grade NAT, unique-local and unspecified addresses are refused when they come from a header. New opt-in constant WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS for intranet sites behind a proxy.
+* Security fix: requests from loopback are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned.
+* Security fix: update packages must come from the exact expected GitHub release URL.
+* Over-broad trusted proxy and allowlist entries (wider than /8 for IPv4 or /16 for IPv6) are ignored and dropped on save, with a message naming them.
+* Changed: the update-source filters are only honoured when WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS is true in wp-config.php. Forks and testers must add it.
+* Changed: saving settings that would block you is refused, with a pointer to IP setup, when your address is shared by a proxy or CDN.
+* Changed: release pipeline hardened (pinned actions and downloads, checksum verification, reproducible zip) and CI blocks on coding standards and PHPStan level 6.
 
 = 1.1.1 =
 * New: Sensitive-file probes rule. Bans IPs that ask for .env, .git, wp-config backups, database dumps, logs, phpinfo pages, database tools and web shells.
@@ -86,3 +104,8 @@ It replaces the firewall, brute-force, country-blocking and rate-limiting parts.
 
 = 1.0.0 =
 * First release.
+
+== Upgrade Notice ==
+
+= 1.1.2 =
+Security fixes to IP detection. If your site is behind a proxy or CDN, check the IP detection notice on the admin screens and list your proxy or CDN addresses under General → Trusted proxies. Until you do, forwarded headers are ignored and bans and lockouts are suspended.

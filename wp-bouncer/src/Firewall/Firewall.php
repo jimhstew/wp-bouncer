@@ -18,7 +18,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Request flow:
  *
- *   1. Exempt? Allowlisted IPs and loopback (WP-Cron, health checks) pass.
+ *   1. Exempt? Allowlisted IPs and requests from the server itself (loopback with no
+ *      forwarding header: WP-Cron, health checks) pass.
  *   2. Run each enabled rule in order. The first Verdict wins.
  *   3. Log the verdict (repeats for the same IP and rule are suppressed for 60 s).
  *   4. Enforce mode: hand the verdict to the responder, which ends the request.
@@ -32,16 +33,46 @@ final class Firewall {
 	/** Seconds during which repeat log entries for the same IP+rule are dropped. */
 	public const LOG_DEDUPE_SECONDS = 60;
 
-	/** @var RuleInterface[] */
+	/**
+	 * Rules in evaluation order.
+	 *
+	 * @var RuleInterface[]
+	 */
 	private array $rules;
-	/** @var string[] */
+	/**
+	 * IPs and CIDRs that bypass every rule.
+	 *
+	 * @var string[]
+	 */
 	private array $allowlist;
+	/**
+	 * Whether the firewall only logs.
+	 *
+	 * @var bool
+	 */
 	private bool $monitor;
+	/**
+	 * Block log.
+	 *
+	 * @var BlockLogInterface
+	 */
 	private BlockLogInterface $log;
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface
+	 */
 	private CounterStoreInterface $store;
+	/**
+	 * Country lookup.
+	 *
+	 * @var GeoProviderInterface|null
+	 */
 	private ?GeoProviderInterface $geo;
 
 	/**
+	 * Set up the Firewall.
+	 *
 	 * @param RuleInterface[]           $rules     Rules in evaluation order.
 	 * @param string[]                  $allowlist IPs / CIDRs that bypass every rule.
 	 * @param bool                      $monitor   True for log-only mode.
@@ -64,11 +95,11 @@ final class Firewall {
 	 * @param Request $request Request.
 	 */
 	public function is_exempt( Request $request ): bool {
-		$ip = $request->ip();
-		if ( '' === $ip ) {
-			return false;
+		if ( $request->is_local() ) {
+			return true;
 		}
-		return IpUtils::is_loopback( $ip ) || IpUtils::matches_any( $ip, $this->allowlist );
+		$ip = $request->ip();
+		return '' !== $ip && IpUtils::matches_any( $ip, $this->allowlist );
 	}
 
 	/**

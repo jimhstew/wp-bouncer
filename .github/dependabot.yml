@@ -1,0 +1,25 @@
+# Keeps the pinned GitHub Actions SHAs and the Composer dev tools current.
+# Dependabot rewrites the SHA and the trailing "# vX.Y.Z" comment together.
+# Nothing here ships: the plugin zip contains no Composer packages.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps-dev
+    open-pull-requests-limit: 5
+    groups:
+      dev-tools:
+        patterns: ['*']

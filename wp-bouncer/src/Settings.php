@@ -19,7 +19,7 @@ defined( 'ABSPATH' ) || exit;
  * Each rule's settings are under rules.<rule id>, and every rule has its own
  * "enabled" switch.
  *
- * sanitize() and apply_form() are pure PHP, so they are unit-tested directly.
+ * The sanitize() and apply_form() methods are pure PHP, so they are unit-tested directly.
  */
 final class Settings {
 
@@ -41,10 +41,16 @@ final class Settings {
 		'traffic'   => array( 'traffic' ),
 	);
 
-	/** @var array<string, mixed> */
+	/**
+	 * Settings values.
+	 *
+	 * @var array<string, mixed>
+	 */
 	private array $values;
 
 	/**
+	 * Set up the Settings.
+	 *
 	 * @param array<string, mixed> $stored Raw option value (may be partial or empty).
 	 */
 	public function __construct( array $stored = array() ) {
@@ -167,8 +173,8 @@ final class Settings {
 		$defaults = self::defaults();
 		$merged   = array_merge( $defaults, array_intersect_key( $stored, $defaults ) );
 
-		$alerts           = is_array( $stored['alerts'] ?? null ) ? $stored['alerts'] : array();
-		$merged['alerts'] = array_merge( $defaults['alerts'], array_intersect_key( $alerts, $defaults['alerts'] ) );
+		$alerts            = is_array( $stored['alerts'] ?? null ) ? $stored['alerts'] : array();
+		$merged['alerts']  = array_merge( $defaults['alerts'], array_intersect_key( $alerts, $defaults['alerts'] ) );
 		$traffic           = is_array( $stored['traffic'] ?? null ) ? $stored['traffic'] : array();
 		$merged['traffic'] = array_merge( $defaults['traffic'], array_intersect_key( $traffic, $defaults['traffic'] ) );
 
@@ -206,7 +212,11 @@ final class Settings {
 		return self::MODE_MONITOR === $this->values['mode'];
 	}
 
-	/** @return array<string, mixed> Full settings array. */
+	/**
+	 * Get the full settings array.
+	 *
+	 * @return array<string, mixed> Full settings array.
+	 */
 	public function to_array(): array {
 		return $this->values;
 	}
@@ -226,7 +236,7 @@ final class Settings {
 		$fields = self::TAB_FIELDS[ $tab ] ?? array();
 		foreach ( $fields as $field ) {
 			if ( 0 === strpos( $field, 'rules.' ) ) {
-				$id                        = substr( $field, 6 );
+				$id                      = substr( $field, 6 );
 				$current['rules'][ $id ] = is_array( $input['rules'][ $id ] ?? null ) ? $input['rules'][ $id ] : array();
 			} else {
 				$current[ $field ] = $input[ $field ] ?? '';
@@ -248,8 +258,8 @@ final class Settings {
 
 		$out['mode']               = self::choice( $in['mode'] ?? null, array( self::MODE_ENFORCE, self::MODE_MONITOR ), $d['mode'] );
 		$out['ip_source']          = self::choice( $in['ip_source'] ?? null, array_keys( IpResolver::SOURCES ), $d['ip_source'] );
-		$out['trusted_proxies']    = self::ip_list( $in['trusted_proxies'] ?? array() );
-		$out['allowlist']          = self::ip_list( $in['allowlist'] ?? array() );
+		$out['trusted_proxies']    = IpUtils::without_broad( self::ip_list( $in['trusted_proxies'] ?? array() ) );
+		$out['allowlist']          = IpUtils::without_broad( self::ip_list( $in['allowlist'] ?? array() ) );
 		$out['log_retention_days'] = self::int_range( $in['log_retention_days'] ?? null, 1, 365, $d['log_retention_days'] );
 		$out['block_message']      = self::text( $in['block_message'] ?? '', 500, $d['block_message'] );
 		$out['geo_source']         = self::choice( $in['geo_source'] ?? null, array( 'database', 'header' ), $d['geo_source'] );
@@ -279,21 +289,21 @@ final class Settings {
 		};
 		$dr    = $d['rules'];
 
-		$rule                              = $r( 'ip_blocklist' );
-		$out['rules']['ip_blocklist']      = array(
+		$rule                         = $r( 'ip_blocklist' );
+		$out['rules']['ip_blocklist'] = array(
 			'enabled' => self::bool( $rule['enabled'] ?? false ),
 			'ips'     => self::ip_list( $rule['ips'] ?? array() ),
 		);
 
-		$rule                              = $r( 'user_agent' );
-		$out['rules']['user_agent']        = array(
+		$rule                       = $r( 'user_agent' );
+		$out['rules']['user_agent'] = array(
 			'enabled'     => self::bool( $rule['enabled'] ?? false ),
 			'block_empty' => self::bool( $rule['block_empty'] ?? false ),
 			'patterns'    => self::ua_patterns( $rule['patterns'] ?? array() ),
 		);
 
-		$rule                              = $r( 'country' );
-		$countries                         = array_values(
+		$rule                    = $r( 'country' );
+		$countries               = array_values(
 			array_unique(
 				array_filter(
 					array_map( 'strtoupper', array_map( 'strval', self::lines( $rule['countries'] ?? array(), true ) ) ),
@@ -301,7 +311,7 @@ final class Settings {
 				)
 			)
 		);
-		$out['rules']['country']           = array(
+		$out['rules']['country'] = array(
 			'enabled'       => self::bool( $rule['enabled'] ?? false ),
 			'mode'          => self::choice( $rule['mode'] ?? null, array( 'block', 'allow' ), $dr['country']['mode'] ),
 			'countries'     => $countries,
@@ -309,15 +319,15 @@ final class Settings {
 			'scope'         => self::choice( $rule['scope'] ?? null, array( 'site', 'login' ), $dr['country']['scope'] ),
 		);
 
-		$rule                              = $r( 'xmlrpc' );
-		$out['rules']['xmlrpc']            = array(
+		$rule                   = $r( 'xmlrpc' );
+		$out['rules']['xmlrpc'] = array(
 			'enabled' => self::bool( $rule['enabled'] ?? false ),
 			'mode'    => self::choice( $rule['mode'] ?? null, array( 'block_all', 'block_abuse' ), $dr['xmlrpc']['mode'] ),
 		);
 
-		$rule                              = $r( 'login_lockout' );
-		$dl                                = $dr['login_lockout'];
-		$out['rules']['login_lockout']     = array(
+		$rule                          = $r( 'login_lockout' );
+		$dl                            = $dr['login_lockout'];
+		$out['rules']['login_lockout'] = array(
 			'enabled'          => self::bool( $rule['enabled'] ?? false ),
 			'max_attempts'     => self::int_range( $rule['max_attempts'] ?? null, 1, 100, $dl['max_attempts'] ),
 			'window_minutes'   => self::int_range( $rule['window_minutes'] ?? null, 1, 1440, $dl['window_minutes'] ),
@@ -337,17 +347,17 @@ final class Settings {
 			'generic_errors'   => self::bool( $rule['generic_errors'] ?? false ),
 		);
 
-		$rule                              = $r( 'rate_limit' );
-		$dl                                = $dr['rate_limit'];
-		$out['rules']['rate_limit']        = array(
+		$rule                       = $r( 'rate_limit' );
+		$dl                         = $dr['rate_limit'];
+		$out['rules']['rate_limit'] = array(
 			'enabled'        => self::bool( $rule['enabled'] ?? false ),
 			'max_requests'   => self::int_range( $rule['max_requests'] ?? null, 10, 100000, $dl['max_requests'] ),
 			'window_seconds' => self::int_range( $rule['window_seconds'] ?? null, 1, 3600, $dl['window_seconds'] ),
 			'ban_minutes'    => self::int_range( $rule['ban_minutes'] ?? null, 1, 1440, $dl['ban_minutes'] ),
 		);
 
-		$rule                              = $r( 'waf' );
-		$out['rules']['waf']               = array(
+		$rule                = $r( 'waf' );
+		$out['rules']['waf'] = array(
 			'enabled'         => self::bool( $rule['enabled'] ?? false ),
 			'sqli'            => self::bool( $rule['sqli'] ?? false ),
 			'xss'             => self::bool( $rule['xss'] ?? false ),
@@ -365,15 +375,15 @@ final class Settings {
 			),
 		);
 
-		$rule                              = $r( 'user_enumeration' );
-		$out['rules']['user_enumeration']  = array(
+		$rule                             = $r( 'user_enumeration' );
+		$out['rules']['user_enumeration'] = array(
 			'enabled'           => self::bool( $rule['enabled'] ?? false ),
 			'block_author_scan' => self::bool( $rule['block_author_scan'] ?? false ),
 			'block_rest_users'  => self::bool( $rule['block_rest_users'] ?? false ),
 		);
 
-		$rule                             = $r( 'sensitive_files' );
-		$out['rules']['sensitive_files']  = array(
+		$rule                            = $r( 'sensitive_files' );
+		$out['rules']['sensitive_files'] = array(
 			'enabled'     => self::bool( $rule['enabled'] ?? false ),
 			'ban_minutes' => self::int_range( $rule['ban_minutes'] ?? null, 0, 43200, $dr['sensitive_files']['ban_minutes'] ),
 			'extra_paths' => array_values(
@@ -394,9 +404,9 @@ final class Settings {
 			),
 		);
 
-		$rule                             = $r( 'not_found' );
-		$dl                               = $dr['not_found'];
-		$out['rules']['not_found']        = array(
+		$rule                      = $r( 'not_found' );
+		$dl                        = $dr['not_found'];
+		$out['rules']['not_found'] = array(
 			'enabled'         => self::bool( $rule['enabled'] ?? false ),
 			'max_404'         => self::int_range( $rule['max_404'] ?? null, 3, 10000, $dl['max_404'] ),
 			'window_seconds'  => self::int_range( $rule['window_seconds'] ?? null, 10, 3600, $dl['window_seconds'] ),
@@ -404,8 +414,8 @@ final class Settings {
 			'ignore_crawlers' => self::bool( $rule['ignore_crawlers'] ?? false ),
 		);
 
-		$rule                             = $r( 'uploads_php' );
-		$out['rules']['uploads_php']      = array(
+		$rule                        = $r( 'uploads_php' );
+		$out['rules']['uploads_php'] = array(
 			'enabled'       => self::bool( $rule['enabled'] ?? false ),
 			'htaccess'      => self::bool( $rule['htaccess'] ?? false ),
 			'check_uploads' => self::bool( $rule['check_uploads'] ?? false ),
@@ -414,9 +424,11 @@ final class Settings {
 		return $out;
 	}
 
-	/* ------------------------------------------------------------------
+	/*
+	 * ------------------------------------------------------------------
 	 * Coercion helpers
-	 * ---------------------------------------------------------------- */
+	 * ----------------------------------------------------------------
+	 */
 
 	/**
 	 * Checkbox-style boolean.
@@ -464,7 +476,7 @@ final class Settings {
 	 * @param string $fallback Used when the result is empty.
 	 */
 	private static function text( $v, int $max, string $fallback ): string {
-		$v = trim( preg_replace( '/\s+/', ' ', strip_tags( (string) $v ) ) );
+		$v = trim( preg_replace( '/\s+/', ' ', strip_tags( (string) $v ) ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- wp_strip_all_tags() also removes script/style bodies and would change stored values; this class also runs in unit tests without WordPress.
 		$v = function_exists( 'mb_substr' ) ? mb_substr( $v, 0, $max ) : substr( $v, 0, $max );
 		return '' === $v ? $fallback : $v;
 	}
@@ -515,6 +527,25 @@ final class Settings {
 	}
 
 	/**
+	 * Over-broad entries (see IpUtils::is_broad_range()) that sanitize() would
+	 * drop from the trusted proxies and the allowlist.
+	 *
+	 * @param array<string, mixed> $in Raw or merged settings.
+	 * @return string[] The entries, de-duplicated, in the order found.
+	 */
+	public static function dropped_broad_ranges( array $in ): array {
+		$dropped = array();
+		foreach ( array( 'trusted_proxies', 'allowlist' ) as $key ) {
+			foreach ( self::ip_list( $in[ $key ] ?? array() ) as $entry ) {
+				if ( IpUtils::is_broad_range( $entry ) ) {
+					$dropped[] = $entry;
+				}
+			}
+		}
+		return array_values( array_unique( $dropped ) );
+	}
+
+	/**
 	 * Valid, de-duplicated IP / CIDR entries.
 	 *
 	 * @param mixed $v Textarea or array.
@@ -534,7 +565,7 @@ final class Settings {
 		$out = array();
 		foreach ( self::lines( $v ) as $pattern ) {
 			$pattern = substr( $pattern, 0, 200 );
-			if ( UserAgentRule::is_regex( $pattern ) && false === @preg_match( $pattern, '' ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			if ( UserAgentRule::is_regex( $pattern ) && false === @preg_match( $pattern, '' ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors -- validating a user-entered regex: an invalid pattern emits a warning and returns false, which is exactly what is tested.
 				continue;
 			}
 			$out[] = $pattern;

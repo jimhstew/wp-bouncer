@@ -196,4 +196,20 @@ final class SensitiveFileRuleTest extends TestCase {
 		$this->assertSame( 'database dump', $rule->match( '/db.sql' ) );
 		$this->assertNull( $rule->match( '/hello-world/' ) );
 	}
+
+	public function test_a_client_that_cannot_be_banned_is_refused_but_no_ban_is_kept(): void {
+		$rule = $this->rule();
+		$ip   = '127.0.0.1';
+		$one  = Requests::make( array( 'ip' => $ip, 'uri' => '/.env', 'bannable' => false ) );
+
+		$this->assertNotNull( $rule->inspect( $one ), 'this request is still refused' );
+		$this->assertNull( $this->store->get( SensitiveFileRule::ban_key( $ip ) ), 'but no ban key is written' );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => $ip, 'uri' => '/', 'bannable' => false ) ) ), 'and the next page view is fine' );
+	}
+
+	public function test_an_existing_ban_is_not_enforced_against_a_client_that_cannot_be_banned(): void {
+		$this->store->set( SensitiveFileRule::ban_key( '192.0.2.5' ), 1, 600 );
+		$this->assertNull( $this->rule()->inspect( Requests::make( array( 'ip' => '192.0.2.5', 'uri' => '/', 'bannable' => false ) ) ) );
+		$this->assertNotNull( $this->rule()->inspect( Requests::make( array( 'ip' => '192.0.2.5', 'uri' => '/' ) ) ) );
+	}
 }

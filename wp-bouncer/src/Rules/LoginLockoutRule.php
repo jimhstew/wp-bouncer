@@ -23,9 +23,16 @@ final class LoginLockoutRule extends AbstractRule {
 
 	public const ID = LoginGuard::RULE_ID;
 
+	/**
+	 * Login failure tracker.
+	 *
+	 * @var LoginGuard
+	 */
 	private LoginGuard $guard;
 
 	/**
+	 * Set up the LoginLockoutRule.
+	 *
 	 * @param array<string, mixed> $settings Login lockout settings.
 	 * @param LoginGuard           $guard    Failure tracker.
 	 */
@@ -39,7 +46,12 @@ final class LoginLockoutRule extends AbstractRule {
 		return self::ID;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
 		if ( ! ( $request->is_login() || $request->is_xmlrpc() ) ) {
 			return null;
@@ -49,7 +61,12 @@ final class LoginLockoutRule extends AbstractRule {
 			return null;
 		}
 
-		$remaining = $this->guard->lockout_remaining( $request->ip() );
+		// No lockout is ever kept for loopback, proxy or shared (fallback) addresses.
+		if ( ! $request->can_be_banned() ) {
+			return null;
+		}
+
+		$remaining = $this->guard->lockout_remaining( $request->key_ip() );
 		if ( $remaining > 0 ) {
 			return $this->deny( 'IP is locked out after failed logins', 403, $remaining );
 		}

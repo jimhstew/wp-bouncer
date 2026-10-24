@@ -45,9 +45,16 @@ final class UploadsGuard {
 	/** One-off cron hook that checks uploads still load after the block is written. */
 	public const CHECK_HOOK = 'wp_bouncer_uploads_check';
 
+	/**
+	 * Plugin instance.
+	 *
+	 * @var Plugin
+	 */
 	private Plugin $plugin;
 
 	/**
+	 * Set up the UploadsGuard.
+	 *
 	 * @param Plugin $plugin Plugin.
 	 */
 	public function __construct( Plugin $plugin ) {
@@ -64,7 +71,11 @@ final class UploadsGuard {
 		}
 	}
 
-	/** @return array<string, mixed> This rule's settings. */
+	/**
+	 * Get this component's settings.
+	 *
+	 * @return array<string, mixed> This rule's settings.
+	 */
 	private function settings(): array {
 		return $this->plugin->settings()->rule( self::ID );
 	}
@@ -107,6 +118,8 @@ final class UploadsGuard {
 	}
 
 	/**
+	 * Save state.
+	 *
 	 * @param string $want   Fingerprint.
 	 * @param bool   $ok     The file matches it.
 	 * @param bool   $broken The block was removed because uploads stopped loading.
@@ -175,7 +188,7 @@ final class UploadsGuard {
 		}
 		$name = 'wp-bouncer-check-' . wp_generate_password( 12, false ) . '.txt';
 		$path = $uploads['basedir'] . '/' . $name;
-		if ( false === file_put_contents( $path, 'wpb-ok' ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+		if ( false === file_put_contents( $path, 'wpb-ok' ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 			return 'unknown';
 		}
 		$response = wp_remote_get( $uploads['baseurl'] . '/' . $name, self::loopback_args() );
@@ -186,7 +199,11 @@ final class UploadsGuard {
 		return UploadsPolicy::interpret_serving( (int) wp_remote_retrieve_response_code( $response ), (string) wp_remote_retrieve_body( $response ), 'wpb-ok' );
 	}
 
-	/** @return array<string, mixed> Arguments for requests the site makes to itself. */
+	/**
+	 * Build arguments for loopback requests.
+	 *
+	 * @return array<string, mixed> Arguments for requests the site makes to itself.
+	 */
 	private static function loopback_args(): array {
 		return array(
 			'timeout'     => 10,
@@ -221,7 +238,7 @@ final class UploadsGuard {
 		if ( '' === $file || ! file_exists( $file ) ) {
 			return true;
 		}
-		$contents = (string) file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		$contents = (string) file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 		if ( false === strpos( $contents, '# BEGIN ' . UploadsPolicy::MARKER ) ) {
 			return true;
 		}
@@ -231,13 +248,13 @@ final class UploadsGuard {
 			// Only our block was in it, so the file was ours.
 			return wp_delete_file_from_directory( $file, dirname( $file ) );
 		}
-		return false !== file_put_contents( $file, ltrim( $cleaned, "\n" ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		return false !== file_put_contents( $file, ltrim( $cleaned, "\n" ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 	}
 
 	/** Is the block currently in uploads/.htaccess? */
 	public static function block_present(): bool {
 		$file = self::htaccess_path();
-		return '' !== $file && file_exists( $file ) && false !== strpos( (string) file_get_contents( $file ), '# BEGIN ' . UploadsPolicy::MARKER ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		return '' !== $file && file_exists( $file ) && false !== strpos( (string) file_get_contents( $file ), '# BEGIN ' . UploadsPolicy::MARKER ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 	}
 
 	/** Called on deactivation and uninstall. */
@@ -248,7 +265,7 @@ final class UploadsGuard {
 		delete_option( self::PROBE_OPTION );
 	}
 
-	/** insert_with_markers() lives in an admin include. */
+	/** Load the admin include that defines insert_with_markers(). */
 	private static function load_misc(): void {
 		if ( ! function_exists( 'insert_with_markers' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/misc.php';
@@ -324,7 +341,7 @@ final class UploadsGuard {
 		$marker = 'wpb-php-ran';
 		// The marker is split so it only appears in the output if PHP runs the file.
 		$script = "<?php echo 'wpb-php-' . 'ran';\n";
-		if ( false === file_put_contents( $path, $script ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions
+		if ( false === file_put_contents( $path, $script ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 			$result['detail'] = __( 'Could not write a test file to the uploads folder.', 'wp-bouncer' );
 			return $this->save_probe( $result );
 		}
@@ -343,6 +360,8 @@ final class UploadsGuard {
 	}
 
 	/**
+	 * Save probe.
+	 *
 	 * @param array{result: string, detail: string, time: int} $result Probe result.
 	 * @return array{result: string, detail: string, time: int}
 	 */

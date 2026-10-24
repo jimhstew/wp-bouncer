@@ -142,10 +142,22 @@ final class FirewallTest extends TestCase {
 		$this->assertSame( 0, $rule->calls );
 	}
 
-	public function test_loopback_is_always_exempt(): void {
+	public function test_a_request_from_the_server_itself_is_exempt(): void {
 		$fw = $this->firewall( array( $this->rule( 'a', true ) ) );
+		$this->assertNull( $fw->evaluate( Requests::make( array( 'ip' => '127.0.0.1', 'local' => true ) ) ) );
+		$this->assertNull( $fw->evaluate( Requests::make( array( 'ip' => '::1', 'local' => true ) ) ) );
+	}
+
+	public function test_loopback_ip_is_not_exempt_when_the_request_is_not_local(): void {
+		// RT-04: a same-host proxy forwarding an outside visitor must not exempt that visitor.
+		$fw = $this->firewall( array( $this->rule( 'a', true ) ) );
+		$this->assertNotNull( $fw->evaluate( Requests::make( array( 'ip' => '127.0.0.1' ) ) ) );
+		$this->assertNotNull( $fw->evaluate( Requests::make( array( 'ip' => '::1' ) ) ) );
+	}
+
+	public function test_an_allowlisted_loopback_address_is_still_exempt(): void {
+		$fw = $this->firewall( array( $this->rule( 'a', true ) ), array( '127.0.0.1' ) );
 		$this->assertNull( $fw->evaluate( Requests::make( array( 'ip' => '127.0.0.1' ) ) ) );
-		$this->assertNull( $fw->evaluate( Requests::make( array( 'ip' => '::1' ) ) ) );
 	}
 
 	public function test_empty_ip_is_not_exempt(): void {

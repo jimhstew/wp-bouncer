@@ -46,7 +46,7 @@ To build it yourself, you need `make` and `zip` (both come with macOS and most L
 make
 ```
 
-This creates `builds/wp-bouncer-1.1.1.zip`, with a `.sha256` checksum next to it. The zip contains only the `wp-bouncer/` folder: no tests and no documentation.
+This creates `builds/wp-bouncer-1.1.2.zip`, with a `.sha256` checksum next to it. The zip contains only the `wp-bouncer/` folder: no tests and no documentation.
 
 ### 2. Upload it to WordPress
 
@@ -67,8 +67,11 @@ A new **Bouncer** item appears in the wp-admin menu. Most protection is on from 
 
 1. **Bouncer → General → "Your IP as currently detected".** Check that this is your real public IP (search "what is my IP" to compare).
    - If it shows something else, such as your host's proxy, Cloudflare, or 127.0.0.1, your site is behind a proxy or CDN. Set **Client IP source** to match (Cloudflare: `CF-Connecting-IP`) and list the proxy's addresses under **Trusted proxies**.
+   - A forwarding header is believed only when the request comes from an address listed under **Trusted proxies**. If you choose a header but list no proxies, WP Bouncer ignores the header, uses the connection address, and shows an **IP detection** notice on every admin screen. The notice's buttons either accept the connection address (**I have no proxy: use the connection address**) or trust a private or same-server proxy (**Trust `<address>` as my proxy**). For a public proxy or CDN, don't trust its single address; list the CDN's full published IP ranges under **Trusted proxies** instead. The notice can't be dismissed. While it shows, bans and lockouts are suspended (failed logins are still logged) and rate limiting is effectively off. The WAF, User-Agent, blocklist and sensitive-file checks still apply.
+   - Header values that are private, loopback, link-local, carrier-grade NAT, unique-local or unspecified are refused. If an intranet reverse proxy passes real private client addresses, add `define( 'WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS', true );` to wp-config.php. Loopback is never accepted from a header.
+   - Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored in **Trusted proxies** and the **Allowlist**, and are dropped when you save, with a message naming them.
    - This matters. If it's wrong, every visitor looks like the same IP, and blocking one would block everybody.
-2. **Add yourself to the Allowlist** (General tab, **Add my IP** button). IPs on the allowlist skip every rule, so you can't lock yourself out.
+2. **Add yourself to the Allowlist** (General tab, **Add my IP** button). IPs on the allowlist skip every rule, so you can't lock yourself out. If your address is shared with other visitors (a proxy, CDN or the fallback above), WP Bouncer refuses the save and points you to IP detection instead of allowlisting the shared address.
 3. **Optional: try Monitor mode first.** In General, set **Mode** to **Monitor**. Matching requests are logged but not blocked. After a few days, look at the **Activity Log**. If nothing legitimate shows up there, switch back to **Enforce**.
 4. **Country blocking (optional).** This is off until you set it up:
    1. **Tools → Geo database → Import.** The form is pre-filled with this month's free DB-IP file. Keep the page open while the progress bar runs, usually one to three minutes.
@@ -118,6 +121,8 @@ Updates come only from this repository's GitHub releases. Before installing, the
 The check fetches a small file (`update.json`) from GitHub a few times a day. It sends nothing about your site or visitors. To switch it off, add `define( 'WP_BOUNCER_DISABLE_UPDATES', true );` to `wp-config.php` and update by uploading zips yourself.
 
 **Tools → Updates** shows the installed version, whether a newer one exists, and a **Check for updates now** button.
+
+Forks and test setups that point updates at another server with the `wp_bouncer_update_manifest_url` or `wp_bouncer_update_package_prefix` filters must also define `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS` as `true` in `wp-config.php`. Without it the filters are ignored, and updates come only from this repository's releases.
 
 ---
 
@@ -173,7 +178,7 @@ Each recorded request is one database write. On a busy site, tick **Skip logged-
 
 This is almost always IP detection. Every visitor appears to come from the same address, usually your proxy or CDN, and that address got blocked or rate-limited.
 1. Use the emergency switch above.
-2. Fix **General → Client IP source** and **Trusted proxies**.
+2. Fix **General → Client IP source** and **Trusted proxies**, following the **IP detection** notice on the admin screens. WP Bouncer never bans a trusted proxy's address automatically, so a ban on it came from the blocklist or a rate limit before the fix.
 3. Remove the proxy's address from the IP blocklist, or unlock it on the **Tools** tab.
 
 ### An update went wrong
@@ -192,12 +197,13 @@ The import runs in short steps, so it works on hosts with strict time limits. If
 make            # build builds/wp-bouncer-<version>.zip
 make manifest   # also write builds/update.json (needs PHP)
 make test       # unit tests (needs PHP and `composer install`)
+make integration  # WordPress integration tests on MySQL/MariaDB (set WPB_TESTS_DB_* first)
 make e2e        # end-to-end tests in a throwaway WordPress
 make check      # unit tests + build + end-to-end tests against the built zip
 make clean      # delete builds/
 ```
 
-To publish a release, bump the version, add a changelog entry, then push a tag such as `git tag v1.1.1 && git push origin v1.1.1`. GitHub Actions tests it, builds it and publishes the release that installed sites update from. See the developer guide for the details.
+To publish a release, bump the version, add a changelog entry, then push a tag such as `git tag v1.1.2 && git push origin v1.1.2`. GitHub Actions tests it, builds it and publishes the release that installed sites update from. See the developer guide for the details.
 
 Start with [documentation/developer-guide.md](documentation/developer-guide.md). It covers the code layout, how to build and test, and links to the architecture, rules, geolocation and testing guides. Changes are listed in [documentation/CHANGELOG.md](documentation/CHANGELOG.md).
 

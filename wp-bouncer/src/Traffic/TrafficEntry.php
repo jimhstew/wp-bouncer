@@ -90,6 +90,8 @@ final class TrafficEntry {
 	}
 
 	/**
+	 * Is secret.
+	 *
 	 * @param string $name Lowercased parameter name.
 	 */
 	private static function is_secret( string $name ): bool {

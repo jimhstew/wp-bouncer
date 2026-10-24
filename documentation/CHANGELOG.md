@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.2] - 2026-10-24
+
+### Security
+- Fixed a security issue where the visitor's IP address could be taken from a forwarding header (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and similar) that no trusted proxy had vouched for, so a visitor could appear to be someone else. The plugin now ignores the header when no trusted proxies are listed, reads the connection address instead, and shows an admin notice explaining how to fix the setup. While that fallback is active, bans and lockouts are suspended (failed logins are still logged) and rate limiting is effectively off. The WAF, User-Agent, blocklist and sensitive-file checks still apply.
+- Header values that are private, loopback, link-local, carrier-grade NAT, unique-local (IPv6) or unspecified are refused. The new opt-in constant `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS` accepts private (not loopback) values from a trusted proxy, for intranet sites.
+- Loopback requests (127.0.0.1 and ::1) are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned, and requests that carry a forwarding header from an unlisted private address (such as a local proxy you haven't listed yet) are not banned.
+- Over-broad entries in Trusted proxies and the Allowlist (wider than /8 for IPv4 or /16 for IPv6, including IPv6 forms that cover all of IPv4) are ignored, and dropped on save with a message naming them.
+- Fixed a security issue where an update package could come from a URL other than the expected GitHub release. The package URL must now match the expected release URL exactly.
+
+### Changed
+- The update-source filters `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` are only honoured when `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS` is defined as `true` in wp-config.php. Forks and testers that relied on the filters alone must add the constant.
+- Saving settings that would block the admin is refused, with a pointer to the IP setup, when the admin's address is shared (behind a proxy, CDN or the fallback), instead of allowlisting the shared address.
+- Release pipeline hardening: publishing is separated from the build, actions and downloads are pinned, the zip is reproducible, and the downloaded checksum is verified.
+- CI now blocks on phpcs (coding standards) and PHPStan level 6.
+- Code cleaned up to WordPress Coding Standards. No change in behaviour.
+
+### Added
+- Integration tests (`make integration`) against MySQL/MariaDB, run in CI for single-site and multisite.
+- End-to-end suite can run against MySQL/MariaDB and a chosen WordPress version.
+
 ## [1.1.1] - 2026-10-20
 
 ### Added

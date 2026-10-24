@@ -76,4 +76,35 @@ final class RateLimitRuleTest extends TestCase {
 			$this->assertNull( $this->hit( '203.0.113.10', true ) );
 		}
 	}
+
+	public function test_nothing_is_counted_or_banned_for_a_client_that_cannot_be_banned(): void {
+		for ( $i = 0; $i < 20; $i++ ) {
+			$this->assertNull( $this->rule->inspect( Requests::make( array( 'ip' => '127.0.0.1', 'bannable' => false ) ) ) );
+		}
+		$this->assertNull( $this->hit( '127.0.0.1' ), 'no counter or ban was kept' );
+	}
+
+	/** NEW-5: requests with a refused forwarded header are counted under their own subject. */
+	public function test_a_subject_is_counted_and_banned_instead_of_the_ip(): void {
+		$make = static function () {
+			return Requests::make( array( 'ip' => '127.0.0.1', 'subject' => 'rejected:127.0.0.1' ) );
+		};
+		for ( $i = 0; $i < 5; $i++ ) {
+			$this->assertNull( $this->rule->inspect( $make() ) );
+		}
+		$this->assertNotNull( $this->rule->inspect( $make() ), 'the sixth is over the limit' );
+		$this->assertNull( $this->rule->inspect( Requests::make( array( 'ip' => '127.0.0.1', 'bannable' => false ) ) ), 'the proxy itself is untouched' );
+	}
+
+	public function test_an_unlisted_public_peer_with_a_forwarded_header_is_still_throttled(): void {
+		$resolver = new \WPBouncer\Firewall\IpResolver( 'x_forwarded_for', array( '198.51.100.1' ) );
+		$server   = array( 'REMOTE_ADDR' => '203.0.113.7', 'HTTP_X_FORWARDED_FOR' => '203.0.113.99' );
+		$ip       = $resolver->resolve( $server );
+		$bannable = \WPBouncer\Support\IpUtils::is_bannable( $ip, $resolver->proxies(), $resolver->suspends_bans( $server ) );
+		$last     = null;
+		for ( $i = 0; $i < 6; $i++ ) {
+			$last = $this->rule->inspect( Requests::make( array( 'ip' => $ip, 'bannable' => $bannable, 'server' => $server ) ) );
+		}
+		$this->assertNotNull( $last );
+	}
 }

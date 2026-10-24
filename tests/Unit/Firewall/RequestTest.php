@@ -84,4 +84,10 @@ final class RequestTest extends TestCase {
 	public function test_method_is_uppercased(): void {
 		$this->assertSame( 'POST', Requests::make( array( 'method' => 'post' ) )->method() );
 	}
+
+	public function test_key_ip_is_the_ip_unless_a_subject_is_given(): void {
+		$this->assertSame( '203.0.113.5', Requests::make( array( 'ip' => '203.0.113.5' ) )->key_ip() );
+		$this->assertSame( 'rejected:127.0.0.1', Requests::make( array( 'ip' => '127.0.0.1', 'subject' => 'rejected:127.0.0.1' ) )->key_ip() );
+		$this->assertSame( '127.0.0.1', Requests::make( array( 'ip' => '127.0.0.1', 'subject' => 'rejected:127.0.0.1' ) )->ip() );
+	}
 }

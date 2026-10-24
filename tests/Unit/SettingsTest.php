@@ -277,4 +277,66 @@ final class SettingsTest extends TestCase {
 		$out = Settings::apply_form( $out, array(), 'general' );
 		$this->assertTrue( $out['traffic']['enabled'], 'general tab leaves traffic alone' );
 	}
+
+	/** RT-24 */
+	public function test_sanitize_drops_over_broad_proxies_and_allowlist_entries(): void {
+		$in  = array(
+			'trusted_proxies' => "0.0.0.0/0\n::/0\n10.0.0.0/7\n10.0.0.0/8\n192.0.2.5",
+			'allowlist'       => "0.0.0.0/0\n198.51.100.0/24",
+		);
+		$out = Settings::sanitize( $in );
+		$this->assertSame( array( '10.0.0.0/8', '192.0.2.5' ), $out['trusted_proxies'] );
+		$this->assertSame( array( '198.51.100.0/24' ), $out['allowlist'] );
+	}
+
+	public function test_sanitize_keeps_broad_ranges_in_the_blocklist(): void {
+		$in  = array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => true, 'ips' => "0.0.0.0/1\n198.51.100.9" ) ) );
+		$out = Settings::sanitize( $in );
+		$this->assertSame( array( '0.0.0.0/1', '198.51.100.9' ), $out['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_dropped_broad_ranges_names_what_would_be_removed(): void {
+		$in = array(
+			'trusted_proxies' => "0.0.0.0/0\n10.0.0.0/8",
+			'allowlist'       => array( '::/0', '0.0.0.0/0', '203.0.113.5' ),
+		);
+		$this->assertSame( array( '0.0.0.0/0', '::/0' ), Settings::dropped_broad_ranges( $in ) );
+		$this->assertSame( array(), Settings::dropped_broad_ranges( array( 'trusted_proxies' => '10.0.0.0/8' ) ) );
+	}
+
+	/** The save trap: IP settings belong to the General tab only. */
+	public function test_ip_settings_survive_saving_other_tabs(): void {
+		$current                    = Settings::defaults();
+		$current['ip_source']       = 'x_real_ip';
+		$current['trusted_proxies'] = array( '127.0.0.1' );
+
+		$rules = Settings::apply_form( $current, array( 'rules' => array( 'waf' => array( 'enabled' => '1' ) ) ), 'rules' );
+		$this->assertSame( 'x_real_ip', $rules['ip_source'] );
+		$this->assertSame( array( '127.0.0.1' ), $rules['trusted_proxies'] );
+
+		$countries = Settings::apply_form( $current, array( 'rules' => array( 'country' => array( 'enabled' => '1' ) ) ), 'countries' );
+		$this->assertSame( 'x_real_ip', $countries['ip_source'] );
+		$this->assertSame( array( '127.0.0.1' ), $countries['trusted_proxies'] );
+
+		$traffic = Settings::apply_form( $current, array( 'traffic' => array( 'enabled' => '1' ) ), 'traffic' );
+		$this->assertSame( 'x_real_ip', $traffic['ip_source'] );
+		$this->assertSame( array( '127.0.0.1' ), $traffic['trusted_proxies'] );
+
+		$this->assertContains( 'ip_source', Settings::TAB_FIELDS['general'] );
+		$this->assertContains( 'trusted_proxies', Settings::TAB_FIELDS['general'] );
+	}
+
+	public function test_general_tab_saves_a_header_source_with_no_proxies(): void {
+		$out = Settings::apply_form( Settings::defaults(), array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => '' ), 'general' );
+		$this->assertSame( 'x_real_ip', $out['ip_source'], 'saving is allowed; the admin gets a warning' );
+		$this->assertSame( array(), $out['trusted_proxies'] );
+	}
+
+	/** NEW-2 */
+	public function test_sanitize_drops_ipv6_forms_of_the_whole_ipv4_space(): void {
+		$wide = "::ffff:0:0/96\n::/80\n::ffff:0.0.0.0/100\n::ffff:10.0.0.0/104";
+		$out  = Settings::sanitize( array( 'trusted_proxies' => $wide, 'allowlist' => $wide ) );
+		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['trusted_proxies'] );
+		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['allowlist'] );
+	}
 }

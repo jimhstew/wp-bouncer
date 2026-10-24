@@ -31,6 +31,8 @@ interface BlockLogInterface {
 	 * Record one event.
 	 *
 	 * @param array<string, string> $entry {
+	 *     Event fields.
+	 *
 	 *     @type string $ip         Client IP.
 	 *     @type string $country    ISO 3166 alpha-2 code or ''.
 	 *     @type string $rule       Rule id.

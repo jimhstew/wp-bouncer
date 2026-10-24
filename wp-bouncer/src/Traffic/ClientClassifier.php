@@ -62,7 +62,11 @@ final class ClientClassifier {
 		return self::OTHER;
 	}
 
-	/** @return string[] Every type, in display order. */
+	/**
+	 * List the client types.
+	 *
+	 * @return string[] Every type, in display order.
+	 */
 	public static function types(): array {
 		return array( self::BROWSER, self::MOBILE, self::SEARCH_ENGINE, self::BOT, self::MONITOR, self::FEED, self::WORDPRESS, self::TOOL, self::SCANNER, self::UNKNOWN, self::OTHER );
 	}

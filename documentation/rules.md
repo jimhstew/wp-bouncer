@@ -4,7 +4,9 @@ All rules live in `wp-bouncer/src/Rules/`, except `uploads_php`, which lives in 
 
 Evaluation order: `ip_blocklist`, `sensitive_files`, `not_found`, `login_lockout`, `rate_limit`, `user_agent`, `xmlrpc`, `user_enumeration`, `country`, `waf`. The first rule that refuses a request wins.
 
-Administrators (users with `manage_options`) are never inspected by the WAF, the rate limiter, the sensitive-file rule or the 404 counter. Allowlisted and loopback IPs skip every rule.
+Administrators (users with `manage_options`) are never inspected by the WAF, the rate limiter, the sensitive-file rule or the 404 counter. Allowlisted IPs skip every rule. A loopback IP (127.0.0.1 or ::1) skips every rule only when the request carries no forwarding header, so a same-host proxy's requests are inspected like any other. Loopback and trusted-proxy addresses are never banned.
+
+While the IP detection fallback is active (a forwarding header is configured but no trusted proxies are listed), bans and lockouts are suspended and failed logins are only logged. The WAF, User-Agent, blocklist and sensitive-file checks still apply. Outside the fallback, requests that carry a forwarding header from an unlisted private address (for example a local proxy you haven't listed) are not banned either; unlisted public addresses can be. Behind a CDN, list all of its published ranges under Trusted proxies.
 
 Email alerts aren't a rule; they are described at the end.
 
@@ -74,7 +76,7 @@ Lift a lockout early under Tools → Unlock an IP.
 | `window_seconds` | int 1–3600 | 60 |
 | `ban_minutes` | int 1–1440 | 10 |
 
-Only requests that reach PHP are counted. Static files served by the web server aren't. **Without a persistent object cache** (Redis or Memcached), every counted request writes a transient to `wp_options`, so only enable this on busy sites that have one. Don't set limits so low that a page load (one HTML request plus AJAX calls) trips them. Sites behind a CDN must configure the client IP source first, otherwise every visitor shares the CDN's IP.
+Only requests that reach PHP are counted. Static files served by the web server aren't. **Without a persistent object cache** (Redis or Memcached), every counted request writes a transient to `wp_options`, so only enable this on busy sites that have one. Don't set limits so low that a page load (one HTML request plus AJAX calls) trips them. Sites behind a CDN must configure the client IP source first, otherwise every visitor shares the CDN's IP. While the IP detection fallback is active (see the first paragraph), rate limiting is effectively off.
 
 ## `waf`: Web application firewall
 **Default:** on, all categories · **Status:** 403

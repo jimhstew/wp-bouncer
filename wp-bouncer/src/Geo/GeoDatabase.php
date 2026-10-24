@@ -25,11 +25,22 @@ defined( 'ABSPATH' ) || exit;
  */
 final class GeoDatabase implements GeoProviderInterface {
 
-	/** @var \wpdb */
+	/**
+	 * WordPress database handle.
+	 *
+	 * @var \wpdb
+	 */
 	private $db;
+	/**
+	 * Fully prefixed table name.
+	 *
+	 * @var string
+	 */
 	private string $table;
 
 	/**
+	 * Set up the GeoDatabase.
+	 *
 	 * @param \wpdb $db WordPress database handle.
 	 */
 	public function __construct( $db ) {
@@ -42,13 +53,18 @@ final class GeoDatabase implements GeoProviderInterface {
 		return $this->table;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Find the country for an IP.
+	 *
+	 * @param string $ip IPv4 or IPv6 address.
+	 * @return string|null Upper-case ISO 3166-1 alpha-2 code, or null if unknown.
+	 */
 	public function lookup( string $ip ): ?string {
 		$hex = IpUtils::to_hex16( $ip );
 		if ( null === $hex ) {
 			return null;
 		}
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is internal.
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is built from $wpdb->prefix; the only value is bound with %s.
 		$row = $this->db->get_row( $this->db->prepare( "SELECT country, ip_to FROM {$this->table} WHERE ip_from <= %s ORDER BY ip_from DESC LIMIT 1", $hex ) );
 		if ( ! $row || strcmp( (string) $row->ip_to, $hex ) < 0 ) {
 			return null;
@@ -58,12 +74,12 @@ final class GeoDatabase implements GeoProviderInterface {
 
 	/** Number of ranges loaded. */
 	public function count(): int {
-		return (int) $this->db->get_var( "SELECT COUNT(*) FROM {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		return (int) $this->db->get_var( "SELECT COUNT(*) FROM {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- no user input; the table name is built from $wpdb->prefix and these statements take no placeholders.
 	}
 
 	/** Remove every range. */
 	public function truncate(): void {
-		$this->db->query( "TRUNCATE TABLE {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$this->db->query( "TRUNCATE TABLE {$this->table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- no user input; the table name is built from $wpdb->prefix and these statements take no placeholders.
 	}
 
 	/**
@@ -83,7 +99,7 @@ final class GeoDatabase implements GeoProviderInterface {
 			$values[]       = $row['to'];
 			$values[]       = $row['country'];
 		}
-		// phpcs:ignore WordPress.DB.PreparedSQL -- placeholders are built above.
+		// phpcs:ignore WordPress.DB.PreparedSQL -- placeholders are literal (%s, %s, %s) groups and every value is bound via prepare().
 		$this->db->query( $this->db->prepare( "INSERT IGNORE INTO {$this->table} (ip_from, ip_to, country) VALUES " . implode( ',', $placeholders ), $values ) );
 	}
 

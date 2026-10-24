@@ -20,7 +20,7 @@ final class Requests {
 	 * @param array<string, mixed> $args {
 	 *     @type string $ip, $method, $uri, $ua, $body
 	 *     @type array  $query, $post, $server
-	 *     @type bool   $logged_in, $trusted
+	 *     @type bool   $logged_in, $trusted, $local, $bannable
 	 * }
 	 */
 	public static function make( array $args = array() ): Request {
@@ -49,6 +49,9 @@ final class Requests {
 				'trusted'   => static function () use ( $trusted ) {
 					return $trusted;
 				},
+				'local'     => (bool) ( $args['local'] ?? false ),
+				'bannable'  => (bool) ( $args['bannable'] ?? true ),
+				'subject'   => (string) ( $args['subject'] ?? '' ),
 				'body'      => static function () use ( $body ) {
 					return $body;
 				},

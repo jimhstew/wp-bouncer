@@ -15,20 +15,35 @@ defined( 'ABSPATH' ) || exit;
  */
 final class ChainGeoProvider implements GeoProviderInterface {
 
-	/** @var GeoProviderInterface[] */
+	/**
+	 * Providers in priority order.
+	 *
+	 * @var GeoProviderInterface[]
+	 */
 	private array $providers;
 
-	/** @var array<string, string|null> */
+	/**
+	 * Lookup results by IP.
+	 *
+	 * @var array<string, string|null>
+	 */
 	private array $cache = array();
 
 	/**
+	 * Set up the ChainGeoProvider.
+	 *
 	 * @param GeoProviderInterface[] $providers In priority order.
 	 */
 	public function __construct( array $providers ) {
 		$this->providers = $providers;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Find the country for an IP.
+	 *
+	 * @param string $ip IPv4 or IPv6 address.
+	 * @return string|null Upper-case ISO 3166-1 alpha-2 code, or null if unknown.
+	 */
 	public function lookup( string $ip ): ?string {
 		if ( array_key_exists( $ip, $this->cache ) ) {
 			return $this->cache[ $ip ];

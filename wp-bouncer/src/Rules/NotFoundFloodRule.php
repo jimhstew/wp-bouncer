@@ -43,9 +43,16 @@ final class NotFoundFloodRule extends AbstractRule {
 	/** Search engine crawlers (by User-Agent, which can be faked). */
 	private const CRAWLERS = '/googlebot|bingbot|duckduckbot|baiduspider|yandex|applebot|slurp|petalbot|seznambot|qwantify/i';
 
+	/**
+	 * Counter store.
+	 *
+	 * @var CounterStoreInterface
+	 */
 	private CounterStoreInterface $store;
 
 	/**
+	 * Set up the NotFoundFloodRule.
+	 *
 	 * @param array<string, mixed>  $settings Rule settings.
 	 * @param CounterStoreInterface $store    Counter storage.
 	 */
@@ -59,10 +66,15 @@ final class NotFoundFloodRule extends AbstractRule {
 		return self::ID;
 	}
 
-	/** {@inheritDoc} */
+	/**
+	 * Inspect the request.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
 	public function inspect( Request $request ): ?Verdict {
-		$ip = $request->ip();
-		if ( '' === $ip || $request->is_trusted() ) {
+		$ip = $request->key_ip();
+		if ( '' === $ip || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return null;
 		}
 		if ( null !== $this->store->get( self::ban_key( $ip ) ) ) {
@@ -81,7 +93,7 @@ final class NotFoundFloodRule extends AbstractRule {
 		if ( ! $this->counts( $request ) ) {
 			return null;
 		}
-		$ip     = $request->ip();
+		$ip     = $request->key_ip();
 		$window = max( 1, (int) $this->setting( 'window_seconds', 60 ) );
 		$max    = max( 1, (int) $this->setting( 'max_404', 20 ) );
 		$count  = $this->store->increment( self::counter_key( $ip ), $window );
@@ -99,7 +111,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param Request $request Request.
 	 */
 	public function counts( Request $request ): bool {
-		if ( ! $this->is_enabled() || '' === $request->ip() || $request->is_trusted() ) {
+		if ( ! $this->is_enabled() || '' === $request->ip() || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return false;
 		}
 		if ( preg_match( self::ASSET, $request->path() ) ) {

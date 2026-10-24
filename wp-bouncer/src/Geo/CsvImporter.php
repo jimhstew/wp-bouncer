@@ -80,9 +80,9 @@ final class CsvImporter {
 	 * Fine for small files and the CLI. The admin screen imports with
 	 * prepare() and import_chunk() instead, so no single request runs long.
 	 *
-	 * @param string                                  $path       File path (.csv or .csv.gz).
-	 * @param callable(array<int, array>): void       $writer     Receives each batch of parse_row() results.
-	 * @param int                                     $batch_size Rows per batch.
+	 * @param string   $path       File path (.csv or .csv.gz).
+	 * @param callable $writer     Receives each batch (a list of parse_row() results).
+	 * @param int      $batch_size Rows per batch.
 	 * @return array{imported: int, skipped: int}
 	 * @throws \RuntimeException When the file can't be opened.
 	 */
@@ -136,7 +136,7 @@ final class CsvImporter {
 		if ( false === $in ) {
 			throw new \RuntimeException( 'Could not open geo database file.' );
 		}
-		$out = @fopen( $dest, 'wb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+		$out = @fopen( $dest, 'wb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions -- a failed open is handled by the false check below; plugin-owned local file, WP_Filesystem cannot stream.
 		if ( false === $out ) {
 			gzclose( $in );
 			throw new \RuntimeException( 'Could not write a working copy of the geo database. Check that wp-content/uploads is writable.' );
@@ -147,16 +147,16 @@ final class CsvImporter {
 			if ( false === $chunk || '' === $chunk ) {
 				break;
 			}
-			$written = fwrite( $out, $chunk ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+			$written = fwrite( $out, $chunk ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 			if ( strlen( $chunk ) !== $written ) {
 				gzclose( $in );
-				fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+				fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 				throw new \RuntimeException( 'Ran out of disk space while unpacking the geo database.' );
 			}
 			$bytes += $written;
 		}
 		gzclose( $in );
-		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 
 		$probe = self::import_chunk(
 			$dest,
@@ -183,21 +183,21 @@ final class CsvImporter {
 	 * twice (after a failed request is retried) must be harmless, which
 	 * GeoDatabase guarantees with INSERT IGNORE on the primary key.
 	 *
-	 * @param string                            $path        Plain CSV (from prepare()).
-	 * @param int                               $offset      Byte offset to start at.
-	 * @param callable(array<int, array>): void $writer      Receives each batch.
-	 * @param int                               $batch_size  Rows per batch.
-	 * @param callable(): bool                  $should_stop Asked after each batch.
+	 * @param string           $path        Plain CSV (from prepare()).
+	 * @param int              $offset      Byte offset to start at.
+	 * @param callable         $writer      Receives each batch (a list of parse_row() results).
+	 * @param int              $batch_size  Rows per batch.
+	 * @param callable(): bool $should_stop Asked after each batch.
 	 * @return array{offset: int, imported: int, skipped: int, done: bool}
 	 * @throws \RuntimeException When the file can't be opened.
 	 */
 	public static function import_chunk( string $path, int $offset, callable $writer, int $batch_size, callable $should_stop ): array {
-		$handle = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions
+		$handle = @fopen( $path, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.WP.AlternativeFunctions -- a failed open is handled by the false check below; plugin-owned local file, WP_Filesystem cannot stream.
 		if ( false === $handle ) {
 			throw new \RuntimeException( 'The geo database working file has gone missing. Start the import again.' );
 		}
 		if ( $offset > 0 && 0 !== fseek( $handle, $offset ) ) {
-			fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+			fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 			throw new \RuntimeException( 'Could not resume the geo database import. Start it again.' );
 		}
 
@@ -225,7 +225,7 @@ final class CsvImporter {
 			$writer( $batch );
 		}
 		$position = ftell( $handle );
-		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 
 		return array(
 			'offset'   => false === $position ? $offset : $position,
@@ -240,10 +240,10 @@ final class CsvImporter {
 	 *
 	 * Blank lines and # comments are ignored without counting.
 	 *
-	 * @param string                                                    $line     Raw line.
+	 * @param string                                                       $line     Raw line.
 	 * @param array<int, array{from: string, to: string, country: string}> $batch    Batch being built.
-	 * @param int                                                       $imported Running count of parsed rows.
-	 * @param int                                                       $skipped  Running count of unreadable rows.
+	 * @param int                                                          $imported Running count of parsed rows.
+	 * @param int                                                          $skipped  Running count of unreadable rows.
 	 */
 	private static function take_line( string $line, array &$batch, int &$imported, int &$skipped ): void {
 		$line = trim( $line );
