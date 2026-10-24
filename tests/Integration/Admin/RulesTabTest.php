@@ -43,6 +43,10 @@ final class RulesTabTest extends IntegrationTestCase {
 		$this->fake_request();
 		$GLOBALS['hook_suffix'] = 'toplevel_page_wp-bouncer';
 		set_current_screen( 'toplevel_page_wp-bouncer' );
+		// The uploads rule reads the .htaccess state and the last test result. Pin both to "healthy" so the
+		// results do not depend on whether the machine running the tests can write to its uploads folder.
+		update_option( UploadsGuard::STATE_OPTION, array( 'want' => 'x', 'ok' => true, 'broken' => false, 'time' => time() ) );
+		delete_option( UploadsGuard::PROBE_OPTION );
 	}
 
 	public function tear_down() {
@@ -524,6 +528,7 @@ final class RulesTabTest extends IntegrationTestCase {
 
 	public function test_an_unprotected_test_result_flags_the_card_but_is_not_a_notice(): void {
 		$this->login( true );
+		update_option( UploadsGuard::STATE_OPTION, array( 'want' => 'x', 'ok' => true, 'broken' => false, 'time' => time() ) ); // Written fine: only the test result is wrong.
 		update_option( UploadsGuard::PROBE_OPTION, array( 'result' => 'unprotected', 'detail' => 'HTTP 200', 'time' => time() ) );
 		$html = $this->render();
 		$x    = $this->xpath( $html );
