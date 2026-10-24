@@ -8,6 +8,7 @@
 namespace WPBouncer\Login;
 
 use WPBouncer\Log\BlockLogInterface;
+use WPBouncer\Settings;
 use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
 use WPBouncer\Support\Clock;
@@ -364,7 +365,7 @@ final class LoginGuard {
 	 * @param array<string,string> $context Extra log fields.
 	 */
 	private function lock( string $ip, string $reason, array $context ): void {
-		$duration = max( 1, (int) ( $this->settings['lockout_minutes'] ?? 60 ) ) * 60;
+		$duration = min( Settings::MAX_BAN_MINUTES, max( 1, (int) ( $this->settings['lockout_minutes'] ?? 60 ) ) ) * 60;
 		$this->store->set( self::lockout_key( $ip ), $this->clock->now() + $duration, $duration );
 		$this->store->delete( self::failures_key( $ip ) );
 		if ( null !== $this->counter ) {

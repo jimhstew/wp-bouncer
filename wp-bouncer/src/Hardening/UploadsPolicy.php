@@ -238,14 +238,15 @@ final class UploadsPolicy {
 	 * @param int    $status   HTTP status (0 when the request failed).
 	 * @param string $body     Response body.
 	 * @param string $expected The file's contents.
-	 * @return string 'ok' (the file loaded), 'broken' (a 5xx: the server
+	 * @return string 'ok' (the file loaded), 'broken' (a 500 or 503: the server
 	 *                rejects the block) or 'unknown'.
 	 */
 	public static function interpret_serving( int $status, string $body, string $expected ): string {
 		if ( 200 === $status && false !== strpos( $body, $expected ) ) {
 			return 'ok';
 		}
-		return $status >= 500 && $status <= 599 ? 'broken' : 'unknown';
+		// Only the server's own errors count: 502 and 504 come from a proxy or overload, not from the block.
+		return 500 === $status || 503 === $status ? 'broken' : 'unknown';
 	}
 
 	/**

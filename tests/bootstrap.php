@@ -20,6 +20,7 @@ if ( is_readable( $root . '/vendor/autoload.php' ) ) {
 	require_once $root . '/vendor/autoload.php';
 }
 
+require_once $root . '/tests/Support/i18n_stubs.php';
 require_once $plugin . '/src/Autoloader.php';
 \WPBouncer\Autoloader::register( $plugin . '/src' );
 

@@ -237,7 +237,18 @@ final class InstallerTest extends IntegrationTestCase {
 		$this->assertFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
 	}
 
+
+	/** On the main site of a network only a network admin may remove the shared block. */
+	private function as_network_admin(): void {
+		if ( is_multisite() ) {
+			$id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+			grant_super_admin( $id );
+			wp_set_current_user( $id );
+		}
+	}
+
 	public function test_deactivate_removes_the_uploads_htaccess_block_but_keeps_other_lines(): void {
+		$this->as_network_admin();
 		$file = $this->uploads_dir . '/.htaccess';
 		file_put_contents( $file, "# owner rule\nOptions -Indexes\n" );
 		$this->assertTrue( UploadsGuard::write_block() );
@@ -253,6 +264,7 @@ final class InstallerTest extends IntegrationTestCase {
 	}
 
 	public function test_deactivate_deletes_an_htaccess_that_only_held_our_block(): void {
+		$this->as_network_admin();
 		UploadsGuard::write_block();
 		$this->assertFileExists( $this->uploads_dir . '/.htaccess' );
 

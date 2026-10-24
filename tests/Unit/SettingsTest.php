@@ -47,7 +47,10 @@ final class SettingsTest extends TestCase {
 				'ip_source' => 'HTTP_EVIL',
 				'rules'     => array(
 					'xmlrpc'  => array( 'mode' => 'nope' ),
-					'country' => array( 'mode' => 'x', 'scope' => 'y' ),
+					'country' => array(
+						'mode'  => 'x',
+						'scope' => 'y',
+					),
 				),
 			)
 		);
@@ -129,9 +132,9 @@ final class SettingsTest extends TestCase {
 			array(
 				'rules' => array(
 					'waf' => array(
-						'enabled' => '1',
-						'sqli'    => '0',
-						'xss'     => 'off',
+						'enabled'   => '1',
+						'sqli'      => '0',
+						'xss'       => 'off',
 						'traversal' => 'yes',
 					),
 				),
@@ -145,14 +148,25 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_apply_form_only_touches_the_submitted_tab(): void {
-		$current                                   = Settings::defaults();
-		$current['allowlist']                      = array( '10.0.0.1' );
-		$current['rules']['country']['enabled']    = true;
-		$current['rules']['country']['countries']  = array( 'RU' );
+		$current                                  = Settings::defaults();
+		$current['allowlist']                     = array( '10.0.0.1' );
+		$current['rules']['country']['enabled']   = true;
+		$current['rules']['country']['countries'] = array( 'RU' );
 
 		// Rules tab submitted with only the WAF switched on: every other rule on that tab
 		// goes off (unticked), but settings on other tabs are left alone.
-		$out = Settings::apply_form( $current, array( 'rules' => array( 'waf' => array( 'enabled' => '1', 'sqli' => '1' ) ) ), 'rules' );
+		$out = Settings::apply_form(
+			$current,
+			array(
+				'rules' => array(
+					'waf' => array(
+						'enabled' => '1',
+						'sqli'    => '1',
+					),
+				),
+			),
+			'rules'
+		);
 
 		$this->assertTrue( $out['rules']['waf']['enabled'] );
 		$this->assertFalse( $out['rules']['xmlrpc']['enabled'] );
@@ -233,7 +247,11 @@ final class SettingsTest extends TestCase {
 			array(
 				'rules' => array(
 					'sensitive_files' => array( 'ban_minutes' => -5 ),
-					'not_found'       => array( 'max_404' => 1, 'window_seconds' => 999999, 'ban_minutes' => 'x' ),
+					'not_found'       => array(
+						'max_404'        => 1,
+						'window_seconds' => 999999,
+						'ban_minutes'    => 'x',
+					),
 				),
 			)
 		);
@@ -275,7 +293,16 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_traffic_tab_owns_only_traffic_settings(): void {
-		$out = Settings::apply_form( Settings::defaults(), array( 'traffic' => array( 'enabled' => '1', 'retention_days' => '2' ) ), 'traffic' );
+		$out = Settings::apply_form(
+			Settings::defaults(),
+			array(
+				'traffic' => array(
+					'enabled'        => '1',
+					'retention_days' => '2',
+				),
+			),
+			'traffic'
+		);
 		$this->assertTrue( $out['traffic']['enabled'] );
 		$this->assertSame( 2, $out['traffic']['retention_days'] );
 		$this->assertFalse( $out['traffic']['skip_background'], 'unticked on that tab' );
@@ -297,7 +324,14 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_sanitize_keeps_broad_ranges_in_the_blocklist(): void {
-		$in  = array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => true, 'ips' => "0.0.0.0/1\n198.51.100.9" ) ) );
+		$in  = array(
+			'rules' => array(
+				'ip_blocklist' => array(
+					'enabled' => true,
+					'ips'     => "0.0.0.0/1\n198.51.100.9",
+				),
+			),
+		);
 		$out = Settings::sanitize( $in );
 		$this->assertSame( array( '0.0.0.0/1', '198.51.100.9' ), $out['rules']['ip_blocklist']['ips'] );
 	}
@@ -334,7 +368,14 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_general_tab_saves_a_header_source_with_no_proxies(): void {
-		$out = Settings::apply_form( Settings::defaults(), array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => '' ), 'general' );
+		$out = Settings::apply_form(
+			Settings::defaults(),
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => '',
+			),
+			'general'
+		);
 		$this->assertSame( 'x_real_ip', $out['ip_source'], 'saving is allowed; the admin gets a warning' );
 		$this->assertSame( array(), $out['trusted_proxies'] );
 	}
@@ -342,14 +383,19 @@ final class SettingsTest extends TestCase {
 	/** NEW-2 */
 	public function test_sanitize_drops_ipv6_forms_of_the_whole_ipv4_space(): void {
 		$wide = "::ffff:0:0/96\n::/80\n::ffff:0.0.0.0/100\n::ffff:10.0.0.0/104";
-		$out  = Settings::sanitize( array( 'trusted_proxies' => $wide, 'allowlist' => $wide ) );
+		$out  = Settings::sanitize(
+			array(
+				'trusted_proxies' => $wide,
+				'allowlist'       => $wide,
+			)
+		);
 		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['trusted_proxies'] );
 		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['allowlist'] );
 	}
 
 	public function test_preserve_privileged_keeps_the_old_htaccess_switch(): void {
-		$old = Settings::defaults();
-		$new = $old;
+		$old                                     = Settings::defaults();
+		$new                                     = $old;
 		$old['rules']['uploads_php']['htaccess'] = true;
 		$new['rules']['uploads_php']['htaccess'] = false;
 
@@ -360,10 +406,10 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_preserve_privileged_drops_new_regexes_but_keeps_old_ones_and_plain_text(): void {
-		$old                                       = Settings::defaults();
-		$old['rules']['user_agent']['patterns']    = array( 'badbot', '/^old\//i' );
-		$new                                       = $old;
-		$new['rules']['user_agent']['patterns']    = array( 'badbot', '/^old\//i', 'newtext', '/^new\//i' );
+		$old                                    = Settings::defaults();
+		$old['rules']['user_agent']['patterns'] = array( 'badbot', '/^old\//i' );
+		$new                                    = $old;
+		$new['rules']['user_agent']['patterns'] = array( 'badbot', '/^old\//i', 'newtext', '/^new\//i' );
 
 		$kept = Settings::preserve_privileged( $old, $new )['rules']['user_agent']['patterns'];
 
@@ -392,15 +438,42 @@ final class SettingsTest extends TestCase {
 	}
 
 	public function test_preserve_privileged_pins_the_uploads_rule_on_off_switch_too(): void {
-		$old = Settings::defaults();
+		$old                                     = Settings::defaults();
 		$old['rules']['uploads_php']['enabled']  = true;
 		$old['rules']['uploads_php']['htaccess'] = true;
-		$new = $old;
-		$new['rules']['uploads_php']['enabled'] = false;
+		$new                                     = $old;
+		$new['rules']['uploads_php']['enabled']  = false;
 
 		$out = Settings::preserve_privileged( $old, $new );
 
 		$this->assertTrue( $out['rules']['uploads_php']['enabled'] );
 		$this->assertTrue( $out['rules']['uploads_php']['htaccess'] );
+	}
+
+	public function test_automatic_bans_and_lockouts_are_capped_at_24_hours(): void {
+		$out = Settings::sanitize(
+			array(
+				'rules' => array(
+					'login_lockout'   => array( 'lockout_minutes' => 43200 ),
+					'sensitive_files' => array( 'ban_minutes' => 43200 ),
+					'not_found'       => array( 'ban_minutes' => 99999 ),
+					'rate_limit'      => array( 'ban_minutes' => 5000 ),
+				),
+			)
+		);
+		$this->assertSame( 1440, $out['rules']['login_lockout']['lockout_minutes'] );
+		$this->assertSame( 1440, $out['rules']['sensitive_files']['ban_minutes'] );
+		$this->assertSame( 1440, $out['rules']['not_found']['ban_minutes'] );
+		$this->assertSame( 1440, $out['rules']['rate_limit']['ban_minutes'] );
+		$ok = Settings::sanitize(
+			array(
+				'rules' => array(
+					'login_lockout'   => array( 'lockout_minutes' => 1440 ),
+					'sensitive_files' => array( 'ban_minutes' => 120 ),
+				),
+			)
+		);
+		$this->assertSame( 1440, $ok['rules']['login_lockout']['lockout_minutes'] );
+		$this->assertSame( 120, $ok['rules']['sensitive_files']['ban_minutes'] );
 	}
 }

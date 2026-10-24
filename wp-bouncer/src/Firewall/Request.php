@@ -128,6 +128,20 @@ final class Request {
 	private ?string $body = null;
 
 	/**
+	 * Origins (or bare host names) that count as this site, or a closure returning them (evaluated when needed, so filters added later apply).
+	 *
+	 * @var string[]|\Closure
+	 */
+	private $own_hosts = array();
+
+	/**
+	 * Cached FetchContext result.
+	 *
+	 * @var string|null
+	 */
+	private ?string $fetch_context = null;
+
+	/**
 	 * Build a request.
 	 *
 	 * @param array<string, mixed> $args {
@@ -142,6 +156,7 @@ final class Request {
 	 *     @type callable $logged_in   Returns whether a user is logged in.
 	 *     @type callable $trusted     Returns whether the user is a site administrator.
 	 *     @type callable $body        Returns the raw request body.
+	 *     @type string[]|\Closure $own_hosts Origins (or bare host names) that count as this site, or a closure returning them. Default none.
 	 *     @type callable $body_stream Opens the raw request body as a readable stream (no size cap).
 	 *     @type bool     $local       Request from the server itself (loopback, no forwarding header). Default false.
 	 *     @type bool     $bannable    Bans, lockouts and counters may be kept for this client. Default true.
@@ -157,9 +172,11 @@ final class Request {
 		$this->server = is_array( $args['server'] ?? null ) ? $args['server'] : array();
 		$this->path   = self::normalize_path( $this->uri );
 
-		$this->local    = ! empty( $args['local'] );
-		$this->subject  = (string) ( $args['subject'] ?? '' );
-		$this->bannable = ! array_key_exists( 'bannable', $args ) || ! empty( $args['bannable'] );
+		$own             = $args['own_hosts'] ?? array();
+		$this->own_hosts = $own instanceof \Closure || is_array( $own ) ? $own : array();
+		$this->local     = ! empty( $args['local'] );
+		$this->subject   = (string) ( $args['subject'] ?? '' );
+		$this->bannable  = ! array_key_exists( 'bannable', $args ) || ! empty( $args['bannable'] );
 
 		$this->logged_in_resolver = $args['logged_in'] ?? static function (): bool {
 			return false;
@@ -185,8 +202,9 @@ final class Request {
 	 * @param bool                 $local     Request from the server itself.
 	 * @param bool                 $bannable  Bans and counters may be kept for this client.
 	 * @param string               $subject   Key for bans and counters when it must differ from the IP.
+	 * @param string[]|\Closure    $own_hosts Origins (or bare host names) that count as this site, or a closure returning them.
 	 */
-	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '' ): self {
+	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '', \Closure|array $own_hosts = array() ): self {
 		return new self(
 			array(
 				'ip'          => $ip,
@@ -200,6 +218,7 @@ final class Request {
 				'local'       => $local,
 				'bannable'    => $bannable,
 				'subject'     => $subject,
+				'own_hosts'   => $own_hosts,
 				'body_stream' => static function () {
 					// Not capped: lets a rule read a large body in chunks without holding it in memory.
 					return fopen( 'php://input', 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- php://input is not a file the Filesystem API can open.
@@ -368,6 +387,70 @@ final class Request {
 			$this->trusted = (bool) call_user_func( $this->trusted_resolver );
 		}
 		return $this->trusted;
+	}
+
+	/**
+	 * Where the request came from: a FetchContext constant.
+	 *
+	 * When the site's origins come from a callable the result is not cached: the callable is cheap, and the
+	 * first caller may run early (on a probe or 404 path, at plugins_loaded) before filters registered later
+	 * (theme functions.php, init) are in place; a login request in the same process must see those.
+	 */
+	public function fetch_context(): string {
+		if ( null !== $this->fetch_context ) {
+			return $this->fetch_context;
+		}
+		$lazy    = $this->own_hosts instanceof \Closure;
+		$hosts   = $lazy ? (array) call_user_func( $this->own_hosts ) : (array) $this->own_hosts;
+		$context = FetchContext::from_server( array_merge( $this->server, array( 'REQUEST_METHOD' => $this->method ) ), array_values( array_filter( array_map( 'strval', $hosts ) ) ) );
+		if ( ! $lazy ) {
+			$this->fetch_context = $context;
+		}
+		return $context;
+	}
+
+	/** Is this a visitor's own top-level navigation (Sec-Fetch-Mode navigate, destination document)? */
+	public function is_navigation(): bool {
+		return FetchContext::is_navigation( $this->server );
+	}
+
+	/** Is this a page's own image, script, stylesheet or font load for a file of that kind? Never counted. */
+	public function is_exempt_subresource(): bool {
+		return FetchContext::is_subresource( $this->server, $this->path );
+	}
+
+	/**
+	 * Did another site (or, for same-site, a mislabelled "subresource" load) cause this request?
+	 *
+	 * Such requests are counted in a separate bucket with a higher limit, so a page that
+	 * embeds a probe URL can't ban a visitor quickly, but a scanner that sets the header still gets banned.
+	 */
+	public function is_foreign_fetch(): bool {
+		// A visitor's own top-level navigation is never foreign: one link click can't ban anyone, and a scanner that
+		// forges navigation headers on every request lands in the normal bucket and earns the site-wide ban.
+		if ( $this->is_navigation() ) {
+			return false;
+		}
+		$context = $this->fetch_context();
+		if ( FetchContext::CROSS_SITE === $context ) {
+			return true;
+		}
+		// A "subresource" load whose file type doesn't fit its destination (a probe labelled as an image) is foreign only when
+		// the browser also says it didn't come from this site. Same-origin loads of dynamic scripts and styles
+		// (load-scripts.php, CAPTCHA images) are the visitor's own.
+		return FetchContext::SAME_SITE === $context && FetchContext::is_subresource_load( $this->server ) && ! $this->is_exempt_subresource();
+	}
+
+	/**
+	 * Does this look like a credentials request that another site started?
+	 *
+	 * "Cross-site" and "same-site" both count (sibling subdomains, subdomain multisite), unless the
+	 * Origin names this site or an allowed origin, which FetchContext has already turned into "same-origin".
+	 * Applies to any method: a Basic-auth GET carries credentials too.
+	 */
+	public function is_foreign_credentials_request(): bool {
+		$context = $this->fetch_context();
+		return FetchContext::CROSS_SITE === $context || FetchContext::SAME_SITE === $context;
 	}
 
 	/** Is this a request to wp-login.php (including /wp-login.php/extra PATH_INFO)? */

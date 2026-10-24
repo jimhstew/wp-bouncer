@@ -92,6 +92,8 @@ $stats    = array(
 		</table>
 	</section>
 
+	<?php \WPBouncer\Environment\EnvironmentAdmin::shared()->render_dashboard_section(); ?>
+
 	<section class="wpb-card">
 		<h2><?php esc_html_e( 'Activity, last 14 days', 'wp-bouncer' ); ?></h2>
 		<div class="wpb-bars" role="img" aria-label="<?php esc_attr_e( 'Events per day', 'wp-bouncer' ); ?>">

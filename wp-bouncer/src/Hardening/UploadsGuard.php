@@ -7,8 +7,10 @@
 
 namespace WPBouncer\Hardening;
 
+use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\Request;
+use WPBouncer\Installer;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Plugin;
 
@@ -47,6 +49,12 @@ final class UploadsGuard {
 	/** One-off cron hook that checks uploads still load after the block is written. */
 	public const CHECK_HOOK = 'wp_bouncer_uploads_check';
 
+	/** Least seconds between the two failures that remove the block. */
+	public const RECHECK_SECONDS = 300;
+
+	/** A failure older than this starts a new count. */
+	public const STREAK_SECONDS = 3600;
+
 	/**
 	 * Plugin instance.
 	 *
@@ -67,6 +75,7 @@ final class UploadsGuard {
 	public function register(): void {
 		add_action( 'init', array( $this, 'maybe_sync' ) );
 		add_action( self::CHECK_HOOK, array( $this, 'cron_check' ) );
+		add_action( Installer::CRON_HOOK, array( $this, 'cron_sweep' ) );
 		if ( ! Plugin::is_disabled() ) {
 			add_filter( 'wp_handle_upload_prefilter', array( $this, 'filter_upload' ) );
 			add_filter( 'wp_handle_sideload_prefilter', array( $this, 'filter_upload' ) );
@@ -145,35 +154,168 @@ final class UploadsGuard {
 		return is_array( $state ) && ! empty( $state['broken'] );
 	}
 
+	/**
+	 * Count consecutive serving failures. The block comes out only after two
+	 * failures at least RECHECK_SECONDS apart; a success resets the count.
+	 *
+	 * @param array<string, mixed> $state  Stored state (keys fail_streak, fail_time).
+	 * @param string               $result 'ok', 'broken' or 'unknown'.
+	 * @param int                  $now    Current time.
+	 * @return array{fail_streak: int, fail_time: int, remove: bool}
+	 */
+	public static function serving_streak( array $state, string $result, int $now ): array {
+		$streak = (int) ( $state['fail_streak'] ?? 0 );
+		$time   = (int) ( $state['fail_time'] ?? 0 );
+		if ( $streak >= 1 && $now - $time > self::STREAK_SECONDS ) {
+			// A failure from long ago is not "consecutive" with a new one.
+			$streak = 0;
+			$time   = 0;
+		}
+		if ( 'ok' === $result ) {
+			return array(
+				'fail_streak' => 0,
+				'fail_time'   => 0,
+				'remove'      => false,
+			);
+		}
+		if ( 'broken' !== $result || ( $streak >= 1 && $now - $time < self::RECHECK_SECONDS ) ) {
+			// Unknown results, and failures too soon after the last one, change nothing.
+			return array(
+				'fail_streak' => $streak,
+				'fail_time'   => $time,
+				'remove'      => false,
+			);
+		}
+		++$streak;
+		return array(
+			'fail_streak' => $streak,
+			'fail_time'   => $now,
+			'remove'      => $streak >= 2,
+		);
+	}
+
+	/** Daily cron callback: sweep leftovers. */
+	public function cron_sweep(): void {
+		self::sweep_stale_files();
+	}
+
+	/**
+	 * Delete test and check files that a request left behind in uploads (older than an hour).
+	 *
+	 * @return int Number of files deleted.
+	 */
+	public static function sweep_stale_files(): int {
+		$uploads = wp_upload_dir( null, false );
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+			return 0;
+		}
+		$deleted = 0;
+		foreach ( (array) scandir( $uploads['basedir'] ) as $name ) {
+			if ( ! fnmatch( 'wp-bouncer-test-*.php', $name ) && ! fnmatch( 'wp-bouncer-check-*.txt', $name ) ) {
+				continue;
+			}
+			$file = $uploads['basedir'] . '/' . $name;
+			if ( is_file( $file ) && filemtime( $file ) < time() - HOUR_IN_SECONDS ) {
+				wp_delete_file( $file );
+				++$deleted;
+			}
+		}
+		return $deleted;
+	}
+
 	/** Cron callback for CHECK_HOOK. */
 	public function cron_check(): void {
+		if ( self::is_broken() && $this->wants_htaccess() && ! self::block_present() ) {
+			$this->retry_broken();
+			return;
+		}
 		$this->run_serving_check();
 	}
 
 	/**
-	 * With the block in place, do uploaded files still load? If not, take
-	 * the block out again.
+	 * A day after the block was taken out for breaking uploads, put it back and
+	 * look again. If uploaded files load, it stays; otherwise it comes out again
+	 * and the next try is a day later.
+	 */
+	private function retry_broken(): void {
+		self::write_block();
+		if ( 'ok' === $this->check_serving() ) {
+			self::save_state( $this->wanted_state(), true, false );
+			$this->log_alert( 'Restored the uploads/.htaccess block: uploaded files load again with it in place' );
+			return;
+		}
+		self::remove_block();
+		wp_schedule_single_event( time() + DAY_IN_SECONDS, self::CHECK_HOOK );
+	}
+
+	/**
+	 * Write an alert-level row to the activity log.
 	 *
-	 * @return string 'ok', 'broken' (block removed) or 'unknown'.
+	 * @param string $reason What happened.
+	 */
+	private function log_alert( string $reason ): void {
+		$this->plugin->log_writer()->record(
+			array(
+				'ip'     => '',
+				'rule'   => self::ID,
+				'action' => BlockLogInterface::ACTION_ALERT,
+				'reason' => $reason,
+				'method' => $this->plugin->current_request()->method(),
+			)
+		);
+	}
+
+	/** Look again soon (once). */
+	private function schedule_recheck(): void {
+		if ( ! wp_next_scheduled( self::CHECK_HOOK ) ) {
+			wp_schedule_single_event( time() + self::RECHECK_SECONDS + 30, self::CHECK_HOOK );
+		}
+	}
+
+	/**
+	 * With the block in place, do uploaded files still load? If not twice in a
+	 * row (5 minutes apart), take the block out again.
+	 *
+	 * @return string 'ok', 'broken' (block removed), 'retry' (first error seen, checking again soon) or 'unknown'.
 	 */
 	public function run_serving_check(): string {
 		if ( ! self::block_present() ) {
 			return 'unknown';
 		}
 		$result = $this->check_serving();
-		if ( 'broken' === $result ) {
+		$state  = get_option( self::STATE_OPTION );
+		$state  = is_array( $state ) ? $state : array();
+		$next   = self::serving_streak( $state, $result, time() );
+
+		if ( 'broken' === $result && $next['remove'] ) {
 			self::remove_block();
 			self::save_state( $this->wanted_state(), false, true );
-			$request = $this->plugin->current_request();
-			$this->plugin->log_writer()->record(
-				array(
-					'ip'     => '',
-					'rule'   => self::ID,
-					'action' => BlockLogInterface::ACTION_ALERT,
-					'reason' => 'Removed the uploads/.htaccess block: with it in place the server answered uploaded files with an error',
-					'method' => $request->method(),
-				)
+			$this->log_alert( 'Removed the uploads/.htaccess block: with it in place the server answered uploaded files with an error' );
+			// Try again tomorrow: the error may have been the host's, not the block's.
+			wp_schedule_single_event( time() + DAY_IN_SECONDS, self::CHECK_HOOK );
+			return 'broken';
+		}
+
+		if ( (int) ( $state['fail_streak'] ?? 0 ) !== $next['fail_streak'] || (int) ( $state['fail_time'] ?? 0 ) !== $next['fail_time'] ) {
+			update_option(
+				self::STATE_OPTION,
+				array_merge(
+					$state,
+					array(
+						'fail_streak' => $next['fail_streak'],
+						'fail_time'   => $next['fail_time'],
+					)
+				),
+				true
 			);
+		}
+		if ( 'broken' === $result ) {
+			$this->schedule_recheck();
+			return 'retry';
+		}
+		if ( 'unknown' === $result && $next['fail_streak'] > 0 ) {
+			// An open streak must not hang on one inconclusive answer.
+			$this->schedule_recheck();
 		}
 		return $result;
 	}
@@ -259,10 +401,33 @@ final class UploadsGuard {
 		return '' !== $file && file_exists( $file ) && false !== strpos( (string) file_get_contents( $file ), '# BEGIN ' . UploadsPolicy::MARKER ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- local file in uploads or the site root; WP_Filesystem needs credentials and is not loaded in cron, and failure is reported by the caller.
 	}
 
-	/** Called on deactivation and uninstall. */
-	public static function teardown(): void {
+	/**
+	 * May the block be taken out of uploads/.htaccess by this request?
+	 *
+	 * On the main site of a network that file covers every site's uploads, so
+	 * only someone who may manage the firewall (a network admin) can remove it.
+	 * WP-CLI counts as trusted (shell access). Elsewhere anyone may.
+	 */
+	public static function may_remove_block(): bool {
+		if ( ! is_multisite() || ! is_main_site() ) {
+			return true;
+		}
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return true;
+		}
+		return current_user_can( FirewallCapability::NAME );
+	}
+
+	/**
+	 * Called on deactivation and uninstall.
+	 *
+	 * @param bool $force Remove the block whoever is asking (uninstall: the plugin's files are going, so its block must too).
+	 */
+	public static function teardown( bool $force = false ): void {
 		wp_clear_scheduled_hook( self::CHECK_HOOK );
-		self::remove_block();
+		if ( $force || self::may_remove_block() ) {
+			self::remove_block();
+		}
 		delete_option( self::STATE_OPTION );
 		delete_option( self::PROBE_OPTION );
 	}
@@ -348,9 +513,15 @@ final class UploadsGuard {
 			$result['detail'] = (string) $uploads['error'];
 			return $this->save_probe( $result );
 		}
-		if ( 'broken' === $this->run_serving_check() ) {
+		$serving = $this->run_serving_check();
+		if ( 'broken' === $serving ) {
 			$result['result'] = 'broken';
 			$result['detail'] = __( 'block removed', 'wp-bouncer' );
+			return $this->save_probe( $result );
+		}
+		if ( 'retry' === $serving ) {
+			$result['result'] = 'retrying';
+			$result['detail'] = __( 'first error seen; checking again in a few minutes', 'wp-bouncer' );
 			return $this->save_probe( $result );
 		}
 

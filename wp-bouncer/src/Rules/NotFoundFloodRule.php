@@ -9,6 +9,8 @@ namespace WPBouncer\Rules;
 
 use WPBouncer\Firewall\Request;
 use WPBouncer\Firewall\Verdict;
+use WPBouncer\Settings;
+use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
 
 defined( 'ABSPATH' ) || exit;
@@ -51,14 +53,23 @@ final class NotFoundFloodRule extends AbstractRule {
 	private CounterStoreInterface $store;
 
 	/**
+	 * Atomic counter for the 404 counts (falls back to the store's counter).
+	 *
+	 * @var AtomicCounterInterface|null
+	 */
+	private ?AtomicCounterInterface $counter;
+
+	/**
 	 * Set up the NotFoundFloodRule.
 	 *
-	 * @param array<string, mixed>  $settings Rule settings.
-	 * @param CounterStoreInterface $store    Counter storage.
+	 * @param array<string, mixed>        $settings Rule settings (cross_site_multiplier: how many times the limit applies to 404s another site's page caused, default 5).
+	 * @param CounterStoreInterface       $store    Counter storage.
+	 * @param AtomicCounterInterface|null $counter  Atomic counter for the 404 counts.
 	 */
-	public function __construct( array $settings, CounterStoreInterface $store ) {
+	public function __construct( array $settings, CounterStoreInterface $store, ?AtomicCounterInterface $counter = null ) {
 		parent::__construct( $settings );
-		$this->store = $store;
+		$this->store   = $store;
+		$this->counter = $counter;
 	}
 
 	/** {@inheritDoc} */
@@ -80,6 +91,11 @@ final class NotFoundFloodRule extends AbstractRule {
 		if ( null !== $this->store->get( self::ban_key( $ip ) ) ) {
 			return $this->deny( 'Temporarily banned for too many "not found" requests', 403, $this->ban_seconds() );
 		}
+		// Foreign 404s past their limit only close the door to further foreign requests (never the whole site),
+		// so a hostile page can't lock its visitor out. Link clicks and the visitor's own requests pass.
+		if ( $request->is_foreign_fetch() && null !== $this->store->get( self::foreign_ban_key( $ip ) ) ) {
+			return $this->deny( 'Requests from another site refused after repeated "not found" requests', 403, $this->ban_seconds() );
+		}
 		return null;
 	}
 
@@ -93,16 +109,27 @@ final class NotFoundFloodRule extends AbstractRule {
 		if ( ! $this->counts( $request ) ) {
 			return null;
 		}
-		$ip     = $request->key_ip();
-		$window = max( 1, (int) $this->setting( 'window_seconds', 60 ) );
-		$max    = max( 1, (int) $this->setting( 'max_404', 20 ) );
-		$count  = $this->store->increment( self::counter_key( $ip ), $window );
+		$ip      = $request->key_ip();
+		$window  = max( 1, (int) $this->setting( 'window_seconds', 60 ) );
+		$max     = max( 1, (int) $this->setting( 'max_404', 20 ) );
+		$foreign = $request->is_foreign_fetch();
+		if ( $foreign ) {
+			// Another site's page can cause these, so they have their own counter and a higher limit.
+			$max *= max( 1, (int) $this->setting( 'cross_site_multiplier', 5 ) );
+		}
+		$key   = $foreign ? self::foreign_counter_key( $ip ) : self::counter_key( $ip );
+		$count = null !== $this->counter ? $this->counter->add_or_increment( $key, $window ) : $this->store->increment( $key, $window );
 		if ( $count <= $max ) {
 			return null;
 		}
-		$this->store->set( self::ban_key( $ip ), 1, $this->ban_seconds() );
-		$this->store->delete( self::counter_key( $ip ) );
-		return sprintf( 'Banned for %d minutes after more than %d "not found" requests in %d seconds', (int) ( $this->ban_seconds() / 60 ), $max, $window );
+		$this->store->set( $foreign ? self::foreign_ban_key( $ip ) : self::ban_key( $ip ), 1, $this->ban_seconds() );
+		null !== $this->counter ? $this->counter->delete( $key ) : $this->store->delete( $key );
+		return sprintf(
+			$foreign ? 'Requests from another site refused for %d minutes after more than %d "not found" requests in %d seconds' : 'Banned for %d minutes after more than %d "not found" requests in %d seconds',
+			(int) ( $this->ban_seconds() / 60 ),
+			$max,
+			$window
+		);
 	}
 
 	/**
@@ -114,7 +141,7 @@ final class NotFoundFloodRule extends AbstractRule {
 		if ( ! $this->is_enabled() || '' === $request->ip() || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return false;
 		}
-		if ( preg_match( self::ASSET, $request->path() ) ) {
+		if ( preg_match( self::ASSET, $request->path() ) || $request->is_exempt_subresource() ) {
 			return false;
 		}
 		if ( $this->setting( 'ignore_crawlers', true ) && preg_match( self::CRAWLERS, $request->user_agent() ) ) {
@@ -125,7 +152,7 @@ final class NotFoundFloodRule extends AbstractRule {
 
 	/** Ban length in seconds. */
 	private function ban_seconds(): int {
-		return max( 1, (int) $this->setting( 'ban_minutes', 60 ) ) * 60;
+		return min( Settings::MAX_BAN_MINUTES, max( 1, (int) $this->setting( 'ban_minutes', 60 ) ) ) * 60;
 	}
 
 	/**
@@ -135,6 +162,24 @@ final class NotFoundFloodRule extends AbstractRule {
 	 */
 	public static function counter_key( string $ip ): string {
 		return 'nf_count:' . $ip;
+	}
+
+	/**
+	 * Store key for an IP's counter of 404s that another site's page caused.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public static function foreign_counter_key( string $ip ): string {
+		return 'nf_count_x:' . $ip;
+	}
+
+	/**
+	 * Store key for the refusal of foreign requests from an IP.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public static function foreign_ban_key( string $ip ): string {
+		return 'nf_xban:' . $ip;
 	}
 
 	/**

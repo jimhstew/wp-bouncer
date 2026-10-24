@@ -192,7 +192,7 @@ final class MessageCodes {
 				return sprintf( __( 'Test email sent to %s. If it does not arrive, check spam, then your site\'s mail setup.', 'wp-bouncer' ), $detail );
 			case 'probe_result':
 				$result = isset( $args['result'] ) ? (string) $args['result'] : '';
-				return in_array( $result, array( 'protected', 'unprotected', 'broken', 'unknown' ), true ) ? AdminController::probe_message( $result ) : null;
+				return in_array( $result, array( 'protected', 'unprotected', 'broken', 'retrying', 'unknown' ), true ) ? AdminController::probe_message( $result ) : null;
 			case 'uploads_sync_failed':
 				return __( 'Could not update wp-content/uploads/.htaccess. Check that the folder is writable, or add the rule to your server config by hand.', 'wp-bouncer' );
 			case 'uploads_synced':

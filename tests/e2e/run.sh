@@ -138,10 +138,11 @@ status() { # status IP UA URL [curl args...]
 	curl -s -o /dev/null -w '%{http_code}' -H "X-Real-IP: $ip" -A "$ua" "$@" "$url"
 }
 
-login() { # login IP USER PASS -> writes page to $WORK/login.html, prints status
-	curl -s -o "$WORK/login.html" -w '%{http_code}' -H "X-Real-IP: $1" -A "Mozilla/5.0" \
-		-b "wordpress_test_cookie=WP%20Cookie%20check" \
-		-d "log=$2&pwd=$3&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
+login() { # login IP USER PASS [curl args...] -> writes page to $WORK/login.html, prints status
+	local ip=$1 user=$2 pass=$3; shift 3
+	curl -s -o "$WORK/login.html" -w '%{http_code}' -H "X-Real-IP: $ip" -A "Mozilla/5.0" \
+		-b "wordpress_test_cookie=WP%20Cookie%20check" "$@" \
+		-d "log=$user&pwd=$pass&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
 }
 
 set_settings() { # set_settings 'PHP code that edits $s'
@@ -457,6 +458,13 @@ check "locked out after 5 failures"  403 "$(login 198.51.100.5 admin_e2e e2e-pas
 login 198.51.100.6 admin x > /dev/null
 check "banned username locks out"    403 "$(login 198.51.100.6 admin_e2e e2e-pass-123)"
 check "other IPs can still log in"   302 "$(login 198.51.100.7 admin_e2e e2e-pass-123)"
+check "cross-site login refused"     200 "$(login 198.51.100.8 admin_e2e e2e-pass-123 -H "Sec-Fetch-Site: cross-site")"
+check "  ...with the cross-site error" 1 "$(grep -c 'from another site is not allowed' "$WORK/login.html")"
+for i in 1 2 3 4 5 6; do login 198.51.100.8 admin_e2e "wrong$i" -H "Origin: https://evil.example" > /dev/null; done
+check "  ...never locks the visitor out" 302 "$(login 198.51.100.8 admin_e2e e2e-pass-123)"
+check "login post with Origin: null refused" 200 "$(login 198.51.100.9 admin_e2e e2e-pass-123 -H "Origin: null")"
+check "  ...with the cross-site error" 1 "$(grep -c 'from another site is not allowed' "$WORK/login.html")"
+check "login with this site's Origin works" 302 "$(login 198.51.100.9 admin_e2e e2e-pass-123 -H "Origin: $U" -H "Sec-Fetch-Site: same-origin")"
 # RT-08: twelve parallel guesses from one address. Only the first five may reach the password check.
 rm -f "$WORK"/burst-*.html
 BURST_PIDS=""
@@ -533,7 +541,19 @@ set_settings '$s["rules"]["user_agent"]["enabled"] = true'
 fi
 if want "Sensitive-file probes"; then
 check "/.env refused"                403 "$(status 203.0.113.61 "$MOZ" "$U/.env")"
+check "  ...one probe does not ban"  200 "$(status 203.0.113.61 "$MOZ" "$U/")"
+check "  ...second probe refused"    403 "$(status 203.0.113.61 "$MOZ" "$U/.env")"
 check "  ...prober banned site-wide" 403 "$(status 203.0.113.61 "$MOZ" "$U/")"
+check "cross-site probe refused"     403 "$(status 203.0.113.70 "$MOZ" "$U/.env" -H "Sec-Fetch-Site: cross-site")"
+check "cross-site probe again"       403 "$(status 203.0.113.70 "$MOZ" "$U/.env" -H "Sec-Fetch-Site: cross-site")"
+check "  ...not banned by two"       200 "$(status 203.0.113.70 "$MOZ" "$U/")"
+for i in 1 2 3; do status 203.0.113.70 "$MOZ" "$U/.env" -H "Sec-Fetch-Site: cross-site" > /dev/null; done
+check "  ...fifth: visitor not banned" 200 "$(status 203.0.113.70 "$MOZ" "$U/")"
+check "  ...link click still works"  200 "$(status 203.0.113.70 "$MOZ" "$U/" -H "Sec-Fetch-Site: cross-site" -H "Sec-Fetch-Mode: navigate" -H "Sec-Fetch-Dest: document")"
+check "  ...forged header refused"    403 "$(status 203.0.113.70 "$MOZ" "$U/" -H "Sec-Fetch-Site: cross-site" -H "Sec-Fetch-Dest: image")"
+check "own Origin beats cross-site"  403 "$(status 203.0.113.171 "$MOZ" "$U/.env" -H "Sec-Fetch-Site: cross-site" -H "Origin: $U")"
+check "  ...so it counts normally"    403 "$(status 203.0.113.171 "$MOZ" "$U/.env" -H "Sec-Fetch-Site: cross-site" -H "Origin: $U")"
+check "  ...and bans after two"       403 "$(status 203.0.113.171 "$MOZ" "$U/")"
 check "  ...other visitors fine"     200 "$(status 203.0.113.62 "$MOZ" "$U/")"
 check "  ...logged"                  sensitive_files "$(log_value rule "ip = '203.0.113.61'")"
 check "/.git/config refused"         403 "$(status 203.0.113.63 "$MOZ" "$U/.git/config")"
@@ -576,6 +596,10 @@ done
 check "log lists blocked entries" 1 "$( [ "$(grep -o 'wpb-badge-blocked' "$WORK/tab-log.html" | wc -l)" -gt 5 ] && echo 1 || echo 0 )"
 check "admin is never banned for probes" 404 "$(status 198.51.100.50 "$MOZ" "$U/.env" -b "$J")"
 check "  ...still gets in"           200 "$(status 198.51.100.50 "$MOZ" "$U/wp-admin/" -b "$J")"
+check "dashboard shows the environment checks" 1 "$(grep -c 'id="wpb-environment"' "$WORK/tab-dashboard.html")"
+check "  ...with the database row"   1 "$( [ "$(grep -c 'Database version' "$WORK/tab-dashboard.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and a fixed intro"        1 "$(grep -c 'checks WP Bouncer runs' "$WORK/tab-dashboard.html")"
+check "front page has no environment data" 0 "$(curl -s -H "X-Real-IP: 203.0.113.30" -A "$MOZ" "$U/" | grep -c 'wpb-environment\|WP Bouncer runs\|DISALLOW_FILE_EDIT')"
 
 fi
 if want "Geo import through the Tools screen"; then
@@ -718,6 +742,10 @@ check "  ...and it returns after"    1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
 # A host where the block makes every upload fail: the check takes it out again.
 touch "$W/wp-content/e2e-htaccess-500"
 check "  (stand-in host breaks uploads)" 500 "$(curl -s -o /dev/null -w '%{http_code}' "$U/wp-content/uploads/")"
+age_failure() { $WP eval '$o = WPBouncer\Hardening\UploadsGuard::STATE_OPTION; $st = (array) get_option( $o ); $st["fail_time"] = time() - 400; update_option( $o, $st );'; }
+$WP cron event run wp_bouncer_uploads_check > /dev/null
+check "one 5xx: block kept (re-check)" 3 "$(count_in 'WP Bouncer' "$HT")"
+age_failure
 $WP cron event run wp_bouncer_uploads_check > /dev/null
 check "broken host: block removed"   0 "$(count_in 'WP Bouncer' "$HT")"
 check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
@@ -726,6 +754,8 @@ admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=rules" > /dev/null
 check "  ...admin is told"           1 "$(count_in 'answered uploaded files (images too) with an error' "$WORK/admin.html")"
 check "  ...and logged"              alert "$(log_value action "rule = 'uploads_php' AND reason LIKE 'Removed the uploads%'")"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_sync rules)&action=wp_bouncer_uploads_sync" > /dev/null
+probe > /dev/null
+age_failure
 check "Test now on that host"        broken "$(probe)"
 check "  ...block removed again"     0 "$(count_in 'WP Bouncer' "$HT")"
 rm -f "$W/wp-content/e2e-htaccess-500"
@@ -815,6 +845,10 @@ rm -f "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
 $WP eval 'set_transient( "wpb_alert_count", 20, HOUR_IN_SECONDS );'
 rm -f "$MAILLOG"
 $WP user create eve4_e2e eve4@example.test --role=administrator --user_pass=e2e-pass-eve
+check "plugin budget spent: admin alert still sent" 1 "$(mail_count)"
+$WP eval 'set_transient( "wpb_alert_count_critical", 20, HOUR_IN_SECONDS );'
+rm -f "$MAILLOG"
+$WP user create eve5_e2e eve5@example.test --role=administrator --user_pass=e2e-pass-eve
 check "over 20 an hour: not emailed" 0 "$(mail_count)"
 check "  ...but still logged"        1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE action = \"alert\" AND reason LIKE \"%eve4_e2e%\"");')"
 $WP eval 'delete_transient( "wpb_alert_count" );'
@@ -917,6 +951,7 @@ stored_ip() { $WP eval '$s = get_option( "wp_bouncer_settings" ); echo $s["ip_so
 # Loopback as the forwarded address is refused: the request resolves to the proxy, which is never
 # banned itself; requests carrying a refused header are counted and banned under "rejected:<proxy>".
 check "loopback header: probe refused"  403 "$(status 127.0.0.1 "$MOZ" "$U/.env")"
+check "  ...second probe: subject banned" 403 "$(status 127.0.0.1 "$MOZ" "$U/.env")"
 check "  ...refused-header subject banned" 403 "$(status 127.0.0.1 "$MOZ" "$U/")"
 check "  ...but visitors via the proxy fine" 200 "$(status 203.0.113.150 "$MOZ" "$U/")"
 check "private header: probe refused"   403 "$(status 10.1.2.3 "$MOZ" "$U/.env")"
@@ -950,6 +985,7 @@ check "  ...and changed nothing"        "x_real_ip|" "$(stored_ip)"
 check "Trust-peer button works"         302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip&peer=127.0.0.1")"
 check "  ...proxy added"                "x_real_ip|127.0.0.1" "$(stored_ip)"
 check "  ...visitor IPs honoured again" 403 "$(status 203.0.113.143 "$MOZ" "$U/.env")"
+check "  ...second probe refused"       403 "$(status 203.0.113.143 "$MOZ" "$U/.env")"
 check "  ...and bans work again"        403 "$(status 203.0.113.143 "$MOZ" "$U/")"
 check "  ...notice gone"                0 "$(admin "$U/wp-admin/index.php" > /dev/null; grep -c 'wpb-ip-setup' "$WORK/admin.html")"
 set_settings '$s["trusted_proxies"] = []'

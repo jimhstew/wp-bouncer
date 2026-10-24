@@ -64,11 +64,11 @@ trait PluginHelpers {
 	protected function wpb_tear_down(): void {
 		remove_filter( 'upload_dir', array( $this, 'wpb_upload_dir' ) );
 		self::remove_tree( $this->uploads_dir );
-		$_SERVER = $this->server_backup;
-		$_GET    = array();
-		$_POST   = array();
+		$_SERVER  = $this->server_backup;
+		$_GET     = array();
+		$_POST    = array();
 		$_REQUEST = array();
-		$_FILES  = array();
+		$_FILES   = array();
 		if ( $this->ddl_test ) {
 			$this->restore_schema();
 		}
@@ -118,7 +118,13 @@ trait PluginHelpers {
 	 */
 	protected function reset_request(): void {
 		$ref = new \ReflectionClass( Plugin::class );
-		foreach ( array( 'request', 'client_ip', 'guard', 'geo', 'geo_peer_trusted' ) as $prop ) {
+		foreach ( array( 'country_logged', 'foreign_basic_logged' ) as $flag ) {
+			$ref->getProperty( $flag )->setValue( $this->plugin, false );
+		}
+		$ref->getProperty( 'auth_stack' )->setValue( $this->plugin, array() );
+		$ref->getProperty( 'own_origins_cache' )->setValue( $this->plugin, array() );
+		$ref->getProperty( 'suspended_by' )->setValue( $this->plugin, 0 );
+		foreach ( array( 'request', 'client_ip', 'guard', 'geo', 'geo_peer_trusted', 'auth_refusal' ) as $prop ) {
 			// Private properties are writable through reflection since PHP 8.1.
 			$ref->getProperty( $prop )->setValue( $this->plugin, null );
 		}
@@ -132,7 +138,7 @@ trait PluginHelpers {
 	 * @param array<string, mixed>  $post   $_POST.
 	 */
 	protected function fake_request( array $server = array(), array $get = array(), array $post = array() ): void {
-		$_SERVER = array_merge(
+		$_SERVER  = array_merge(
 			$_SERVER,
 			array(
 				'REMOTE_ADDR'     => '203.0.113.9',

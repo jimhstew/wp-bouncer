@@ -208,6 +208,8 @@ final class UploadsPolicyTest extends TestCase {
 		$this->assertSame( 'ok', UploadsPolicy::interpret_serving( 200, 'wpb-ok', 'wpb-ok' ) );
 		$this->assertSame( 'broken', UploadsPolicy::interpret_serving( 500, 'Internal Server Error', 'wpb-ok' ) );
 		$this->assertSame( 'broken', UploadsPolicy::interpret_serving( 503, '', 'wpb-ok' ) );
+		$this->assertSame( 'unknown', UploadsPolicy::interpret_serving( 502, '', 'wpb-ok' ), 'a proxy error is not the block\'s fault' );
+		$this->assertSame( 'unknown', UploadsPolicy::interpret_serving( 504, '', 'wpb-ok' ) );
 		$this->assertSame( 'unknown', UploadsPolicy::interpret_serving( 200, 'a login page', 'wpb-ok' ) );
 		$this->assertSame( 'unknown', UploadsPolicy::interpret_serving( 403, '', 'wpb-ok' ) );
 		$this->assertSame( 'unknown', UploadsPolicy::interpret_serving( 0, '', 'wpb-ok' ) );

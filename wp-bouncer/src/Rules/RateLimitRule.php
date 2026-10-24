@@ -9,6 +9,7 @@ namespace WPBouncer\Rules;
 
 use WPBouncer\Firewall\Request;
 use WPBouncer\Firewall\Verdict;
+use WPBouncer\Settings;
 use WPBouncer\Storage\CounterStoreInterface;
 
 defined( 'ABSPATH' ) || exit;
@@ -65,7 +66,7 @@ final class RateLimitRule extends AbstractRule {
 			return null;
 		}
 
-		$ban_seconds = max( 1, (int) $this->setting( 'ban_minutes', 10 ) ) * 60;
+		$ban_seconds = min( Settings::MAX_BAN_MINUTES, max( 1, (int) $this->setting( 'ban_minutes', 10 ) ) ) * 60;
 
 		if ( null !== $this->store->get( self::ban_key( $ip ) ) ) {
 			return $this->deny( 'Temporarily banned for exceeding the rate limit', 429, $ban_seconds );

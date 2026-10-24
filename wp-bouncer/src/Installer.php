@@ -60,13 +60,62 @@ final class Installer {
 		}
 	}
 
-	/** Deactivation hook. Settings and the log are kept; uninstall.php removes them. */
-	public static function deactivate(): void {
+	/**
+	 * Deactivation hook. Settings and the log are kept; uninstall.php removes them.
+	 *
+	 * @param bool $network_wide Deactivated for the whole network: do the same for every site.
+	 */
+	public static function deactivate( $network_wide = false ): void {
+		if ( $network_wide && is_multisite() ) {
+			self::for_each_site( array( self::class, 'deactivate_site' ) );
+			return;
+		}
+		self::deactivate_site();
+	}
+
+	/**
+	 * Run a callback inside every site of the network, 100 sites at a time.
+	 *
+	 * Sites are fetched page by page and the runtime object cache is flushed
+	 * after each, so a network of thousands of sites doesn't run out of memory
+	 * or time. The work is idempotent, so a run that is cut off can simply be repeated.
+	 *
+	 * @param callable $callback Called once per site with that site selected.
+	 */
+	public static function for_each_site( callable $callback ): void {
+		if ( function_exists( 'set_time_limit' ) ) {
+			@set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors, Squiz.PHP.DiscouragedFunctions -- a long loop over a big network; the host may forbid it, which is harmless.
+		}
+		$offset = 0;
+		do {
+			$ids  = get_sites(
+				array(
+					'fields' => 'ids',
+					'number' => 100,
+					'offset' => $offset,
+				)
+			);
+			$more = 100 === count( $ids );
+			foreach ( $ids as $site_id ) {
+				switch_to_blog( (int) $site_id );
+				$callback();
+				restore_current_blog();
+				if ( function_exists( 'wp_cache_flush_runtime' ) ) {
+					wp_cache_flush_runtime();
+				}
+			}
+			$offset += 100;
+		} while ( $more );
+	}
+
+	/** Deactivate for the current site: cron events and our block in uploads/.htaccess. */
+	public static function deactivate_site(): void {
 		wp_clear_scheduled_hook( self::CRON_HOOK );
 		wp_clear_scheduled_hook( Traffic\TrafficRecorder::PURGE_HOOK );
 		wp_clear_scheduled_hook( Storage\RedactionMigration::HOOK );
 		wp_clear_scheduled_hook( self::COUNTER_PURGE_HOOK );
-		// Our block in uploads/.htaccess goes too; it is written again on reactivation.
+		// Our block in uploads/.htaccess goes too (unless it is the network-wide one and
+		// the user may not manage the firewall); it is written again on reactivation.
 		Hardening\UploadsGuard::teardown();
 	}
 

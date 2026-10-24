@@ -108,6 +108,49 @@ final class UninstallTest extends IntegrationTestCase {
 		$this->assertSame( 'keep me', get_transient( 'unrelated_transient' ) );
 	}
 
+	public function test_it_deletes_all_of_its_transients_and_only_those(): void {
+		global $wpdb;
+		$this->populate();
+		$ours = array(
+			'wpb_' . md5( 'ban:1' ),
+			'wpb_ctrfb_' . md5( 'x' ),
+			'wpb_flash_7',
+			'wpb_alert_count',
+			'wpb_alert_count_critical',
+			'wp_bouncer_export_' . md5( 'abc' ),
+			'wp_bouncer_erase_range_5',
+		);
+		$others = array( 'wpb_notours', 'wpb_' . str_repeat( 'z', 32 ), 'other_wpb_' . md5( 'y' ), 'wp_bouncer_unrelated' );
+		foreach ( array_merge( $ours, $others ) as $name ) {
+			set_transient( $name, 'v', 600 );
+		}
+		$count = static function ( array $names ) use ( $wpdb ): int {
+			$n = 0;
+			foreach ( $names as $name ) {
+				foreach ( array( '_transient_', '_transient_timeout_' ) as $prefix ) {
+					$n += (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name = %s", $prefix . $name ) ); // phpcs:ignore WordPress.DB
+				}
+			}
+			return $n;
+		};
+		$this->assertSame( 2 * count( $ours ), $count( $ours ) );
+
+		$this->uninstall();
+
+		$this->assertSame( 0, $count( $ours ), 'every one of ours is gone, with its timeout row' );
+		$this->assertSame( 2 * count( $others ), $count( $others ), 'other plugins\' look-alikes stay' );
+	}
+
+	public function test_it_does_not_delete_a_working_file_outside_its_own_folder(): void {
+		$outside = $this->uploads_dir . '/precious.csv';
+		file_put_contents( $outside, 'x' );
+		update_option( GeoImport::STATE_OPTION, array( 'file' => $outside ) );
+
+		$this->uninstall();
+
+		$this->assertFileExists( $outside );
+	}
+
 	public function test_it_clears_every_cron_hook(): void {
 		$this->populate();
 		$this->assertNotFalse( wp_next_scheduled( Installer::CRON_HOOK ) );

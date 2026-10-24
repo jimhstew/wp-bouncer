@@ -23,6 +23,9 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Settings {
 
+	/** Longest automatic ban or lockout, in minutes (24 hours). Longer blocks belong in the IP blocklist. */
+	public const MAX_BAN_MINUTES = 1440;
+
 	public const OPTION = 'wp_bouncer_settings';
 
 	/** Firewall modes. */
@@ -184,6 +187,17 @@ final class Settings {
 			$rule                   = is_array( $stored_rules[ $id ] ?? null ) ? $stored_rules[ $id ] : array();
 			$merged['rules'][ $id ] = array_merge( $rule_defaults, array_intersect_key( $rule, $rule_defaults ) );
 		}
+		// Automatic bans and lockouts last at most 24 hours; values stored by an older version are clamped.
+		foreach ( array(
+			'login_lockout'   => 'lockout_minutes',
+			'sensitive_files' => 'ban_minutes',
+			'not_found'       => 'ban_minutes',
+			'rate_limit'      => 'ban_minutes',
+		) as $id => $key ) {
+			if ( isset( $merged['rules'][ $id ][ $key ] ) ) {
+				$merged['rules'][ $id ][ $key ] = min( self::MAX_BAN_MINUTES, (int) $merged['rules'][ $id ][ $key ] );
+			}
+		}
 		return $merged;
 	}
 
@@ -331,7 +345,7 @@ final class Settings {
 			'enabled'          => self::bool( $rule['enabled'] ?? false ),
 			'max_attempts'     => self::int_range( $rule['max_attempts'] ?? null, 1, 100, $dl['max_attempts'] ),
 			'window_minutes'   => self::int_range( $rule['window_minutes'] ?? null, 1, 1440, $dl['window_minutes'] ),
-			'lockout_minutes'  => self::int_range( $rule['lockout_minutes'] ?? null, 1, 43200, $dl['lockout_minutes'] ),
+			'lockout_minutes'  => self::int_range( $rule['lockout_minutes'] ?? null, 1, self::MAX_BAN_MINUTES, $dl['lockout_minutes'] ),
 			'banned_usernames' => array_values(
 				array_unique(
 					array_filter(
@@ -353,7 +367,7 @@ final class Settings {
 			'enabled'        => self::bool( $rule['enabled'] ?? false ),
 			'max_requests'   => self::int_range( $rule['max_requests'] ?? null, 10, 100000, $dl['max_requests'] ),
 			'window_seconds' => self::int_range( $rule['window_seconds'] ?? null, 1, 3600, $dl['window_seconds'] ),
-			'ban_minutes'    => self::int_range( $rule['ban_minutes'] ?? null, 1, 1440, $dl['ban_minutes'] ),
+			'ban_minutes'    => self::int_range( $rule['ban_minutes'] ?? null, 1, self::MAX_BAN_MINUTES, $dl['ban_minutes'] ),
 		);
 
 		$rule                = $r( 'waf' );
@@ -385,7 +399,7 @@ final class Settings {
 		$rule                            = $r( 'sensitive_files' );
 		$out['rules']['sensitive_files'] = array(
 			'enabled'     => self::bool( $rule['enabled'] ?? false ),
-			'ban_minutes' => self::int_range( $rule['ban_minutes'] ?? null, 0, 43200, $dr['sensitive_files']['ban_minutes'] ),
+			'ban_minutes' => self::int_range( $rule['ban_minutes'] ?? null, 0, self::MAX_BAN_MINUTES, $dr['sensitive_files']['ban_minutes'] ),
 			'extra_paths' => array_values(
 				array_unique(
 					array_filter(
@@ -410,7 +424,7 @@ final class Settings {
 			'enabled'         => self::bool( $rule['enabled'] ?? false ),
 			'max_404'         => self::int_range( $rule['max_404'] ?? null, 3, 10000, $dl['max_404'] ),
 			'window_seconds'  => self::int_range( $rule['window_seconds'] ?? null, 10, 3600, $dl['window_seconds'] ),
-			'ban_minutes'     => self::int_range( $rule['ban_minutes'] ?? null, 1, 43200, $dl['ban_minutes'] ),
+			'ban_minutes'     => self::int_range( $rule['ban_minutes'] ?? null, 1, self::MAX_BAN_MINUTES, $dl['ban_minutes'] ),
 			'ignore_crawlers' => self::bool( $rule['ignore_crawlers'] ?? false ),
 		);
 

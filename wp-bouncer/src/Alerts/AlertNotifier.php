@@ -32,8 +32,10 @@ final class AlertNotifier {
 
 	public const LOG_RULE = 'alerts';
 
-	private const MAX_PER_HOUR = 20;
-	private const THROTTLE_KEY = 'wpb_alert_count';
+	private const MAX_PER_HOUR          = 20;
+	private const THROTTLE_KEY          = 'wpb_alert_count';
+	private const MAX_CRITICAL_PER_HOUR = 20;
+	private const THROTTLE_KEY_CRITICAL = 'wpb_alert_count_critical';
 
 	/**
 	 * Plugin instance.
@@ -230,7 +232,7 @@ final class AlertNotifier {
 	public function on_deactivated_plugin( $plugin, $network_wide = false ): void {
 		if ( $this->wants( 'plugin_changes' ) ) {
 			$title = plugin_basename( $this->plugin->file() ) === $plugin ? 'WP Bouncer itself was deactivated' : 'Plugin deactivated: ' . $this->plugin_name( (string) $plugin );
-			$this->queue( 'plugin', $title, $this->plugin_detail( (string) $plugin, (bool) $network_wide ) );
+			$this->queue( 'plugin', $title, $this->plugin_detail( (string) $plugin, (bool) $network_wide ), '', '', plugin_basename( $this->plugin->file() ) === $plugin );
 		}
 	}
 
@@ -325,13 +327,17 @@ final class AlertNotifier {
 	 * @param string $detail More detail.
 	 * @param string $key    De-duplication key.
 	 * @param string $log_detail Detail for the stored log row, when it must differ from the email.
+	 * @param bool   $critical   Uses the separate email budget (new administrators, WP Bouncer switched off).
 	 */
-	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '' ): void {
+	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '', bool $critical = false ): void {
 		$event = array(
 			'type'   => $type,
 			'title'  => $title,
 			'detail' => $detail,
 		);
+		if ( $critical || 'admin' === $type ) {
+			$event['critical'] = true;
+		}
 		if ( '' !== $key ) {
 			$event['key'] = $key;
 		}
@@ -343,6 +349,15 @@ final class AlertNotifier {
 			add_action( 'shutdown', array( $this, 'flush' ) );
 			$this->shutdown_hooked = true;
 		}
+	}
+
+	/**
+	 * Is this event one of the few that get their own email budget?
+	 *
+	 * @param array{type: string, title: string, detail: string, log_detail?: string, critical?: bool} $event Event.
+	 */
+	private static function is_critical( array $event ): bool {
+		return ! empty( $event['critical'] );
 	}
 
 	/** Send everything collected during this request. */
@@ -357,11 +372,32 @@ final class AlertNotifier {
 			$this->log( $event, $context );
 		}
 
-		$sent = (int) get_transient( self::THROTTLE_KEY );
-		if ( $sent >= self::MAX_PER_HOUR ) {
+		// Cheap plugin events can't use up the email budget of the alerts that matter most:
+		// new administrators and WP Bouncer being switched off have their own.
+		$general = (int) get_transient( self::THROTTLE_KEY );
+		$crit    = (int) get_transient( self::THROTTLE_KEY_CRITICAL );
+		$send    = array();
+		$uses    = array(
+			'general'  => false,
+			'critical' => false,
+		);
+		foreach ( $events as $event ) {
+			$is_critical = self::is_critical( $event );
+			if ( $is_critical ? $crit < self::MAX_CRITICAL_PER_HOUR : $general < self::MAX_PER_HOUR ) {
+				$send[]                                        = $event;
+				$uses[ $is_critical ? 'critical' : 'general' ] = true;
+			}
+		}
+		if ( empty( $send ) ) {
 			return;
 		}
-		set_transient( self::THROTTLE_KEY, $sent + 1, HOUR_IN_SECONDS );
+		if ( $uses['general'] ) {
+			set_transient( self::THROTTLE_KEY, $general + 1, HOUR_IN_SECONDS );
+		}
+		if ( $uses['critical'] ) {
+			set_transient( self::THROTTLE_KEY_CRITICAL, $crit + 1, HOUR_IN_SECONDS );
+		}
+		$events = $send;
 
 		$mail = AlertFormatter::format( $events, $context );
 		wp_mail( $this->recipients(), $mail['subject'], $mail['body'] );

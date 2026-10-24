@@ -9,6 +9,8 @@ namespace WPBouncer\Rules;
 
 use WPBouncer\Firewall\Request;
 use WPBouncer\Firewall\Verdict;
+use WPBouncer\Settings;
+use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
 
 defined( 'ABSPATH' ) || exit;
@@ -19,12 +21,13 @@ defined( 'ABSPATH' ) || exit;
  *
  * A file that really exists is served by the web server before WordPress
  * runs, so when one of these requests reaches the plugin, the file isn't
- * there and the visitor is guessing. No real visitor asks for /.git/config,
- * so one probe is enough to ban the IP for a while.
+ * there and the visitor is guessing. Every probe is refused; a second one
+ * within ten minutes bans the IP for a while. A probe that another site's
+ * page caused (Sec-Fetch-Site: cross-site, or an image/script request) never counts.
  *
  * Settings:
  * - enabled (bool)
- * - ban_minutes (int): how long a prober is refused everywhere; 0 refuses only the probe.
+ * - ban_minutes (int): how long a prober is refused everywhere (at most 1,440); 0 refuses only the probe.
  * - extra_paths (string[]): more path fragments to treat as probes, e.g. "/old-admin/".
  *
  * Logged-in administrators are never banned. Neither are loopback or proxy
@@ -58,6 +61,12 @@ final class SensitiveFileRule extends AbstractRule {
 		'server status page'   => '#^/server-(status|info)$#',
 	);
 
+	/** Probes inside the window that earn a site-wide ban. The first one is refused but does not ban. */
+	public const BAN_AFTER = 2;
+
+	/** The window for BAN_AFTER, in seconds. */
+	public const BAN_WINDOW = 600;
+
 	/** Real WordPress files that look like probes but aren't secret. */
 	private const NOT_PROBES = array( '/wp-config.php', '/wp-config-sample.php' );
 
@@ -69,14 +78,23 @@ final class SensitiveFileRule extends AbstractRule {
 	private CounterStoreInterface $store;
 
 	/**
+	 * Atomic counter for the probe counts (falls back to the store's counter).
+	 *
+	 * @var AtomicCounterInterface|null
+	 */
+	private ?AtomicCounterInterface $counter;
+
+	/**
 	 * Set up the SensitiveFileRule.
 	 *
-	 * @param array<string, mixed>  $settings Rule settings.
-	 * @param CounterStoreInterface $store    Ban storage.
+	 * @param array<string, mixed>        $settings Rule settings (cross_site_probes: probes from another site's page that earn a ban, default 5).
+	 * @param CounterStoreInterface       $store    Ban storage.
+	 * @param AtomicCounterInterface|null $counter  Atomic counter for probe counts.
 	 */
-	public function __construct( array $settings, CounterStoreInterface $store ) {
+	public function __construct( array $settings, CounterStoreInterface $store, ?AtomicCounterInterface $counter = null ) {
 		parent::__construct( $settings );
-		$this->store = $store;
+		$this->store   = $store;
+		$this->counter = $counter;
 	}
 
 	/** {@inheritDoc} */
@@ -96,17 +114,36 @@ final class SensitiveFileRule extends AbstractRule {
 			return null;
 		}
 
-		$ban_minutes = $request->can_be_banned() ? max( 0, (int) $this->setting( 'ban_minutes', 60 ) ) : 0;
+		$ban_minutes = $request->can_be_banned() ? min( Settings::MAX_BAN_MINUTES, max( 0, (int) $this->setting( 'ban_minutes', 60 ) ) ) : 0;
 		if ( $ban_minutes > 0 && null !== $this->store->get( self::ban_key( $ip ) ) ) {
 			return $this->deny( 'Banned after probing for sensitive files' );
+		}
+
+		// After foreign probes passed their limit, requests that another site's page causes are refused for the ban period.
+		// Requests the visitor makes themselves (same-origin, no headers, link clicks) are untouched, so a hostile
+		// page that fires probes at a visitor can't lock the visitor out of the site.
+		if ( $ban_minutes > 0 && $request->is_foreign_fetch() && null !== $this->store->get( self::foreign_ban_key( $ip ) ) ) {
+			return $this->deny( 'Requests from another site refused after repeated probes' );
 		}
 
 		$what = $this->match( $request->path() );
 		if ( null === $what ) {
 			return null;
 		}
-		if ( $ban_minutes > 0 ) {
-			$this->store->set( self::ban_key( $ip ), 1, $ban_minutes * 60 );
+		// A probe that another site's page caused (an image tag, say) is counted in its own bucket with a higher
+		// limit, so it can't ban a visitor quickly while a scanner that fakes the header is still banned in the end.
+		// A real image/script/style load of a file of that kind is not counted at all.
+		if ( $ban_minutes > 0 && ! $request->is_exempt_subresource() ) {
+			$foreign = $request->is_foreign_fetch();
+			$key     = $foreign ? self::foreign_probe_key( $ip ) : self::probe_key( $ip );
+			$limit   = $foreign ? max( self::BAN_AFTER, (int) $this->setting( 'cross_site_probes', 5 ) ) : self::BAN_AFTER;
+			$probes  = null !== $this->counter ? $this->counter->add_or_increment( $key, self::BAN_WINDOW ) : $this->store->increment( $key, self::BAN_WINDOW );
+			if ( $probes >= $limit ) {
+				// Foreign probes never place the site-wide ban (a hostile page could aim them at a visitor);
+				// they only close the door to further foreign requests.
+				$this->store->set( $foreign ? self::foreign_ban_key( $ip ) : self::ban_key( $ip ), 1, $ban_minutes * 60 );
+				null !== $this->counter ? $this->counter->delete( $key ) : $this->store->delete( $key );
+			}
 		}
 		return $this->deny( 'Probe for a sensitive file (' . $what . ')' );
 	}
@@ -137,6 +174,33 @@ final class SensitiveFileRule extends AbstractRule {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Store key for an IP's probe counter.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public static function probe_key( string $ip ): string {
+		return 'sf_probe:' . $ip;
+	}
+
+	/**
+	 * Store key for an IP's counter of probes that another site's page caused.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public static function foreign_probe_key( string $ip ): string {
+		return 'sf_probe_x:' . $ip;
+	}
+
+	/**
+	 * Store key for the refusal of foreign requests from an IP.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public static function foreign_ban_key( string $ip ): string {
+		return 'sf_xban:' . $ip;
 	}
 
 	/**

@@ -53,7 +53,7 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 				esc_html__( 'Lock out an IP after %1$s failed logins within %2$s minutes, for %3$s minutes.', 'wp-bouncer' ),
 				'<input type="number" min="1" max="100" class="small-text" name="wp_bouncer[rules][login_lockout][max_attempts]" value="' . esc_attr( (string) $r['login_lockout']['max_attempts'] ) . '" aria-label="' . esc_attr__( 'Attempts', 'wp-bouncer' ) . '">',
 				'<input type="number" min="1" max="1440" class="small-text" name="wp_bouncer[rules][login_lockout][window_minutes]" value="' . esc_attr( (string) $r['login_lockout']['window_minutes'] ) . '" aria-label="' . esc_attr__( 'Window in minutes', 'wp-bouncer' ) . '">',
-				'<input type="number" min="1" max="43200" class="small-text" name="wp_bouncer[rules][login_lockout][lockout_minutes]" value="' . esc_attr( (string) $r['login_lockout']['lockout_minutes'] ) . '" aria-label="' . esc_attr__( 'Lockout in minutes', 'wp-bouncer' ) . '">'
+				'<input type="number" min="1" max="1440" class="small-text" name="wp_bouncer[rules][login_lockout][lockout_minutes]" value="' . esc_attr( (string) $r['login_lockout']['lockout_minutes'] ) . '" aria-label="' . esc_attr__( 'Lockout in minutes', 'wp-bouncer' ) . '">'
 			); // phpcs:ignore WordPress.Security.EscapeOutput -- inputs escaped above.
 			?>
 		</p>
@@ -71,7 +71,7 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 			printf(
 				/* translators: %s: minutes input. */
 				esc_html__( 'Ban the IP from the whole site for %s minutes (0 refuses only the probe itself).', 'wp-bouncer' ),
-				'<input type="number" min="0" max="43200" class="small-text" name="wp_bouncer[rules][sensitive_files][ban_minutes]" value="' . esc_attr( (string) $r['sensitive_files']['ban_minutes'] ) . '" aria-label="' . esc_attr__( 'Ban minutes', 'wp-bouncer' ) . '">'
+				'<input type="number" min="0" max="1440" class="small-text" name="wp_bouncer[rules][sensitive_files][ban_minutes]" value="' . esc_attr( (string) $r['sensitive_files']['ban_minutes'] ) . '" aria-label="' . esc_attr__( 'Ban minutes', 'wp-bouncer' ) . '">'
 			); // phpcs:ignore WordPress.Security.EscapeOutput -- input escaped above.
 			?>
 		</p>
@@ -89,7 +89,7 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 				esc_html__( 'Ban an IP that gets more than %1$s "not found" pages in %2$s seconds, for %3$s minutes.', 'wp-bouncer' ),
 				'<input type="number" min="3" max="10000" class="small-text" name="wp_bouncer[rules][not_found][max_404]" value="' . esc_attr( (string) $r['not_found']['max_404'] ) . '" aria-label="' . esc_attr__( 'Not found pages', 'wp-bouncer' ) . '">',
 				'<input type="number" min="10" max="3600" class="small-text" name="wp_bouncer[rules][not_found][window_seconds]" value="' . esc_attr( (string) $r['not_found']['window_seconds'] ) . '" aria-label="' . esc_attr__( 'Seconds', 'wp-bouncer' ) . '">',
-				'<input type="number" min="1" max="43200" class="small-text" name="wp_bouncer[rules][not_found][ban_minutes]" value="' . esc_attr( (string) $r['not_found']['ban_minutes'] ) . '" aria-label="' . esc_attr__( 'Ban minutes', 'wp-bouncer' ) . '">'
+				'<input type="number" min="1" max="1440" class="small-text" name="wp_bouncer[rules][not_found][ban_minutes]" value="' . esc_attr( (string) $r['not_found']['ban_minutes'] ) . '" aria-label="' . esc_attr__( 'Ban minutes', 'wp-bouncer' ) . '">'
 			); // phpcs:ignore WordPress.Security.EscapeOutput -- inputs escaped above.
 			?>
 		</p>

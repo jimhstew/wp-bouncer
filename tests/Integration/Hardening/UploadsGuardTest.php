@@ -252,6 +252,11 @@ final class UploadsGuardTest extends IntegrationTestCase {
 	public function test_teardown_removes_block_cron_and_options(): void {
 		$this->guard->maybe_sync();
 		update_option( UploadsGuard::PROBE_OPTION, array( 'result' => 'protected' ) );
+		if ( is_multisite() ) { // On the main site of a network only a network admin removes the block.
+			$id = self::factory()->user->create( array( 'role' => 'administrator' ) );
+			grant_super_admin( $id );
+			wp_set_current_user( $id );
+		}
 
 		UploadsGuard::teardown();
 
@@ -295,6 +300,131 @@ final class UploadsGuardTest extends IntegrationTestCase {
 		$this->assertSame( 'unknown', $this->guard->check_serving() );
 	}
 
+	/** Make the recorded failure old enough to count as a separate one. */
+	private function age_failure(): void {
+		$state              = (array) get_option( UploadsGuard::STATE_OPTION );
+		$state['fail_time'] = time() - UploadsGuard::RECHECK_SECONDS - 5;
+		update_option( UploadsGuard::STATE_OPTION, $state );
+	}
+
+	public function test_a_5xx_followed_by_a_good_answer_keeps_the_block_and_resets_the_count(): void {
+		UploadsGuard::write_block();
+		$this->loopback_answers( 503, 'x' );
+		$this->guard->run_serving_check();
+		$this->age_failure();
+		$this->assertSame( 1, (int) get_option( UploadsGuard::STATE_OPTION )['fail_streak'] );
+
+		$this->loopback_answers( 200, 'wpb-ok' );
+		$this->assertSame( 'ok', $this->guard->run_serving_check() );
+		$this->assertSame( 0, (int) get_option( UploadsGuard::STATE_OPTION )['fail_streak'] );
+
+		$this->loopback_answers( 503, 'x' );
+		$this->guard->run_serving_check();
+		$this->assertTrue( UploadsGuard::block_present(), 'the count started again from one' );
+	}
+
+	public function test_two_5xx_less_than_five_minutes_apart_do_not_remove_the_block(): void {
+		UploadsGuard::write_block();
+		$this->loopback_answers( 503, 'x' );
+		$this->guard->run_serving_check();
+		$this->guard->run_serving_check();
+
+		$this->assertTrue( UploadsGuard::block_present() );
+		$this->assertSame( 1, (int) get_option( UploadsGuard::STATE_OPTION )['fail_streak'] );
+	}
+
+	public function test_the_daily_sweep_deletes_stale_probe_and_check_files_only(): void {
+		$old_check = $this->uploads_dir . '/wp-bouncer-check-abc123.txt';
+		$old_test  = $this->uploads_dir . '/wp-bouncer-test-abc123.php';
+		$fresh     = $this->uploads_dir . '/wp-bouncer-check-fresh.txt';
+		$other     = $this->uploads_dir . '/photo.txt';
+		$old_other = $this->uploads_dir . '/wp-bouncer-other.txt';
+		foreach ( array( $old_check, $old_test, $fresh, $other, $old_other ) as $file ) {
+			file_put_contents( $file, 'x' );
+		}
+		foreach ( array( $old_check, $old_test, $other, $old_other ) as $file ) {
+			touch( $file, time() - 2 * HOUR_IN_SECONDS );
+		}
+		$this->guard->register();
+
+		do_action( \WPBouncer\Installer::CRON_HOOK );
+
+		$this->assertFileDoesNotExist( $old_check );
+		$this->assertFileDoesNotExist( $old_test );
+		$this->assertFileExists( $fresh );
+		$this->assertFileExists( $other );
+		$this->assertFileExists( $old_other );
+	}
+
+	public function test_an_inconclusive_answer_during_an_open_streak_schedules_another_look(): void {
+		UploadsGuard::write_block();
+		update_option( UploadsGuard::STATE_OPTION, array( 'want' => 'x', 'ok' => true, 'broken' => false, 'time' => time(), 'fail_streak' => 1, 'fail_time' => time() - 60 ) );
+		wp_clear_scheduled_hook( UploadsGuard::CHECK_HOOK );
+		$this->loopback_answers( 502, 'bad gateway' );
+
+		$this->assertSame( 'unknown', $this->guard->run_serving_check() );
+
+		$this->assertNotFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ), 'the open streak is not left hanging' );
+		$this->assertSame( 1, (int) get_option( UploadsGuard::STATE_OPTION )['fail_streak'] );
+	}
+
+	public function test_a_streak_older_than_an_hour_is_dropped_by_an_inconclusive_answer(): void {
+		UploadsGuard::write_block();
+		update_option( UploadsGuard::STATE_OPTION, array( 'want' => 'x', 'ok' => true, 'broken' => false, 'time' => time(), 'fail_streak' => 1, 'fail_time' => time() - 2 * HOUR_IN_SECONDS ) );
+		wp_clear_scheduled_hook( UploadsGuard::CHECK_HOOK );
+		$this->loopback_answers( 502, 'bad gateway' );
+
+		$this->guard->run_serving_check();
+
+		$this->assertSame( 0, (int) get_option( UploadsGuard::STATE_OPTION )['fail_streak'] );
+		$this->assertFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ) );
+	}
+
+	public function test_a_502_does_not_count_as_a_failure(): void {
+		UploadsGuard::write_block();
+		$this->loopback_answers( 502, 'bad gateway' );
+
+		$this->assertSame( 'unknown', $this->guard->run_serving_check() );
+		$this->assertTrue( UploadsGuard::block_present() );
+		$this->assertSame( 0, (int) ( ( (array) get_option( UploadsGuard::STATE_OPTION ) )['fail_streak'] ?? 0 ) );
+	}
+
+	public function test_after_removal_a_day_later_check_puts_the_block_back_when_uploads_load(): void {
+		UploadsGuard::write_block();
+		$this->guard->maybe_sync();
+		$this->loopback_answers( 500, 'x' );
+		$this->guard->run_serving_check();
+		$this->age_failure();
+		$this->assertSame( 'broken', $this->guard->run_serving_check() );
+		$this->assertFalse( UploadsGuard::block_present() );
+		$this->assertNotFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ), 'tomorrow\'s retry is scheduled' );
+
+		remove_all_filters( 'pre_http_request' );
+		$this->loopback_answers( 200, 'wpb-ok' );
+		$this->guard->cron_check();
+
+		$this->assertTrue( UploadsGuard::block_present() );
+		$this->assertFalse( UploadsGuard::is_broken() );
+		$last = $this->block_rows()[0];
+		$this->assertStringContainsString( 'Restored the uploads/.htaccess block', $last['reason'] );
+	}
+
+	public function test_the_daily_retry_takes_the_block_out_again_and_reschedules_if_it_still_fails(): void {
+		UploadsGuard::write_block();
+		$this->guard->maybe_sync();
+		$this->loopback_answers( 500, 'x' );
+		$this->guard->run_serving_check();
+		$this->age_failure();
+		$this->guard->run_serving_check();
+		wp_clear_scheduled_hook( UploadsGuard::CHECK_HOOK );
+
+		$this->guard->cron_check();
+
+		$this->assertFalse( UploadsGuard::block_present() );
+		$this->assertTrue( UploadsGuard::is_broken() );
+		$this->assertGreaterThan( time() + DAY_IN_SECONDS - 60, (int) wp_next_scheduled( UploadsGuard::CHECK_HOOK ) );
+	}
+
 	public function test_run_serving_check_without_our_block_does_nothing(): void {
 		$this->loopback_answers( 500, 'x' );
 
@@ -306,6 +436,11 @@ final class UploadsGuardTest extends IntegrationTestCase {
 		file_put_contents( $this->htaccess(), "Options -Indexes\n" );
 		UploadsGuard::write_block();
 		$this->loopback_answers( 500, 'x' );
+
+		$this->assertSame( 'retry', $this->guard->run_serving_check(), 'one 5xx is not enough' );
+		$this->assertTrue( UploadsGuard::block_present() );
+		$this->assertNotFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ), 'a re-check is scheduled' );
+		$this->age_failure();
 
 		$this->assertSame( 'broken', $this->guard->run_serving_check() );
 
@@ -321,6 +456,8 @@ final class UploadsGuardTest extends IntegrationTestCase {
 	public function test_a_broken_block_is_not_rewritten_by_maybe_sync(): void {
 		$this->guard->maybe_sync();
 		$this->loopback_answers( 500, 'x' );
+		$this->guard->cron_check();
+		$this->age_failure();
 		$this->guard->cron_check();
 		$this->assertFalse( UploadsGuard::block_present() );
 
@@ -373,6 +510,10 @@ final class UploadsGuardTest extends IntegrationTestCase {
 	public function test_probe_reports_broken_and_removes_the_block_on_a_5xx(): void {
 		UploadsGuard::write_block();
 		$this->loopback_answers( 500, 'x' );
+
+		$this->assertNotSame( 'broken', $this->guard->probe()['result'], 'a first 5xx is not enough' );
+		$this->assertTrue( UploadsGuard::block_present() );
+		$this->age_failure();
 
 		$this->assertSame( 'broken', $this->guard->probe()['result'] );
 		$this->assertFalse( UploadsGuard::block_present() );

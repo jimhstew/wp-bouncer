@@ -740,6 +740,8 @@ final class AdminController {
 				return __( 'Protected: the server refused to run a test script placed in the uploads folder.', 'wp-bouncer' );
 			case 'unprotected':
 				return __( 'Not protected: the server ran a test script from the uploads folder. On nginx, add the rule shown below to your server config.', 'wp-bouncer' );
+			case 'retrying':
+				return __( 'The server answered an uploaded file with an error. WP Bouncer will look again in a few minutes before changing anything.', 'wp-bouncer' );
 			case 'broken':
 				return __( 'Not protected: with the .htaccess block in place, your server answered uploaded files with an error (it probably doesn\'t allow access rules in .htaccess), so WP Bouncer removed the block. Ask your host to allow "AllowOverride AuthConfig Limit" for the site, or add the rule to the server config, then click "Write it now".', 'wp-bouncer' );
 			default:

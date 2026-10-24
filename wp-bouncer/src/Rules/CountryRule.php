@@ -80,7 +80,29 @@ final class CountryRule extends AbstractRule {
 		if ( 'login' === $this->setting( 'scope', 'site' ) && ! ( $request->is_login() || $request->is_xmlrpc() || $request->is_admin_area() ) ) {
 			return null;
 		}
+		return $this->decide( $request );
+	}
 
+	/**
+	 * Does the login scope apply (enabled, not paused, scope "login")?
+	 *
+	 * Used to enforce the decision on authentication paths the request-path check cannot see
+	 * (REST application passwords, custom login URLs).
+	 */
+	public function guards_authentication(): bool {
+		return ! $this->paused && $this->is_enabled() && 'login' === $this->setting( 'scope', 'site' );
+	}
+
+	/**
+	 * The country decision for a request, whatever its path.
+	 *
+	 * @param Request $request Incoming request.
+	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
+	 */
+	public function decide( Request $request ): ?Verdict {
+		if ( $this->paused ) {
+			return null;
+		}
 		// A request from the server itself has no geography. Skipping on the request
 		// (not on a loopback IP) keeps a loopback proxy's visitors subject to
 		// block_unknown, while health checks and WP-Cron pass.

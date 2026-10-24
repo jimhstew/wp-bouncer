@@ -37,23 +37,24 @@ final class Requests {
 
 		return new Request(
 			array(
-				'ip'        => $args['ip'] ?? '203.0.113.10',
-				'method'    => $args['method'] ?? 'GET',
-				'uri'       => $args['uri'] ?? '/',
-				'query'     => $args['query'] ?? array(),
-				'post'      => $args['post'] ?? array(),
-				'server'    => $server,
-				'logged_in' => static function () use ( $logged_in ) {
+				'ip'          => $args['ip'] ?? '203.0.113.10',
+				'method'      => $args['method'] ?? 'GET',
+				'uri'         => $args['uri'] ?? '/',
+				'query'       => $args['query'] ?? array(),
+				'post'        => $args['post'] ?? array(),
+				'server'      => $server,
+				'logged_in'   => static function () use ( $logged_in ) {
 					return $logged_in;
 				},
-				'trusted'   => static function () use ( $trusted ) {
+				'trusted'     => static function () use ( $trusted ) {
 					return $trusted;
 				},
-				'local'     => (bool) ( $args['local'] ?? false ),
-				'bannable'  => (bool) ( $args['bannable'] ?? true ),
-				'subject'   => (string) ( $args['subject'] ?? '' ),
+				'local'       => (bool) ( $args['local'] ?? false ),
+				'bannable'    => (bool) ( $args['bannable'] ?? true ),
+				'subject'     => (string) ( $args['subject'] ?? '' ),
+				'own_hosts'   => $args['own_hosts'] ?? array(),
 				'body_stream' => $args['body_stream'] ?? null,
-				'body'      => static function () use ( $body ) {
+				'body'        => static function () use ( $body ) {
 					return $body;
 				},
 			)

@@ -368,6 +368,44 @@ final class AlertNotifierTest extends IntegrationTestCase {
 		$this->assertSame( 20, (int) get_transient( 'wpb_alert_count' ) );
 	}
 
+	public function test_twenty_plugin_events_do_not_stop_the_email_for_a_new_administrator(): void {
+		set_transient( 'wpb_alert_count', 20, HOUR_IN_SECONDS );
+		do_action( 'activated_plugin', 'z/z.php', false );
+		$this->assertCount( 0, $this->flush(), 'the plugin budget is spent' );
+
+		self::factory()->user->create( array( 'role' => 'administrator' ) );
+		$mail = $this->flush();
+
+		$this->assertCount( 1, $mail, 'the administrator alert has its own budget' );
+		$this->assertSame( 1, (int) get_transient( 'wpb_alert_count_critical' ) );
+		$this->assertSame( 20, (int) get_transient( 'wpb_alert_count' ) );
+	}
+
+	public function test_deactivating_wp_bouncer_itself_uses_the_critical_budget(): void {
+		set_transient( 'wpb_alert_count', 20, HOUR_IN_SECONDS );
+		do_action( 'deactivated_plugin', plugin_basename( WP_BOUNCER_FILE ), false );
+
+		$this->assertCount( 1, $this->flush() );
+		$this->assertSame( 1, (int) get_transient( 'wpb_alert_count_critical' ) );
+	}
+
+	public function test_the_critical_budget_is_twenty_an_hour_too(): void {
+		set_transient( 'wpb_alert_count_critical', 20, HOUR_IN_SECONDS );
+		self::factory()->user->create( array( 'role' => 'administrator' ) );
+
+		$this->assertCount( 0, $this->flush() );
+		$this->assertNotEmpty( $this->alert_rows(), 'still logged' );
+	}
+
+	public function test_one_flush_with_both_kinds_sends_one_email_counted_on_both_budgets(): void {
+		do_action( 'activated_plugin', 'a/a.php', false );
+		self::factory()->user->create( array( 'role' => 'administrator' ) );
+
+		$this->assertCount( 1, $this->flush() );
+		$this->assertSame( 1, (int) get_transient( 'wpb_alert_count' ) );
+		$this->assertSame( 1, (int) get_transient( 'wpb_alert_count_critical' ) );
+	}
+
 	public function test_the_throttle_boundary(): void {
 		set_transient( 'wpb_alert_count', 19, HOUR_IN_SECONDS );
 		do_action( 'activated_plugin', 'a/a.php', false );

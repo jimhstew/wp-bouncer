@@ -101,7 +101,7 @@ final class AlertFormatter {
 	 * Merge duplicates. Creating an administrator fires both "user registered"
 	 * and "role set" hooks; only one line should appear.
 	 *
-	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string}> $events Events.
+	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool}> $events Events.
 	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string}>
 	 */
 	public static function dedupe( array $events ): array {
@@ -117,6 +117,9 @@ final class AlertFormatter {
 				if ( isset( $event['log_detail'] ) ) {
 					$out[ $key ]['log_detail'] = $event['log_detail'];
 				}
+			}
+			if ( ! empty( $event['critical'] ) ) {
+				$out[ $key ]['critical'] = true;
 			}
 		}
 		return array_values( $out );

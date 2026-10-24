@@ -12,10 +12,12 @@ use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
 use WPBouncer\Alerts\AlertNotifier;
+use WPBouncer\Environment\EnvironmentAdmin;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\HttpResponder;
 use WPBouncer\Firewall\IpResolver;
 use WPBouncer\Firewall\Request;
+use WPBouncer\Firewall\Verdict;
 use WPBouncer\Geo\ChainGeoProvider;
 use WPBouncer\Geo\GeoDatabase;
 use WPBouncer\Geo\GeoImport;
@@ -27,10 +29,6 @@ use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Log\BudgetedBlockLog;
 use WPBouncer\Log\WriteBudget;
 use WPBouncer\Login\LoginGuard;
-use WPBouncer\Storage\AtomicCounterInterface;
-use WPBouncer\Storage\ObjectCacheCounter;
-use WPBouncer\Storage\RedactionMigration;
-use WPBouncer\Storage\TableCounter;
 use WPBouncer\Privacy\PrivacyTools;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
@@ -43,7 +41,11 @@ use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Rules\UserEnumerationRule;
 use WPBouncer\Rules\WafRule;
 use WPBouncer\Rules\XmlRpcRule;
+use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
+use WPBouncer\Storage\ObjectCacheCounter;
+use WPBouncer\Storage\RedactionMigration;
+use WPBouncer\Storage\TableCounter;
 use WPBouncer\Storage\TransientStore;
 use WPBouncer\Support\Clock;
 use WPBouncer\Support\IpUtils;
@@ -146,6 +148,63 @@ final class Plugin {
 	 * @var bool
 	 */
 	private bool $app_reserved = false;
+
+	/**
+	 * Why the current authentication attempt is refused before the password is looked at
+	 * (cross-site login post, or a blocked country under the login scope); null if it isn't.
+	 *
+	 * @var \WP_Error|null
+	 */
+	private ?\WP_Error $auth_refusal = null;
+
+	/**
+	 * Has the country refusal been written to the log for this request?
+	 *
+	 * @var bool
+	 */
+	private bool $country_logged = false;
+
+	/**
+	 * Has the cross-site Basic-auth refusal been written to the log for this request?
+	 *
+	 * @var bool
+	 */
+	private bool $foreign_basic_logged = false;
+
+	/**
+	 * Core authenticators taken off the authenticate filter for a refused attempt: callback => [priority, accepted args].
+	 *
+	 * @var array<string, array{0: int, 1: int}>
+	 */
+	private array $suspended_authenticators = array();
+
+	/**
+	 * Serial numbers of the screen_login_attempt() calls whose filter_authenticate() has not run yet (innermost last).
+	 *
+	 * @var int[]
+	 */
+	private array $auth_stack = array();
+
+	/**
+	 * Serial number of the last authenticate call.
+	 *
+	 * @var int
+	 */
+	private int $auth_serial = 0;
+
+	/**
+	 * The authenticate call that took the core authenticators off (0: none). Only that call puts them back.
+	 *
+	 * @var int
+	 */
+	private int $suspended_by = 0;
+
+	/**
+	 * Origins that count as this site, once the filters can no longer change (after init).
+	 *
+	 * @var array<int, string[]>
+	 */
+	private array $own_origins_cache = array();
 	/**
 	 * Cached request.
 	 *
@@ -263,6 +322,11 @@ final class Plugin {
 			( new SetupNotices( $this ) )->register();
 			( new DataNotices() )->register();
 			( new AdminController( $this ) )->register();
+		}
+
+		// Environment checks: built lazily when a screen asks (admin, Site Health, cron), never on the firewall path.
+		if ( is_admin() || wp_doing_cron() ) {
+			( new EnvironmentAdmin() )->register();
 		}
 	}
 
@@ -589,7 +653,8 @@ final class Plugin {
 				},
 				$this->ip_resolver()->is_local_request( wp_unslash( $_SERVER ) ),
 				$this->client_can_be_banned(),
-				$this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) )
+				$this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) ),
+				fn(): array => $this->own_hosts()
 			);
 		}
 		return $this->request;
@@ -607,8 +672,8 @@ final class Plugin {
 
 		$rules = array(
 			new IpBlocklistRule( $s->rule( IpBlocklistRule::ID ) ),
-			new SensitiveFileRule( $s->rule( SensitiveFileRule::ID ), $this->store() ),
-			new NotFoundFloodRule( $s->rule( NotFoundFloodRule::ID ), $this->store() ),
+			$this->sensitive_file_rule(),
+			$this->not_found_rule(),
 			new LoginLockoutRule( $s->rule( LoginLockoutRule::ID ), $this->login_guard() ),
 			new RateLimitRule( $s->rule( RateLimitRule::ID ), $this->store() ),
 			new UserAgentRule( $s->rule( UserAgentRule::ID ) ),
@@ -687,6 +752,28 @@ final class Plugin {
 		}
 	}
 
+	/** The sensitive-file rule, with the bucket size for probes that another site's page caused. */
+	private function sensitive_file_rule(): SensitiveFileRule {
+		/**
+		 * Filters how many sensitive-file probes caused by another site's page earn a ban.
+		 *
+		 * @param int $probes Default 5 (a probe from the visitor's own browsing needs 2).
+		 */
+		$probes = (int) apply_filters( 'wp_bouncer_cross_site_probe_limit', 5 );
+		return new SensitiveFileRule( array_merge( $this->settings->rule( SensitiveFileRule::ID ), array( 'cross_site_probes' => max( 2, $probes ) ) ), $this->store(), $this->attempt_counter() );
+	}
+
+	/** The 404-flood rule, with the limit multiplier for 404s that another site's page caused. */
+	private function not_found_rule(): NotFoundFloodRule {
+		/**
+		 * Filters how many times the 404 limit applies to 404s caused by another site's page.
+		 *
+		 * @param int $multiplier Default 5.
+		 */
+		$multiplier = (int) apply_filters( 'wp_bouncer_cross_site_404_multiplier', 5 );
+		return new NotFoundFloodRule( array_merge( $this->settings->rule( NotFoundFloodRule::ID ), array( 'cross_site_multiplier' => max( 1, $multiplier ) ) ), $this->store(), $this->attempt_counter() );
+	}
+
 	/**
 	 * Count a "not found" page towards the 404-flood ban (template_redirect).
 	 *
@@ -696,7 +783,7 @@ final class Plugin {
 		if ( ! is_404() || self::is_disabled() || $this->client_is_allowlisted() ) {
 			return;
 		}
-		$rule   = new NotFoundFloodRule( $this->settings->rule( NotFoundFloodRule::ID ), $this->store() );
+		$rule   = $this->not_found_rule();
 		$reason = $rule->record( $this->current_request() );
 		if ( null === $reason ) {
 			return;
@@ -750,7 +837,8 @@ final class Plugin {
 		add_action(
 			'wp_login_failed',
 			function ( $username ): void {
-				if ( $this->client_is_allowlisted() ) {
+				// A refused attempt (cross-site post, blocked country) was never checked: it is not a failure to count.
+				if ( null !== $this->auth_refusal || $this->client_is_allowlisted() ) {
 					return;
 				}
 				if ( ! $this->client_can_be_banned() ) {
@@ -778,11 +866,234 @@ final class Plugin {
 		add_filter( 'application_password_is_api_request', array( $this, 'refuse_app_password_when_locked' ) );
 		add_filter( 'rest_authentication_errors', array( $this, 'filter_rest_authentication_errors' ), 100 );
 
+		// A blocked country (login scope) also can't use lost-password, reset, registration, or get a session cookie (F8).
+		foreach ( array( 'lostpassword_post', 'validate_password_reset' ) as $action ) {
+			add_action( $action, array( $this, 'gate_country_action' ), 10, 1 );
+		}
+		foreach ( array( 'lostpassword_errors', 'registration_errors', 'woocommerce_registration_errors' ) as $filter ) {
+			add_filter( $filter, array( $this, 'gate_country_errors' ), 10, 1 );
+		}
+		add_filter( 'send_auth_cookies', array( $this, 'gate_auth_cookies' ), 10, 6 );
+		// Safety net: never leave core's authenticators off.
+		add_action( 'shutdown', array( $this, 'restore_authenticators' ) );
+
+		// Priority 0: refuse cross-site login posts and blocked countries before anything is reserved or counted (RT-05, RT-26).
+		add_filter( 'authenticate', array( $this, 'screen_login_attempt' ), 0, 1 );
+
 		// Priority 1: reserve the attempt before any password is checked (RT-08).
 		add_filter( 'authenticate', array( $this, 'reserve_login_attempt' ), 1, 3 );
 
 		// Priority 999: runs after core's authenticators so we can override their result.
 		add_filter( 'authenticate', array( $this, 'filter_authenticate' ), 999, 1 );
+	}
+
+	/**
+	 * Decide, before any reservation or password check, whether this attempt is refused outright.
+	 *
+	 * - A POST that the browser says another site started (or a sibling subdomain, unless its Origin is
+	 *   this site's or on the allowed list) is refused on every path: wp-login.php, xmlrpc.php, WooCommerce
+	 *   my-account, custom login URLs, admin-ajax logins. A forged page can't make a visitor fail logins,
+	 *   and a forged header gets no guesses. The refusal also applies to allowlisted IPs: login CSRF
+	 *   must stay blocked for them, and a refused attempt never counts against anyone.
+	 * - With the country rule on the "login" scope, a blocked country is refused on every authentication path.
+	 *
+	 * A refused attempt is answered here with the error, and core's password authenticators are taken off the
+	 * filter for the rest of the call, so no password is checked at all. filter_authenticate() (priority 999)
+	 * puts them back and returns the same error as a backstop against plugins that would return a user.
+	 * Nothing is reserved or counted.
+	 *
+	 * @param \WP_User|\WP_Error|null $user Result so far.
+	 * @return \WP_User|\WP_Error|null
+	 */
+	public function screen_login_attempt( $user ) {
+		$this->auth_stack[] = ++$this->auth_serial;
+		$this->auth_refusal = null;
+		if ( $this->settings->is_monitor_mode() ) {
+			return $user;
+		}
+		$request = $this->current_request();
+		if ( 'POST' === $request->method() && $this->login_guard()->is_enabled() && $request->is_foreign_credentials_request() ) {
+			$this->auth_refusal = new \WP_Error( 'wp_bouncer_cross_site_login', __( '<strong>Error:</strong> Logging in from another site is not allowed.', 'wp-bouncer' ) );
+			$this->log_auth_refusal( LoginGuard::RULE_ID, 'Login post from another site refused (Sec-Fetch-Site or Origin)' );
+		} elseif ( null !== $this->refuse_country() ) {
+			$this->auth_refusal = $this->country_error();
+		}
+		if ( null === $this->auth_refusal ) {
+			return $user;
+		}
+		$this->suspend_core_authenticators( $this->auth_serial );
+		return $this->auth_refusal;
+	}
+
+	/**
+	 * The error shown to a visitor from a blocked country.
+	 *
+	 * @param int $status HTTP status for a REST error; 0 for none.
+	 */
+	private function country_error( int $status = 0 ): \WP_Error {
+		return new \WP_Error( 'wp_bouncer_country_blocked', __( '<strong>Error:</strong> Logging in is not available from your location.', 'wp-bouncer' ), $status > 0 ? array( 'status' => $status ) : '' );
+	}
+
+	/**
+	 * Take core's password authenticators off the authenticate filter for a refused attempt.
+	 *
+	 * @param int $serial The authenticate call doing it; only that call may put them back.
+	 */
+	private function suspend_core_authenticators( int $serial ): void {
+		foreach ( array(
+			'wp_authenticate_username_password'    => 3,
+			'wp_authenticate_email_password'       => 3,
+			'wp_authenticate_application_password' => 3,
+			'wp_authenticate_spam_check'           => 2,
+		) as $callback => $args ) {
+			$priority = has_filter( 'authenticate', $callback );
+			if ( false !== $priority ) {
+				remove_filter( 'authenticate', $callback, $priority );
+				$this->suspended_authenticators[ $callback ] = array( $priority, $args );
+				$this->suspended_by                          = $serial;
+			}
+		}
+	}
+
+	/** Put back the authenticators taken off by suspend_core_authenticators(). */
+	private function restore_core_authenticators(): void {
+		foreach ( $this->suspended_authenticators as $callback => $info ) {
+			add_filter( 'authenticate', $callback, $info[0], $info[1] );
+		}
+		$this->suspended_authenticators = array();
+		$this->suspended_by             = 0;
+	}
+
+	/** Put the authenticators back whoever took them off (shutdown). */
+	public function restore_authenticators(): void {
+		$this->restore_core_authenticators();
+	}
+
+	/**
+	 * The country verdict for the current request when the rule guards logins; logged once per request.
+	 *
+	 * Used for every way of signing in or getting a session. Respects the pause (an unusable database),
+	 * the allowlist, local requests and monitor mode.
+	 */
+	public function refuse_country(): ?Verdict {
+		$verdict = $this->country_refusal();
+		if ( null !== $verdict && ! $this->country_logged ) {
+			$this->country_logged = true;
+			$this->log_auth_refusal( CountryRule::ID, $verdict->reason() );
+		}
+		return $verdict;
+	}
+
+	/**
+	 * Add the country error to a lost-password, registration or password-reset error object.
+	 *
+	 * Hooked to lostpassword_post, lostpassword_errors, validate_password_reset, registration_errors
+	 * and woocommerce_registration_errors, whose first argument is the WP_Error (a filter returns it).
+	 *
+	 * @param mixed $errors Errors so far.
+	 * @return mixed
+	 */
+	public function gate_country_errors( $errors ) {
+		if ( $errors instanceof \WP_Error && null !== $this->refuse_country() ) {
+			$errors->add( 'wp_bouncer_country_blocked', __( '<strong>Error:</strong> This is not available from your location.', 'wp-bouncer' ) );
+		}
+		return $errors;
+	}
+
+	/**
+	 * Action form of gate_country_errors() (lostpassword_post, validate_password_reset): the error object is changed in place.
+	 *
+	 * @param mixed $errors Errors so far.
+	 */
+	public function gate_country_action( $errors ): void {
+		$this->gate_country_errors( $errors );
+	}
+
+	/**
+	 * Don't issue a session cookie to a blocked country (send_auth_cookies), whichever plugin signs the user in.
+	 *
+	 * The session token WordPress already created is destroyed and the current user is cleared, so the
+	 * session can't be picked up some other way.
+	 *
+	 * @param mixed $send       Whether to send the cookies.
+	 * @param mixed $expire     Unused.
+	 * @param mixed $expiration Unused.
+	 * @param mixed $user_id    User ID.
+	 * @param mixed $scheme     Unused.
+	 * @param mixed $token      Session token.
+	 * @return mixed
+	 */
+	public function gate_auth_cookies( $send, $expire = 0, $expiration = 0, $user_id = 0, $scheme = '', $token = '' ) {
+		if ( ! $send || null === $this->refuse_country() ) {
+			return $send;
+		}
+		if ( (int) $user_id > 0 && is_string( $token ) && '' !== $token ) {
+			\WP_Session_Tokens::get_instance( (int) $user_id )->destroy( $token );
+		}
+		wp_set_current_user( 0 );
+		return false;
+	}
+
+	/**
+	 * The country rule's verdict for an authentication attempt, when the rule guards logins.
+	 *
+	 * Respects the pause (an unusable database), the allowlist, local requests and monitor mode.
+	 */
+	private function country_refusal(): ?Verdict {
+		if ( $this->settings->is_monitor_mode() || $this->client_is_allowlisted() ) {
+			return null;
+		}
+		$rule = $this->country_rule();
+		return $rule->guards_authentication() ? $rule->decide( $this->current_request() ) : null;
+	}
+
+	/** The country rule built from the current settings. */
+	private function country_rule(): CountryRule {
+		$settings = $this->settings->rule( CountryRule::ID );
+		return new CountryRule( $settings, $this->geo(), ! empty( $settings['enabled'] ) && $this->country_paused() );
+	}
+
+	/**
+	 * Write a block row for an authentication attempt refused by screen_login_attempt().
+	 *
+	 * @param string $rule   Rule id.
+	 * @param string $reason Reason.
+	 */
+	private function log_auth_refusal( string $rule, string $reason ): void {
+		$this->log_writer()->record(
+			array_merge(
+				$this->log_context(),
+				array(
+					'ip'     => $this->client_ip(),
+					'rule'   => $rule,
+					'action' => BlockLogInterface::ACTION_BLOCKED,
+					'reason' => $reason,
+				)
+			)
+		);
+	}
+
+	/**
+	 * Origins that count as this site: home URL, site URL, and the wp_bouncer_login_allowed_origins filter.
+	 *
+	 * The result is remembered only once `init` has run. Before that, a theme or other late code may still
+	 * add to the filter, and a probe or 404 check that runs early (plugins_loaded) must not freeze an
+	 * incomplete list for a login request later in the same process. Entries may be URLs, origins
+	 * (scheme://host:port) or bare host names (any scheme).
+	 *
+	 * @return string[]
+	 */
+	private function own_hosts(): array {
+		$blog = get_current_blog_id();
+		if ( isset( $this->own_origins_cache[ $blog ] ) ) {
+			return $this->own_origins_cache[ $blog ];
+		}
+		$extra   = apply_filters( 'wp_bouncer_login_allowed_origins', array() );
+		$origins = array_values( array_unique( array_filter( array_map( 'strval', array_merge( array( home_url(), site_url() ), is_array( $extra ) ? $extra : array() ) ) ) ) );
+		if ( did_action( 'init' ) ) {
+			$this->own_origins_cache[ $blog ] = $origins;
+		}
+		return $origins;
 	}
 
 	/**
@@ -800,7 +1111,7 @@ final class Plugin {
 	 * @return \WP_User|\WP_Error|null
 	 */
 	public function reserve_login_attempt( $user, $username = '', $password = '' ) {
-		if ( is_string( $username ) && '' !== $username && is_string( $password ) && '' !== $password && $this->counts_login_attempts() ) {
+		if ( null === $this->auth_refusal && is_string( $username ) && '' !== $username && is_string( $password ) && '' !== $password && $this->counts_login_attempts() ) {
 			$this->login_guard()->reserve( $this->client_key() );
 		}
 		return $user;
@@ -812,6 +1123,9 @@ final class Plugin {
 	 */
 	public function count_app_password_failure(): void {
 		$guard = $this->login_guard();
+		if ( null !== $this->auth_refusal ) {
+			return;
+		}
 		// An XML-RPC attempt holds a reservation made at priority 1; wp_login_failed settles it.
 		if ( ! $this->counts_login_attempts() || ( $guard->has_reservation() && ! $this->app_reserved ) ) {
 			return;
@@ -832,7 +1146,19 @@ final class Plugin {
 	 * @return mixed
 	 */
 	public function refuse_app_password_when_locked( $is_api_request ) {
-		if ( ! $is_api_request || ! $this->counts_login_attempts() ) {
+		if ( ! $is_api_request ) {
+			return $is_api_request;
+		}
+		// A credentials request that another site started is refused before any check, and not counted (F2):
+		// a forged header only costs the sender the attempt.
+		if ( $this->refuses_foreign_basic_auth() ) {
+			return false;
+		}
+		// A blocked country can't use application passwords either (RT-26): say it isn't an API request, so core skips the check.
+		if ( null !== $this->rest_country_refusal() ) {
+			return false;
+		}
+		if ( ! $this->counts_login_attempts() ) {
 			return $is_api_request;
 		}
 		$guard = $this->login_guard();
@@ -866,17 +1192,59 @@ final class Plugin {
 	 * @return mixed
 	 */
 	public function filter_rest_authentication_errors( $result ) {
+		if ( $this->refuses_foreign_basic_auth() ) {
+			return new \WP_Error( 'wp_bouncer_cross_site_login', __( '<strong>Error:</strong> Logging in from another site is not allowed.', 'wp-bouncer' ), array( 'status' => 403 ) );
+		}
+		$country = $this->rest_country_refusal();
+		if ( null !== $country ) {
+			return $this->country_error( 403 );
+		}
 		$guard = $this->login_guard();
 		if ( ! $guard->is_enabled() ) {
 			return $result;
 		}
-		if ( isset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] ) && $this->counts_login_attempts() && $guard->refusal_seconds( $this->client_key() ) > 0 ) {
+		if ( $this->basic_auth_present() && $this->counts_login_attempts() && $guard->refusal_seconds( $this->client_key() ) > 0 ) {
 			return new \WP_Error( 'wp_bouncer_locked_out', __( '<strong>Error:</strong> Too many failed login attempts. Please try again later.', 'wp-bouncer' ), array( 'status' => 403 ) );
 		}
 		if ( $guard->wants_generic_errors() && is_wp_error( $result ) && array_intersect( $result->get_error_codes(), array( 'invalid_username', 'invalid_email', 'incorrect_password', 'application_passwords_disabled_for_user' ) ) ) {
 			return new \WP_Error( 'wp_bouncer_invalid_credentials', __( '<strong>Error:</strong> The username or password you entered is incorrect.', 'wp-bouncer' ), array( 'status' => 401 ) );
 		}
 		return $result;
+	}
+
+	/**
+	 * Does the request carry Basic-auth credentials (REST application passwords)?
+	 *
+	 * Core copies an Authorization header into PHP_AUTH_USER and PHP_AUTH_PW when the server doesn't
+	 * (including after the application-password filter has run), so the raw header is checked too.
+	 */
+	private function basic_auth_present(): bool {
+		if ( isset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] ) ) {
+			return true;
+		}
+		foreach ( array( 'HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION' ) as $key ) {
+			if ( isset( $_SERVER[ $key ] ) && is_string( $_SERVER[ $key ] ) && 0 === stripos( ltrim( sanitize_text_field( wp_unslash( $_SERVER[ $key ] ) ) ), 'basic ' ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Is this a Basic-auth request that another site started, with login protection on and enforcing? Logged once. */
+	private function refuses_foreign_basic_auth(): bool {
+		if ( ! $this->basic_auth_present() || $this->settings->is_monitor_mode() || ! $this->login_guard()->is_enabled() || ! $this->current_request()->is_foreign_credentials_request() ) {
+			return false;
+		}
+		if ( ! $this->foreign_basic_logged ) {
+			$this->foreign_basic_logged = true;
+			$this->log_auth_refusal( LoginGuard::RULE_ID, 'Application-password request from another site refused (Sec-Fetch-Site or Origin)' );
+		}
+		return true;
+	}
+
+	/** The country verdict for a REST request that carries Basic-auth credentials, or null. */
+	private function rest_country_refusal(): ?Verdict {
+		return $this->basic_auth_present() ? $this->refuse_country() : null;
 	}
 
 	/** Are login attempts from this client counted (enabled, enforcing, not allowlisted, bannable)? */
@@ -897,6 +1265,15 @@ final class Plugin {
 	 * @return \WP_User|\WP_Error|null
 	 */
 	public function filter_authenticate( $user ) {
+		// Refused before the password was looked at (screen_login_attempt()); nothing was reserved.
+		$serial = (int) array_pop( $this->auth_stack );
+		if ( null !== $this->auth_refusal ) {
+			// Only the call that took the authenticators off puts them back: a nested call must not re-enable them for the outer one.
+			if ( 0 !== $serial && $serial === $this->suspended_by ) {
+				$this->restore_core_authenticators();
+			}
+			return $this->auth_refusal;
+		}
 		$guard = $this->login_guard();
 		if ( ! $guard->is_enabled() ) {
 			return $user;
