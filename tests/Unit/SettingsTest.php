@@ -145,6 +145,7 @@ final class SettingsTest extends TestCase {
 		$this->assertFalse( $out['rules']['waf']['xss'] );
 		$this->assertTrue( $out['rules']['waf']['traversal'] );
 		$this->assertFalse( $out['rules']['waf']['code_injection'], 'missing checkbox = off' );
+		$this->assertFalse( $out['rules']['waf']['inspect_json'], 'missing checkbox = off' );
 	}
 
 	public function test_apply_form_only_touches_the_submitted_tab(): void {
@@ -224,6 +225,24 @@ final class SettingsTest extends TestCase {
 		$this->assertTrue( $s->rule( 'uploads_php' )['htaccess'] );
 		$this->assertSame( array(), $s->get( 'alerts' )['recipients'] );
 		$this->assertTrue( $s->get( 'alerts' )['new_admin'] );
+	}
+
+	public function test_stored_waf_option_without_inspect_json_reads_as_on(): void {
+		$s = new Settings(
+			array(
+				'rules' => array(
+					'waf' => array(
+						'enabled'         => true,
+						'sqli'            => true,
+						'xss'             => true,
+						'traversal'       => true,
+						'code_injection'  => true,
+						'excluded_params' => array(),
+					),
+				),
+			)
+		);
+		$this->assertTrue( $s->rule( 'waf' )['inspect_json'] );
 	}
 
 	public function test_partial_alerts_are_filled_from_defaults(): void {

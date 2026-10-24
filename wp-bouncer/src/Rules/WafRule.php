@@ -21,6 +21,8 @@ defined( 'ABSPATH' ) || exit;
  * - sqli, xss, traversal, code_injection (bool): which categories are on.
  * - excluded_params (string[]): parameter names never inspected (e.g. a page
  *   builder field that legitimately carries HTML).
+ * - inspect_json (bool, default on): also scan JSON request bodies
+ *   (application/json and +json types).
  *
  * Administrators are not inspected, because they legitimately post HTML and
  * scripts through the editor.
@@ -47,6 +49,21 @@ final class WafRule extends AbstractRule {
 
 	/** Values up to this size are scanned in full; longer ones get the first part plus the last window. */
 	private const MAX_VALUE_LENGTH = 65536;
+
+	/** JSON nesting depth passed to json_decode(); WordPress itself uses 512. */
+	private const JSON_DEPTH = 512;
+
+	/** Default for the most nodes (values and containers) one JSON body may hold; filter wp_bouncer_waf_json_max_fields. */
+	private const JSON_MAX_FIELDS = 5000;
+
+	/** Largest default JSON body (bytes); the real limit is min( post_max_size, this ), filter wp_bouncer_waf_json_max_bytes. */
+	private const JSON_MAX_BYTES = 8388608;
+
+	/** Default JSON body limit (bytes) for visitors who aren't logged in. */
+	private const JSON_MAX_BYTES_ANON = 1048576;
+
+	/** Bytes read to decide whether an untyped body looks like JSON. */
+	private const SNIFF_BYTES = 256;
 
 	/**
 	 * The most recent PCRE failure: signature name and preg_last_error() code.
@@ -140,7 +157,220 @@ final class WafRule extends AbstractRule {
 				}
 			}
 		}
+
+		return $this->maybe_inspect_json( $request, $categories, $excluded );
+	}
+
+	/**
+	 * Scan the body when it is JSON and the user is not an editor.
+	 *
+	 * @param Request                              $request    Request.
+	 * @param array<string, array<string, string>> $categories Active signature groups.
+	 * @param string[]                             $excluded   Lower-case excluded root names.
+	 */
+	private function maybe_inspect_json( Request $request, array $categories, array $excluded ): ?Verdict {
+		if ( $this->setting( 'inspect_json', true ) && ! $request->can_edit_posts() && ( $request->is_json() || $this->looks_like_json( $request ) ) ) {
+			return $this->inspect_json( $request, $categories, $excluded );
+		}
 		return null;
+	}
+
+	/**
+	 * Does an undeclared or oddly-typed body start like JSON?
+	 *
+	 * Many plugins json_decode the raw body whatever the content type says. The
+	 * start is read in growing steps (so leading blanks can't push the "{" out of
+	 * view) up to the body limit; if blanks fill all of it the body is treated as
+	 * JSON, to be refused as too large.
+	 *
+	 * @param Request $request Request.
+	 */
+	private function looks_like_json( Request $request ): bool {
+		if ( ! $request->could_be_json() ) {
+			return false;
+		}
+		$max  = self::json_max_bytes( $request->is_logged_in() );
+		$size = self::SNIFF_BYTES;
+		while ( true ) {
+			$size = min( $size, $max );
+			$head = $request->body_limited( $size );
+			$trim = ltrim( $head, " \t\r\n" );
+			if ( '' !== $trim ) {
+				return '{' === $trim[0] || '[' === $trim[0] || '"' === $trim[0];
+			}
+			if ( strlen( $head ) <= $size ) {
+				return false; // The whole body is blank.
+			}
+			if ( $size >= $max ) {
+				return true;
+			}
+			$size *= 16;
+		}
+	}
+
+	/**
+	 * Scan a JSON request body like form fields, failing closed.
+	 *
+	 * For a non-trusted user a body that can't be fully checked gets a verdict: one
+	 * over the size limit, nested past 512 levels (WordPress would refuse it, a
+	 * lenient plugin might not), or holding too many nodes or bytes. Other decode
+	 * failures give no verdict: WordPress rejects those as well.
+	 *
+	 * @param Request                              $request    Request.
+	 * @param array<string, array<string, string>> $categories Active signature groups.
+	 * @param string[]                             $excluded   Lower-case excluded root names.
+	 */
+	private function inspect_json( Request $request, array $categories, array $excluded ): ?Verdict {
+		$max  = self::json_max_bytes( $request->is_logged_in() );
+		$body = $request->body_limited( $max );
+		if ( strlen( $body ) > $max ) {
+			return $this->deny( 'WAF JSON body too large to inspect' );
+		}
+		if ( '' === $body ) {
+			return null;
+		}
+		if ( self::decode_too_big( $body ) ) {
+			return $this->deny( 'WAF JSON too large to inspect' );
+		}
+		$data = json_decode( $body, true, self::JSON_DEPTH );
+		if ( null === $data && JSON_ERROR_UTF8 === json_last_error() ) {
+			// Lenient parsers drop the bad bytes and carry on, so scan what is left.
+			$data = json_decode( $body, true, self::JSON_DEPTH, JSON_INVALID_UTF8_IGNORE );
+		}
+		if ( is_string( $data ) ) {
+			$hit = self::match_value( $data, $categories, true );
+			return null === $hit ? null : $this->deny( sprintf( 'WAF %s (%s) in JSON body', $hit[0], $hit[1] ) );
+		}
+		if ( ! is_array( $data ) ) {
+			return JSON_ERROR_DEPTH === json_last_error() ? $this->deny( 'WAF JSON nested too deeply' ) : null;
+		}
+		unset( $body );
+
+		$state = array(
+			'nodes'  => 0,
+			'bytes'  => 0,
+			'budget' => $max,
+			'max'    => self::json_max_fields(),
+		);
+		return $this->walk_json( $data, $categories, $excluded, $state, '' );
+	}
+
+	/**
+	 * Walk decoded JSON, scanning each key and value once.
+	 *
+	 * Names are not joined into paths (a deep body would make a path per leaf);
+	 * a leaf is scanned as "key=value", a container's key on its own. Values are
+	 * scanned in full, bounded by the byte budget.
+	 *
+	 * @param array<mixed>                                         $node       Decoded object or array.
+	 * @param array<string, array<string, string>>                 $categories Signature groups.
+	 * @param string[]                                             $excluded   Lower-case excluded root names.
+	 * @param array{nodes: int, bytes: int, budget: int, max: int} $state Running totals.
+	 * @param string                                               $root       Root key this node sits under ('' at the top).
+	 */
+	private function walk_json( array $node, array $categories, array $excluded, array &$state, string $root ): ?Verdict {
+		foreach ( $node as $key => $value ) {
+			$key = (string) $key;
+			if ( '' === $root && in_array( strtolower( $key ), $excluded, true ) ) {
+				continue;
+			}
+			if ( ! is_array( $value ) && ! is_scalar( $value ) ) {
+				continue; // Null: nothing to scan, as with form fields.
+			}
+			$name = '' === $root ? $key : $root;
+			$text = is_array( $value ) ? $key . '=' : $key . '=' . $value;
+
+			++$state['nodes'];
+			$state['bytes'] += strlen( $text );
+			if ( $state['nodes'] > $state['max'] ) {
+				return $this->deny( 'WAF JSON has too many fields' );
+			}
+			if ( $state['bytes'] > $state['budget'] ) {
+				return $this->deny( 'WAF JSON too large to inspect' );
+			}
+
+			$hit = self::match_value( $text, $categories, true );
+			if ( null !== $hit ) {
+				return $this->deny( sprintf( 'WAF %s (%s) in JSON field "%s"', $hit[0], $hit[1], $name ) );
+			}
+			if ( is_array( $value ) ) {
+				$verdict = $this->walk_json( $value, $categories, $excluded, $state, $name );
+				if ( null !== $verdict ) {
+					return $verdict;
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Largest JSON body inspected, filterable.
+	 *
+	 * The limit is min( post_max_size, 8 MB ) for logged-in users and min( post_max_size, 1 MB )
+	 * for visitors who are not logged in (they can send the most requests for the
+	 * least cost). Filter: wp_bouncer_waf_json_max_bytes( $max, $logged_in ).
+	 * Bodies over it are refused.
+	 *
+	 * @param bool $logged_in Is the user logged in.
+	 */
+	private static function json_max_bytes( bool $logged_in ): int {
+		$max  = $logged_in ? self::JSON_MAX_BYTES : self::JSON_MAX_BYTES_ANON;
+		$post = self::ini_bytes( 'post_max_size' );
+		if ( $post > 0 ) {
+			$max = min( $max, $post );
+		}
+		if ( function_exists( 'apply_filters' ) ) {
+			$max = (int) apply_filters( 'wp_bouncer_waf_json_max_bytes', $max, $logged_in );
+		}
+		return max( 1024, $max );
+	}
+
+	/**
+	 * A php.ini size setting in bytes (0 when unset or unlimited).
+	 *
+	 * @param string $name Setting, e.g. "post_max_size".
+	 */
+	private static function ini_bytes( string $name ): int {
+		$raw   = trim( (string) ini_get( $name ) );
+		$bytes = (int) $raw;
+		$unit  = strtolower( substr( $raw, -1 ) );
+		if ( 'k' === $unit ) {
+			$bytes *= 1024;
+		} elseif ( 'm' === $unit ) {
+			$bytes *= 1048576;
+		} elseif ( 'g' === $unit ) {
+			$bytes *= 1073741824;
+		}
+		return max( 0, $bytes );
+	}
+
+	/**
+	 * Would decoding this body risk exhausting memory?
+	 *
+	 * Decoding needs roughly 220 bytes per container, 24 per element and a few per body
+	 * byte, so a body of millions of tiny arrays can need hundreds of MB. Brackets
+	 * inside strings over-count; that only matters for bodies with a huge number of them.
+	 *
+	 * @param string $body Raw body.
+	 */
+	private static function decode_too_big( string $body ): bool {
+		$limit = self::ini_bytes( 'memory_limit' );
+		if ( $limit <= 0 ) {
+			return false;
+		}
+		$estimate = ( substr_count( $body, '[' ) + substr_count( $body, '{' ) ) * 224 + ( substr_count( $body, ',' ) + substr_count( $body, ':' ) ) * 24 + strlen( $body ) * 3;
+		return $estimate > ( $limit - memory_get_usage() ) * 0.6;
+	}
+
+	/**
+	 * Most nodes a JSON body may hold (default 5000); filter wp_bouncer_waf_json_max_fields.
+	 */
+	private static function json_max_fields(): int {
+		$max = self::JSON_MAX_FIELDS;
+		if ( function_exists( 'apply_filters' ) ) {
+			$max = (int) apply_filters( 'wp_bouncer_waf_json_max_fields', $max );
+		}
+		return max( 1, $max );
 	}
 
 	/**
@@ -186,9 +416,10 @@ final class WafRule extends AbstractRule {
 	 *
 	 * @param string                               $value      Value.
 	 * @param array<string, array<string, string>> $categories Signature groups.
+	 * @param bool                                 $full       Scan every window of the value, not just the first 64 KB and the last 8 KB (the caller bounds the size).
 	 * @return array{0: string, 1: string}|null [category, signature name] on match.
 	 */
-	public static function match_value( string $value, array $categories ): ?array {
+	public static function match_value( string $value, array $categories, bool $full = false ): ?array {
 		$variants = array( self::normalise( $value ) );
 		if ( false !== strpos( $value, '%' ) ) {
 			$decoded = self::normalise( rawurldecode( $value ) );
@@ -198,7 +429,7 @@ final class WafRule extends AbstractRule {
 		}
 
 		foreach ( $variants as $variant ) {
-			$hit = self::scan_variant( $variant, $categories );
+			$hit = self::scan_variant( $variant, $categories, $full );
 			if ( null !== $hit ) {
 				return $hit;
 			}
@@ -242,11 +473,12 @@ final class WafRule extends AbstractRule {
 	 *
 	 * @param string                               $text       Normalised text.
 	 * @param array<string, array<string, string>> $categories Signature groups.
+	 * @param bool                                 $full       Scan every window.
 	 * @return array{0: string, 1: string}|null
 	 */
-	private static function scan_variant( string $text, array $categories ): ?array {
+	private static function scan_variant( string $text, array $categories, bool $full ): ?array {
 		$large = strlen( $text ) > self::WINDOW;
-		foreach ( self::windows( $text ) as $window ) {
+		foreach ( self::windows( $text, $full ) as $window ) {
 			// Cheap gate for big values: every signature needs one of these characters or words.
 			if ( $large && 1 !== preg_match( self::GATE, $window['text'] ) ) {
 				continue;
@@ -277,7 +509,7 @@ final class WafRule extends AbstractRule {
 
 		foreach ( $categories as $category => $signatures ) {
 			if ( isset( $signatures[ self::EVENT_HANDLER ] ) ) {
-				$hit = self::event_handler_hit( $text, $signatures[ self::EVENT_HANDLER ] );
+				$hit = self::event_handler_hit( $text, $signatures[ self::EVENT_HANDLER ], $full );
 				if ( null !== $hit ) {
 					return array( $category, $hit );
 				}
@@ -293,12 +525,14 @@ final class WafRule extends AbstractRule {
 	 *
 	 * @param string $text  Normalised text.
 	 * @param string $regex The handler signature.
+	 * @param bool   $full  Scan the whole text, not just the first 64 KB and last 8 KB.
 	 * @return string|null The signature name, "pattern error (...)", or null.
 	 */
-	private static function event_handler_hit( string $text, string $regex ): ?string {
+	private static function event_handler_hit( string $text, string $regex, bool $full = false ): ?string {
 		$length   = strlen( $text );
-		$segments = array( substr( $text, 0, self::MAX_VALUE_LENGTH ) );
-		if ( $length > self::MAX_VALUE_LENGTH ) {
+		$cap      = $full ? $length : self::MAX_VALUE_LENGTH;
+		$segments = array( substr( $text, 0, $cap ) );
+		if ( $length > $cap ) {
 			$segments[] = substr( $text, -self::WINDOW );
 		}
 		foreach ( $segments as $segment ) {
@@ -394,9 +628,10 @@ final class WafRule extends AbstractRule {
 	 * Split a value into the windows that are scanned.
 	 *
 	 * @param string $value Value.
+	 * @param bool   $full  Cover the whole value, not just the first 64 KB and the last 8 KB.
 	 * @return array<int, array{text: string, context: string, last: bool}> Window text, the byte before it, and whether it ends the value.
 	 */
-	private static function windows( string $value ): array {
+	private static function windows( string $value, bool $full = false ): array {
 		$length = strlen( $value );
 		if ( $length <= self::WINDOW ) {
 			return array(
@@ -408,7 +643,8 @@ final class WafRule extends AbstractRule {
 			);
 		}
 
-		$limit   = min( $length, self::MAX_VALUE_LENGTH );
+		$cap     = $full ? $length : self::MAX_VALUE_LENGTH;
+		$limit   = min( $length, $cap );
 		$step    = self::WINDOW - self::OVERLAP;
 		$windows = array();
 		for ( $start = 0; $start < $limit; $start += $step ) {
@@ -417,7 +653,7 @@ final class WafRule extends AbstractRule {
 				break;
 			}
 		}
-		if ( $length > self::MAX_VALUE_LENGTH ) {
+		if ( $length > $cap ) {
 			$windows[] = self::window_at( $value, $length - self::WINDOW );
 		}
 		return $windows;

@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * The admin Activity Log screen and the dashboard widgets read through the
  * query helpers here. The firewall only ever calls record().
  */
-final class BlockLog implements BlockLogInterface {
+final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 
 	/** Column length limits (match the schema in Installer). */
 	private const LIMITS = array(
@@ -30,6 +30,9 @@ final class BlockLog implements BlockLogInterface {
 		'uri'        => 2048,
 		'user_agent' => 512,
 	);
+
+	/** Actions the dashboard widget counts (alerts are never counted). */
+	private const WIDGET_ACTIONS = array( 'blocked', 'monitored', 'lockout', 'suppressed' );
 
 	/**
 	 * WordPress database handle.
@@ -97,13 +100,13 @@ final class BlockLog implements BlockLogInterface {
 	/**
 	 * Build a WHERE clause from filters.
 	 *
-	 * @param array<string, string> $filters rule, action, search, since (Y-m-d H:i:s UTC).
+	 * @param array<string, string> $filters rule, action, country, ip (exact), search, since (Y-m-d H:i:s UTC).
 	 * @return array{0: string, 1: array<int, string>} SQL fragment and its arguments.
 	 */
 	private function where( array $filters ): array {
 		$sql  = array( '1=1' );
 		$args = array();
-		foreach ( array( 'rule', 'action', 'country' ) as $col ) {
+		foreach ( array( 'rule', 'action', 'country', 'ip' ) as $col ) {
 			if ( ! empty( $filters[ $col ] ) ) {
 				$sql[]  = "{$col} = %s";
 				$args[] = (string) $filters[ $col ];
@@ -168,23 +171,98 @@ final class BlockLog implements BlockLogInterface {
 	/**
 	 * Counts grouped by a column since a time.
 	 *
-	 * @param string $column rule|ip|country|action.
-	 * @param string $since  UTC datetime.
-	 * @param int    $limit  Max groups.
+	 * @param string      $column rule|ip|country|action.
+	 * @param string      $since  UTC datetime.
+	 * @param int         $limit  Max groups.
+	 * @param string|null $action Count only this action (null: every action except alerts).
 	 * @return array<string, int> value => count, largest first. Alerts are not counted.
 	 */
-	public function top( string $column, string $since, int $limit = 10 ): array {
+	public function top( string $column, string $since, int $limit = 10, ?string $action = null ): array {
 		if ( ! in_array( $column, array( 'rule', 'ip', 'country', 'action' ), true ) ) {
 			return array();
 		}
 		$limit = max( 1, min( 100, $limit ) );
+		$args  = array( $since );
+		$extra = '';
+		if ( null !== $action ) {
+			$extra  = ' AND action = %s';
+			$args[] = $action;
+		}
+		$rows = $this->db->get_results(
+			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert'{$extra} GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $args ), // phpcs:ignore WordPress.DB.PreparedSQL -- $column is checked against an allow-list above, $limit is an int clamped to 1-100, $extra is a fixed fragment and the values are bound with %s; the table name is built from $wpdb->prefix.
+			ARRAY_A
+		);
+		$out  = array();
+		foreach ( (array) $rows as $row ) {
+			$out[ (string) $row['k'] ] = (int) $row['n'];
+		}
+		return $out;
+	}
+
+	/**
+	 * Event counts per action over the periods the dashboard widget compares, in one query.
+	 *
+	 * @param string $since14 Start of the 14-day window (UTC datetime); nothing older is read.
+	 * @param string $since7  Start of the last 7 days.
+	 * @param string $since24 Start of the last 24 hours.
+	 * @param string $since48 Start of the 24 hours before that.
+	 * @return array<string, array{h24: int, h24_prev: int, d7: int, d14: int}> Keyed by action (blocked, monitored, lockout, suppressed); all present.
+	 */
+	public function period_counts( string $since14, string $since7, string $since24, string $since48 ): array {
+		$out = array();
+		foreach ( self::WIDGET_ACTIONS as $action ) {
+			$out[ $action ] = array(
+				'h24'      => 0,
+				'h24_prev' => 0,
+				'd7'       => 0,
+				'd14'      => 0,
+			);
+		}
+		$in   = implode( ', ', array_fill( 0, count( self::WIDGET_ACTIONS ), '%s' ) );
+		$sql  = "SELECT action, SUM(CASE WHEN created_at >= %s THEN 1 ELSE 0 END) AS h24, SUM(CASE WHEN created_at >= %s AND created_at < %s THEN 1 ELSE 0 END) AS h24_prev, SUM(CASE WHEN created_at >= %s THEN 1 ELSE 0 END) AS d7, COUNT(*) AS d14 FROM {$this->table} WHERE created_at >= %s AND action IN ({$in}) GROUP BY action";
+		$args = array_merge( array( $since24, $since48, $since24, $since7, $since14 ), self::WIDGET_ACTIONS );
+		$rows = $this->db->get_results( $this->db->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix, $in is a list of %s placeholders and every value is bound by prepare().
+		foreach ( (array) $rows as $row ) {
+			$action = (string) $row['action'];
+			if ( isset( $out[ $action ] ) ) {
+				$out[ $action ] = array(
+					'h24'      => (int) $row['h24'],
+					'h24_prev' => (int) $row['h24_prev'],
+					'd7'       => (int) $row['d7'],
+					'd14'      => (int) $row['d14'],
+				);
+			}
+		}
+		return $out;
+	}
+
+	/**
+	 * The newest rows for the dashboard widget: time, IP, rule and action only.
+	 *
+	 * @param int      $limit   Rows (1 to 20).
+	 * @param string[] $actions Actions to include.
+	 * @param string   $since   Oldest time to read (UTC datetime).
+	 * @return array<int, array{created_at: string, ip: string, rule: string, action: string}>
+	 */
+	public function recent( int $limit, array $actions, string $since ): array {
+		$actions = array_values( array_map( 'strval', $actions ) );
+		if ( ! $actions ) {
+			return array();
+		}
+		$limit = max( 1, min( 20, $limit ) );
+		$in    = implode( ', ', array_fill( 0, count( $actions ), '%s' ) );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert' GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $since ), // phpcs:ignore WordPress.DB.PreparedSQL -- $column is checked against an allow-list above, $limit is an int clamped to 1-100 and $since is bound with %s; the table name is built from $wpdb->prefix.
+			$this->db->prepare( "SELECT created_at, ip, rule, action FROM {$this->table} WHERE created_at >= %s AND action IN ({$in}) ORDER BY created_at DESC, id DESC LIMIT {$limit}", array_merge( array( $since ), $actions ) ), // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix, $in is a list of %s placeholders, $limit is an int clamped to 1-20 and the values are bound.
 			ARRAY_A
 		);
 		$out   = array();
 		foreach ( (array) $rows as $row ) {
-			$out[ (string) $row['k'] ] = (int) $row['n'];
+			$out[] = array(
+				'created_at' => (string) $row['created_at'],
+				'ip'         => (string) $row['ip'],
+				'rule'       => (string) $row['rule'],
+				'action'     => (string) $row['action'],
+			);
 		}
 		return $out;
 	}

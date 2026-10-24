@@ -30,6 +30,20 @@ final class CounterSubject {
 
 	public const DEFAULT_PREFIX = 64;
 
+	/**
+	 * Memo of the last input ("<prefix>|<ip>").
+	 *
+	 * @var string|null
+	 */
+	private static ?string $memo_key = null;
+
+	/**
+	 * Memo of the last result.
+	 *
+	 * @var string
+	 */
+	private static string $memo_value = '';
+
 	/** Narrowest allowed network: wider would let one noisy host lock out a large allocation. */
 	public const MIN_PREFIX = 48;
 
@@ -54,6 +68,25 @@ final class CounterSubject {
 	 *                input unchanged when it isn't an address.
 	 */
 	public static function of( string $ip, ?int $v6_prefix = null ): string {
+		// Last-input memo: a request asks for the same address many times (rules, keys, de-dup).
+		$prefix_in = $v6_prefix ?? self::configured_prefix();
+		$memo_key  = $prefix_in . '|' . $ip;
+		if ( self::$memo_key === $memo_key ) {
+			return self::$memo_value;
+		}
+		$result           = self::compute( $ip, $prefix_in );
+		self::$memo_key   = $memo_key;
+		self::$memo_value = $result;
+		return $result;
+	}
+
+	/**
+	 * Uncached subject computation.
+	 *
+	 * @param string $ip        Client IP.
+	 * @param int    $v6_prefix IPv6 prefix length.
+	 */
+	private static function compute( string $ip, int $v6_prefix ): string {
 		$ip = trim( $ip );
 		if ( '' === $ip ) {
 			return '';
@@ -76,13 +109,41 @@ final class CounterSubject {
 			return self::of( $v4, $v6_prefix );
 		}
 
-		$prefix = min( 128, max( self::MIN_PREFIX, $v6_prefix ?? self::configured_prefix() ) );
+		$prefix = min( 128, max( self::MIN_PREFIX, $v6_prefix ) );
 		$mask   = str_repeat( "\xff", intdiv( $prefix, 8 ) );
 		if ( 0 !== $prefix % 8 ) {
 			$mask .= chr( ( 0xff << ( 8 - $prefix % 8 ) ) & 0xff );
 		}
 		$mask = str_pad( $mask, 16, "\0" );
 		return inet_ntop( $packed & $mask ) . '/' . $prefix;
+	}
+
+	/**
+	 * The subject to build a storage key from: the subject, or the trimmed input when
+	 * the address isn't counted, so a key is always valid. Callers that must not count
+	 * loopback check of() for '' first.
+	 *
+	 * @param string $ip Client IP or a non-address key.
+	 */
+	public static function key( string $ip ): string {
+		$subject = self::of( $ip );
+		return '' === $subject ? trim( $ip ) : $subject;
+	}
+
+	/**
+	 * Every key suffix a ban or counter for this address may be stored under: the subject
+	 * and the exact typed string (bans placed before IPv6 subjects existed).
+	 *
+	 * @param string $ip Client IP as typed.
+	 * @return string[]
+	 */
+	public static function keys( string $ip ): array {
+		$ip    = trim( $ip );
+		$parts = array( self::key( $ip ), $ip );
+		if ( IpUtils::is_valid( $ip ) ) {
+			$parts[] = IpUtils::canonical( $ip );
+		}
+		return array_values( array_unique( $parts ) );
 	}
 
 	/**

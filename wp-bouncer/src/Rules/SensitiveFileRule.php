@@ -12,6 +12,7 @@ use WPBouncer\Firewall\Verdict;
 use WPBouncer\Settings;
 use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
+use WPBouncer\Support\CounterSubject;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -114,7 +115,11 @@ final class SensitiveFileRule extends AbstractRule {
 			return null;
 		}
 
-		$ban_minutes = $request->can_be_banned() ? min( Settings::MAX_BAN_MINUTES, max( 0, (int) $this->setting( 'ban_minutes', 60 ) ) ) : 0;
+		// An empty subject (loopback) is refused like any probe but never counted or banned.
+		$ban_minutes = 0;
+		if ( $request->can_be_banned() && '' !== CounterSubject::of( $ip ) ) {
+			$ban_minutes = min( Settings::MAX_BAN_MINUTES, max( 0, (int) $this->setting( 'ban_minutes', 60 ) ) );
+		}
 		if ( $ban_minutes > 0 && null !== $this->store->get( self::ban_key( $ip ) ) ) {
 			return $this->deny( 'Banned after probing for sensitive files' );
 		}
@@ -182,7 +187,7 @@ final class SensitiveFileRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function probe_key( string $ip ): string {
-		return 'sf_probe:' . $ip;
+		return 'sf_probe:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -191,7 +196,7 @@ final class SensitiveFileRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function foreign_probe_key( string $ip ): string {
-		return 'sf_probe_x:' . $ip;
+		return 'sf_probe_x:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -200,7 +205,7 @@ final class SensitiveFileRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function foreign_ban_key( string $ip ): string {
-		return 'sf_xban:' . $ip;
+		return 'sf_xban:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -209,6 +214,22 @@ final class SensitiveFileRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function ban_key( string $ip ): string {
-		return 'sf_ban:' . $ip;
+		return 'sf_ban:' . CounterSubject::key( $ip );
+	}
+
+	/**
+	 * Every key to clear when unlocking an address: subject keys and the exact-string keys of earlier versions.
+	 *
+	 * @param string $ip Client IP as typed.
+	 * @return string[]
+	 */
+	public static function keys_for( string $ip ): array {
+		$keys = array();
+		foreach ( CounterSubject::keys( $ip ) as $part ) {
+			foreach ( array( 'sf_ban:', 'sf_probe:', 'sf_probe_x:', 'sf_xban:' ) as $prefix ) {
+				$keys[] = $prefix . $part;
+			}
+		}
+		return $keys;
 	}
 }

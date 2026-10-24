@@ -10,6 +10,8 @@ namespace WPBouncer\Admin;
 use WPBouncer\Geo\Countries;
 use WPBouncer\Log\BlockLog;
 use WPBouncer\Log\BlockLogInterface;
+use WPBouncer\Support\CounterSubject;
+use WPBouncer\Support\IpUtils;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -175,6 +177,16 @@ final class LogListTable extends \WP_List_Table {
 				esc_html__( 'Block IP', 'wp-bouncer' )
 			),
 		);
+		// The firewall counts and bans an IPv6 client by its network, and the log shows one address per network.
+		$subject = CounterSubject::of( $ip );
+		if ( IpUtils::is_ipv6( $ip ) && AdminController::is_subject_network( $subject ) ) {
+			$actions['block_net'] = sprintf(
+				'<a href="%s">%s</a>',
+				esc_url( AdminController::block_ip_url( $subject ) ),
+				/* translators: %d: IPv6 prefix length, such as 64. */
+				esc_html( sprintf( __( 'Block /%d', 'wp-bouncer' ), (int) substr( $subject, (int) strrpos( $subject, '/' ) + 1 ) ) )
+			);
+		}
 		return '<code>' . esc_html( $ip ) . '</code>' . $this->row_actions( $actions );
 	}
 

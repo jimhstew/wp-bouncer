@@ -448,6 +448,61 @@ check "?author=1 in a POST body"     403 "$(status 203.0.113.50 "$MOZ" "$U/" -X 
 WAF_PAD=$(head -c 12000 /dev/zero | tr '\0' 'a')
 check "WAF: XSS after 12 KB padding" 403 "$(status 203.0.113.47 "$MOZ" "$U/" -X POST --data-urlencode "comment=${WAF_PAD}<script>alert(1)</script>")"
 check "WAF: long benign POST"        200 "$(status 203.0.113.48 "$MOZ" "$U/" -X POST --data-urlencode "comment=${WAF_PAD} hello world")"
+check "WAF: JSON body SQL injection" 403 "$(status 203.0.113.51 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data '{"title":"x","meta":{"k":"1'"'"' UNION SELECT user_pass FROM wp_users--"}}')"
+check "WAF: benign JSON body"        401 "$(status 203.0.113.52 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data '{"title":"Hello world","content":"A normal post"}')"
+check "WAF: JSON payload in a content-type list" 403 "$(status 203.0.113.53 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: text/plain, application/json' --data '{"title":"1'"'"' UNION SELECT user_pass FROM wp_users--"}')"
+check "WAF: JSON payload under text/plain" 403 "$(status 203.0.113.54 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: text/plain' --data '{"title":"<script>alert(1)</script>"}')"
+WAF_DEEP=$(head -c 600 /dev/zero | tr '\0' '[')$(head -c 600 /dev/zero | tr '\0' ']')
+check "WAF: JSON nested past 512 levels" 403 "$(status 203.0.113.55 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data "$WAF_DEEP")"
+check "WAF: broken JSON gets no verdict" 400 "$(status 203.0.113.56 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data '{"title":')"
+# A non-admin (editor) saving a post with block-editor markup through the REST API is not blocked.
+$WP user get editor_e2e > /dev/null 2>&1 || $WP user create editor_e2e editor@example.test --role=editor --user_pass=e2e-editor-123 > /dev/null
+EJ="$WORK/editor-cookies.txt"
+curl -s -o /dev/null -c "$EJ" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" \
+	-d "log=editor_e2e&pwd=e2e-editor-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
+ENONCE=$(curl -s -b "$EJ" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" "$U/wp-admin/admin-ajax.php?action=rest-nonce")
+WAF_POST='{"title":"Editor post","status":"draft","content":"<!-- wp:paragraph --><p>Some <strong>bold</strong> text, <a href=\"https://example.org/?a=1&amp;b=2\">a link</a>.</p><!-- /wp:paragraph -->"}'
+check "editor saves a post over REST" 201 "$(curl -s -o /dev/null -w '%{http_code}' -b "$EJ" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" -H "X-WP-Nonce: $ENONCE" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts")"
+WAF_CODE='{"title":"Code tutorial","status":"draft","content":"<!-- wp:html --><iframe src=\"https://example.org/\"></iframe><!-- /wp:html --><!-- wp:code --><pre>eval(x); SELECT a FROM t UNION SELECT b FROM u</pre><!-- /wp:code -->"}'
+check "editor saves HTML and code over REST (JSON scan skips editors)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -b "$EJ" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" -H "X-WP-Nonce: $ENONCE" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts")"
+# A subscriber is not an editor: the same JSON is refused by the WAF (a WordPress refusal would be a JSON "code" error instead).
+$WP user get sub_e2e > /dev/null 2>&1 || $WP user create sub_e2e sub@example.test --role=subscriber --user_pass=e2e-sub-123 > /dev/null
+SJ="$WORK/sub-cookies.txt"
+curl -s -o /dev/null -c "$SJ" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.58" -A "$MOZ" \
+	-d "log=sub_e2e&pwd=e2e-sub-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
+SNONCE=$(curl -s -b "$SJ" -H "X-Real-IP: 198.51.100.58" -A "$MOZ" "$U/wp-admin/admin-ajax.php?action=rest-nonce")
+curl -s -o "$WORK/sub-waf.html" -b "$SJ" -H "X-Real-IP: 198.51.100.58" -A "$MOZ" -H "X-WP-Nonce: $SNONCE" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts"
+check "subscriber JSON with code is refused by the WAF" 0 "$(grep -c 'rest_cannot_create' "$WORK/sub-waf.html")"
+check "anonymous JSON with code is blocked" 403 "$(status 203.0.113.59 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data "$WAF_CODE")"
+# Application-password (Basic) auth must still work with the firewall loaded, and the post must belong to the editor.
+mkdir -p "$W/wp-content/mu-plugins"
+echo "<?php add_filter( 'wp_is_application_passwords_available', '__return_true' );" > "$W/wp-content/mu-plugins/wpb-e2e-apppw.php"
+[ -n "${WPB_E2E_CONTROL:-}" ] && $WP plugin deactivate wp-bouncer
+APPPW=$($WP user application-password create editor_e2e e2e-rest --porcelain 2>/dev/null)
+APP_OUT=$(curl -s -w ' HTTP:%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.61" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts")
+check "application-password REST save creates the post" 201 "$(echo "$APP_OUT" | sed 's/.*HTTP://')"
+check "  ...as the editor"            1 "$(echo "$APP_OUT" | grep -c '"author":'"$($WP user get editor_e2e --field=ID)"'[,}]')"
+APP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.61" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts")
+check "application-password editor is exempt from the JSON scan" 201 "$APP_CODE"
+# An application-password subscriber is not an editor: the same JSON is refused (by the WAF, not by WordPress).
+SUBPW=$($WP user application-password create sub_e2e e2e-rest --porcelain 2>/dev/null)
+curl -s -o "$WORK/sub-app.html" -u "sub_e2e:$SUBPW" -H "X-Real-IP: 198.51.100.62" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts"
+check "app-password subscriber with code: refused by the WAF" 0 "$(grep -c 'rest_cannot_create' "$WORK/sub-app.html")"
+# A Basic header with a wrong password: the user stays 0, so the body is scanned as a visitor's (our block page, not core's 401).
+check "wrong Basic password with a payload is refused" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:wrong-password" -H "X-Real-IP: 198.51.100.63" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts")"
+check "wrong Basic password, benign body: core's 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:wrong-password" -H "X-Real-IP: 198.51.100.63" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts")"
+# A Basic header and a rest_route on a request that never reaches the REST API gets no special treatment.
+check "fake Basic header + rest_route on admin-ajax is scanned" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:wrong-password" -H "X-Real-IP: 198.51.100.65" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/wp-admin/admin-ajax.php?rest_route=/x")"
+check "fake Basic header + rest_route on admin-post is scanned" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:wrong-password" -H "X-Real-IP: 198.51.100.65" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/wp-admin/admin-post.php?rest_route=/x")"
+# Credentials only count where core accepts application passwords (REST, XML-RPC).
+check "valid editor credentials on a front-end path give no exemption" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.64" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/contact-us/")"
+check "valid editor credentials on admin-ajax give no exemption" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.66" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/wp-admin/admin-ajax.php")"
+check "valid editor credentials + rest_route on admin-ajax give no exemption" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.66" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/wp-admin/admin-ajax.php?rest_route=/x")"
+# Wrong application passwords are counted as login failures, so after the limit the client is locked out and even the right password is refused.
+for i in 1 2 3 4 5; do curl -s -o /dev/null -u "editor_e2e:wrongwrongwrongwrong$i" -H "X-Real-IP: 198.51.100.67" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts"; done
+check "locked out after wrong application passwords: the right one is refused" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.67" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts")"
+[ -n "${WPB_E2E_CONTROL:-}" ] && $WP plugin activate wp-bouncer
+check "JSON padded with blanks past 1 MB is blocked (anonymous, text/plain)" 403 "$( (head -c 1100000 /dev/zero | tr '\0' ' '; echo '{"a":1}') | status 203.0.113.60 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: text/plain' --data-binary @-)"
 
 fi
 if want "Brute-force protection"; then
@@ -600,6 +655,23 @@ check "dashboard shows the environment checks" 1 "$(grep -c 'id="wpb-environment
 check "  ...with the database row"   1 "$( [ "$(grep -c 'Database version' "$WORK/tab-dashboard.html")" -ge 1 ] && echo 1 || echo 0 )"
 check "  ...and a fixed intro"        1 "$(grep -c 'checks WP Bouncer runs' "$WORK/tab-dashboard.html")"
 check "front page has no environment data" 0 "$(curl -s -H "X-Real-IP: 203.0.113.30" -A "$MOZ" "$U/" | grep -c 'wpb-environment\|WP Bouncer runs\|DISALLOW_FILE_EDIT')"
+
+# Dashboard widget (WPB-4): renders for the admin without JavaScript, from the blocks logged above.
+$WP eval 'WPBouncer\Admin\DashboardWidget::flush();'
+admin "$U/wp-admin/index.php" > /dev/null
+check "dashboard widget renders for the admin" 1 "$(grep -c 'id="wp_bouncer_dashboard"' "$WORK/admin.html")"
+check "  ...with the status line"      1 "$( [ "$(grep -c 'rules on)' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...with counts from the log"  1 "$( [ "$(grep -c 'in the last 24 hours' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and a link to the Activity Log" 1 "$( [ "$(grep -c 'tab=log' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and no PHP errors"         0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
+# Stored XSS: hostile values in every log column. The widget escapes the fields it shows and never shows the rest.
+$WP eval 'global $wpdb; $wpdb->insert( $wpdb->prefix . "bouncer_log", array( "created_at" => gmdate( "Y-m-d H:i:s" ), "ip" => "<img src=x onerror=wpbip()>", "country" => "", "rule" => "<script>wpbrule()</script>", "action" => "blocked", "reason" => "<script>wpbreason()</script>", "method" => "GET", "uri" => "/<script>wpburi()</script>", "user_agent" => "<script>wpbua()</script>" ) ); WPBouncer\Admin\DashboardWidget::flush();'
+admin "$U/wp-admin/index.php" > /dev/null
+check "widget escapes a hostile rule name"  1 "$(grep -c '&lt;script&gt;wpbrule()&lt;/script&gt;' "$WORK/admin.html")"
+check "  ...and a hostile IP"               1 "$( [ "$(grep -c '&lt;img src=x onerror=wpbip()&gt;' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...no raw script or img from the log" 0 "$(grep -c '<script>wpb\|<img src=x onerror=wpbip' "$WORK/admin.html")"
+check "  ...never shows the URI, UA or reason" 0 "$(grep -c 'wpburi\|wpbua\|wpbreason' "$WORK/admin.html")"
+$WP eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->prefix}bouncer_log WHERE rule LIKE \"%wpbrule%\"" ); WPBouncer\Admin\DashboardWidget::flush();'
 
 fi
 if want "Geo import through the Tools screen"; then

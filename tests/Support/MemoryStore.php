@@ -31,6 +31,11 @@ final class MemoryStore implements CounterStoreInterface {
 		$this->clock = $clock ?? new Clock();
 	}
 
+	/** @return string[] Every stored key (for tests). */
+	public function keys(): array {
+		return array_keys( $this->items );
+	}
+
 	/** {@inheritDoc} */
 	public function get( string $key ) {
 		if ( ! isset( $this->items[ $key ] ) ) {

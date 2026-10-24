@@ -74,8 +74,8 @@ final class AdminControllerTest extends IntegrationTestCase {
 		if ( '' !== $action ) {
 			$post['_wpnonce'] = wp_create_nonce( $action );
 		}
-		$_POST    = $post;
-		$_REQUEST = $post;
+		$_POST                     = $post;
+		$_REQUEST                  = $post;
 		$_SERVER['REQUEST_METHOD'] = 'POST';
 	}
 
@@ -115,7 +115,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 		try {
 			$this->admin->$method();
 		} catch ( \WPDieException $e ) {
-			$out = ob_get_clean();
+			$out  = ob_get_clean();
 			$json = json_decode( $out, true );
 			return null === $json ? 'DIED:' . $e->getMessage() : $json;
 		}
@@ -171,7 +171,14 @@ final class AdminControllerTest extends IntegrationTestCase {
 	 */
 	public function test_a_user_without_manage_options_is_refused_even_with_a_valid_nonce( string $method, string $action ): void {
 		$this->login( 'editor' );
-		$this->post( $action, array( 'ip' => '198.51.100.1', 'rule' => 'waf', 'tab' => 'general' ) );
+		$this->post(
+			$action,
+			array(
+				'ip'   => '198.51.100.1',
+				'rule' => 'waf',
+				'tab'  => 'general',
+			)
+		);
 		$before = $this->stored();
 
 		$e = $this->die_of( array( $this->admin, $method ) );
@@ -196,7 +203,14 @@ final class AdminControllerTest extends IntegrationTestCase {
 	 */
 	public function test_a_missing_nonce_is_refused( string $method ): void {
 		$this->login();
-		$this->post( '', array( 'ip' => '198.51.100.1', 'rule' => 'waf', 'tab' => 'general' ) );
+		$this->post(
+			'',
+			array(
+				'ip'   => '198.51.100.1',
+				'rule' => 'waf',
+				'tab'  => 'general',
+			)
+		);
 		$before = $this->stored();
 
 		$this->die_of( array( $this->admin, $method ) );
@@ -209,7 +223,15 @@ final class AdminControllerTest extends IntegrationTestCase {
 	 */
 	public function test_a_forged_nonce_is_refused( string $method ): void {
 		$this->login();
-		$this->post( '', array( '_wpnonce' => 'deadbeef00', 'ip' => '198.51.100.1', 'rule' => 'waf', 'tab' => 'general' ) );
+		$this->post(
+			'',
+			array(
+				'_wpnonce' => 'deadbeef00',
+				'ip'       => '198.51.100.1',
+				'rule'     => 'waf',
+				'tab'      => 'general',
+			)
+		);
 		$before = $this->stored();
 
 		$this->die_of( array( $this->admin, $method ) );
@@ -223,7 +245,14 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_a_nonce_for_another_action_is_refused( string $method, string $action ): void {
 		$this->login();
 		$other = 'wp_bouncer_save' === $action ? 'wp_bouncer_clear_log' : 'wp_bouncer_save';
-		$this->post( $other, array( 'ip' => '198.51.100.1', 'rule' => 'waf', 'tab' => 'general' ) );
+		$this->post(
+			$other,
+			array(
+				'ip'   => '198.51.100.1',
+				'rule' => 'waf',
+				'tab'  => 'general',
+			)
+		);
 		$before = $this->stored();
 
 		$this->die_of( array( $this->admin, $method ) );
@@ -232,7 +261,12 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_a_refused_clear_log_keeps_the_rows(): void {
-		$this->plugin->log()->record( array( 'ip' => '198.51.100.1', 'rule' => 'waf' ) );
+		$this->plugin->log()->record(
+			array(
+				'ip'   => '198.51.100.1',
+				'rule' => 'waf',
+			)
+		);
 		$this->login( 'subscriber' );
 		$this->post( 'wp_bouncer_clear_log' );
 
@@ -244,7 +278,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_ajax_step_refuses_missing_capability_and_bad_nonce(): void {
 		$this->login( 'editor' );
 		$_REQUEST['_ajax_nonce'] = wp_create_nonce( 'wp_bouncer_geo_step' );
-		$out = $this->ajax( 'ajax_geo_step' );
+		$out                     = $this->ajax( 'ajax_geo_step' );
 		$this->assertFalse( $out['success'] );
 		$this->assertStringContainsString( 'permission', $out['data']['message'] );
 
@@ -271,7 +305,11 @@ final class AdminControllerTest extends IntegrationTestCase {
 					'log_retention_days' => '99999',
 					'block_message'      => '<b>Go</b> <script>alert(1)</script> away',
 					'geo_header'         => 'bad header!',
-					'alerts'             => array( 'enabled' => '1', 'recipients' => "ops@example.org\nbogus", 'new_admin' => '1' ),
+					'alerts'             => array(
+						'enabled'    => '1',
+						'recipients' => "ops@example.org\nbogus",
+						'new_admin'  => '1',
+					),
 				),
 			)
 		);
@@ -295,9 +333,20 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_saving_one_tab_leaves_the_other_tabs_alone(): void {
-		$this->set_settings( array( 'traffic' => array( 'enabled' => true ), 'rules' => array( 'waf' => array( 'xss' => false ) ) ) );
+		$this->set_settings(
+			array(
+				'traffic' => array( 'enabled' => true ),
+				'rules'   => array( 'waf' => array( 'xss' => false ) ),
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'general', 'wp_bouncer' => array( 'mode' => 'monitor' ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'general',
+				'wp_bouncer' => array( 'mode' => 'monitor' ),
+			)
+		);
 
 		$this->call( 'handle_save' );
 
@@ -314,8 +363,15 @@ final class AdminControllerTest extends IntegrationTestCase {
 				'tab'        => 'rules',
 				'wp_bouncer' => array(
 					'rules' => array(
-						'waf'           => array( 'enabled' => '1', 'sqli' => '1' ),
-						'login_lockout' => array( 'enabled' => '1', 'max_attempts' => '0', 'lockout_minutes' => '5' ),
+						'waf'           => array(
+							'enabled' => '1',
+							'sqli'    => '1',
+						),
+						'login_lockout' => array(
+							'enabled'         => '1',
+							'max_attempts'    => '0',
+							'lockout_minutes' => '5',
+						),
 					),
 				),
 			)
@@ -335,7 +391,19 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_saving_the_traffic_tab(): void {
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'traffic', 'wp_bouncer' => array( 'traffic' => array( 'enabled' => '1', 'retention_days' => '30', 'skip_admins' => '1' ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'traffic',
+				'wp_bouncer' => array(
+					'traffic' => array(
+						'enabled'        => '1',
+						'retention_days' => '30',
+						'skip_admins'    => '1',
+					),
+				),
+			)
+		);
 
 		$r = $this->call( 'handle_save' );
 
@@ -349,7 +417,13 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_save_with_an_unknown_tab_is_an_error_and_changes_nothing(): void {
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'nonsense', 'wp_bouncer' => array( 'mode' => 'monitor' ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'nonsense',
+				'wp_bouncer' => array( 'mode' => 'monitor' ),
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_save' );
@@ -374,7 +448,20 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_save_refuses_to_lock_the_admin_out_and_allowlists_them(): void {
 		$this->login();
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.55' ) );
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'rules', 'wp_bouncer' => array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => '1', 'ips' => '198.51.100.0/24' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'rules',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'ip_blocklist' => array(
+							'enabled' => '1',
+							'ips'     => '198.51.100.0/24',
+						),
+					),
+				),
+			)
+		);
 
 		$r = $this->call( 'handle_save' );
 
@@ -387,8 +474,26 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_save_warns_when_the_user_agent_rule_would_block_the_admin(): void {
 		$this->login();
-		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.56', 'HTTP_USER_AGENT' => 'MyOddBrowser/1.0' ) );
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'rules', 'wp_bouncer' => array( 'rules' => array( 'user_agent' => array( 'enabled' => '1', 'patterns' => 'MyOddBrowser' ) ) ) ) );
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'     => '198.51.100.56',
+				'HTTP_USER_AGENT' => 'MyOddBrowser/1.0',
+			)
+		);
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'rules',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'user_agent' => array(
+							'enabled'  => '1',
+							'patterns' => 'MyOddBrowser',
+						),
+					),
+				),
+			)
+		);
 
 		$r = $this->call( 'handle_save' );
 
@@ -399,7 +504,20 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_save_does_not_allowlist_when_nothing_would_block_the_admin(): void {
 		$this->login();
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.57' ) );
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'rules', 'wp_bouncer' => array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => '1', 'ips' => '203.0.113.0/24' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'rules',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'ip_blocklist' => array(
+							'enabled' => '1',
+							'ips'     => '203.0.113.0/24',
+						),
+					),
+				),
+			)
+		);
 
 		$r = $this->call( 'handle_save' );
 
@@ -426,7 +544,16 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_toggle_on_adds_the_admins_ip_to_the_allowlist_when_it_would_lock_them_out(): void {
 		$this->login();
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.55' ) );
-		$this->set_settings( array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => false, 'ips' => array( '198.51.100.55' ) ) ) ) );
+		$this->set_settings(
+			array(
+				'rules' => array(
+					'ip_blocklist' => array(
+						'enabled' => false,
+						'ips'     => array( '198.51.100.55' ),
+					),
+				),
+			)
+		);
 		$this->post( 'wp_bouncer_toggle_rule', array( 'rule' => 'ip_blocklist' ) );
 
 		$r = $this->call( 'handle_toggle_rule' );
@@ -438,9 +565,17 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_toggle_on_is_refused_when_the_admin_address_is_shared(): void {
-		$country = $this->germany_only();
+		$country                                = $this->germany_only();
 		$country['rules']['country']['enabled'] = false;
-		$this->set_settings( array_replace_recursive( $country, array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) ) );
+		$this->set_settings(
+			array_replace_recursive(
+				$country,
+				array(
+					'ip_source'       => 'x_real_ip',
+					'trusted_proxies' => array(),
+				)
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
 		$this->login();
 		$before = $this->stored();
@@ -492,7 +627,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 	 * @param array       $extra    More query arguments.
 	 */
 	private function get_block( string $ip, ?string $nonce_ip = null, array $extra = array() ): void {
-		$get = array_merge(
+		$get      = array_merge(
 			array(
 				'ip'       => $ip,
 				'_wpnonce' => wp_create_nonce( 'wp_bouncer_block_ip|' . ( $nonce_ip ?? $ip ) ),
@@ -555,7 +690,10 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_block_ip_ignores_post_values(): void {
 		$this->login();
 		$_GET     = array();
-		$_POST    = array( 'ip' => '198.51.100.9', '_wpnonce' => wp_create_nonce( 'wp_bouncer_block_ip|198.51.100.9' ) );
+		$_POST    = array(
+			'ip'       => '198.51.100.9',
+			'_wpnonce' => wp_create_nonce( 'wp_bouncer_block_ip|198.51.100.9' ),
+		);
 		$_REQUEST = $_POST;
 
 		try {
@@ -646,6 +784,80 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'tab=tools', $r->location );
 	}
 
+	public function test_unlock_ip_clears_the_whole_ipv6_network_and_pre_upgrade_keys(): void {
+		$typed    = '2001:DB8:5:6:0:0:0:ABCD';
+		$subject  = '2001:db8:5:6::/64';
+		$store    = $this->plugin->store();
+		$counter  = $this->plugin->attempt_counter();
+		$prefixes = array( 'rl_ban', 'rl_count', 'sf_ban', 'sf_probe', 'sf_probe_x', 'sf_xban', 'nf_ban', 'nf_count', 'nf_count_x', 'nf_xban', 'login_lock', 'login_fail', 'log_seen:rate_limit', 'log_seen:sensitive_files', 'log_seen:not_found', 'log_dropped:rate_limit', 'log_dropped:not_found', 'log_dropped:sensitive_files' );
+		$keys     = array();
+		foreach ( $prefixes as $prefix ) {
+			// Under the subject, and under the exact and canonical spellings of bans placed before the upgrade.
+			foreach ( array( $subject, $typed, '2001:db8:5:6::abcd' ) as $part ) {
+				$keys[] = $prefix . ':' . $part;
+			}
+		}
+		foreach ( $keys as $key ) {
+			$store->set( $key, 1, 600 );
+		}
+		$counter_keys = array_merge( SensitiveFileRule::keys_for( $typed ), NotFoundFloodRule::keys_for( $typed ) );
+		foreach ( $counter_keys as $key ) {
+			$counter->add_or_increment( $key, 600 );
+			$this->assertSame( 1, $counter->get( $key ), $key );
+		}
+		$other = RateLimitRule::ban_key( '2001:db8:5:7::1' );
+		$store->set( $other, 1, 600 );
+		$this->login();
+		$this->post( 'wp_bouncer_unlock_ip', array( 'ip' => $typed ) );
+
+		$this->call( 'handle_unlock_ip' );
+
+		foreach ( $keys as $key ) {
+			$this->assertNull( $store->get( $key ), $key );
+		}
+		foreach ( $counter_keys as $key ) {
+			$this->assertSame( 0, $counter->get( $key ), $key );
+		}
+		$this->assertNotNull( $store->get( $other ), 'another /64 is untouched' );
+	}
+
+	public function test_block_ip_accepts_the_subject_network_of_an_ipv6_address_only(): void {
+		$this->login();
+		$this->get_block( '2001:db8:5:6::/64' );
+		$r = $this->call( 'handle_block_ip' );
+		$this->assertFalse( $r->is_error() );
+		$this->assertSame( array( '2001:db8:5:6::/64' ), $this->stored()['rules']['ip_blocklist']['ips'] );
+		$this->assertTrue( \WPBouncer\Support\IpUtils::in_range( '2001:db8:5:6:1:2:3:4', '2001:db8:5:6::/64' ) );
+
+		foreach ( array( '2001:db8::/32', '2001:db8:5:6::5/64', '2001:db8:5:7::/63', '198.51.100.0/24' ) as $bad ) {
+			$this->get_block( $bad );
+			$this->assertTrue( $this->call( 'handle_block_ip' )->is_error(), $bad );
+		}
+		$this->assertSame( array( '2001:db8:5:6::/64' ), $this->stored()['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_block_network_is_refused_when_it_holds_the_admins_own_address(): void {
+		$this->login();
+		$this->fake_request( array( 'REMOTE_ADDR' => '2001:db8:5:6::77' ) );
+		$this->get_block( '2001:db8:5:6::/64' );
+		$this->assertTrue( $this->call( 'handle_block_ip' )->is_error() );
+		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_log_row_offers_block_network_for_ipv6_only(): void {
+		$table = new \WPBouncer\Admin\LogListTable( $this->plugin->log() );
+		$m     = new \ReflectionMethod( $table, 'column_ip' );
+		$m->setAccessible( true );
+		$v6     = $m->invoke( $table, array( 'ip' => '2001:db8:5:6::abcd' ) );
+		$v4     = $m->invoke( $table, array( 'ip' => '198.51.100.7' ) );
+		$mapped = $m->invoke( $table, array( 'ip' => '::ffff:198.51.100.7' ) );
+
+		$this->assertStringContainsString( 'Block /64', $v6 );
+		$this->assertStringContainsString( rawurlencode( '2001:db8:5:6::/64' ), $v6 );
+		$this->assertStringNotContainsString( 'Block /', $v4 );
+		$this->assertStringNotContainsString( 'Block /', $mapped );
+	}
+
 	public function test_unlock_ip_rejects_invalid_addresses_and_ranges(): void {
 		$this->login();
 		foreach ( array( 'abc', '', '198.51.100.0/24' ) as $bad ) {
@@ -701,9 +913,12 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_test_alert_reports_the_mail_error(): void {
-		add_filter( 'wp_mail_from', static function () {
-			return 'broken address';
-		} );
+		add_filter(
+			'wp_mail_from',
+			static function () {
+				return 'broken address';
+			}
+		);
 		$this->login();
 		$this->post( 'wp_bouncer_test_alert' );
 
@@ -721,7 +936,16 @@ final class AdminControllerTest extends IntegrationTestCase {
 		add_filter(
 			'pre_http_request',
 			static function () {
-				return array( 'headers' => array(), 'body' => 'Forbidden', 'response' => array( 'code' => 403, 'message' => '' ), 'cookies' => array(), 'filename' => null );
+				return array(
+					'headers'  => array(),
+					'body'     => 'Forbidden',
+					'response' => array(
+						'code'    => 403,
+						'message' => '',
+					),
+					'cookies'  => array(),
+					'filename' => null,
+				);
 			}
 		);
 		$this->login_network();
@@ -738,7 +962,16 @@ final class AdminControllerTest extends IntegrationTestCase {
 		add_filter(
 			'pre_http_request',
 			static function () {
-				return array( 'headers' => array(), 'body' => 'wpb-php-ran', 'response' => array( 'code' => 200, 'message' => '' ), 'cookies' => array(), 'filename' => null );
+				return array(
+					'headers'  => array(),
+					'body'     => 'wpb-php-ran',
+					'response' => array(
+						'code'    => 200,
+						'message' => '',
+					),
+					'cookies'  => array(),
+					'filename' => null,
+				);
 			}
 		);
 		$this->login_network();
@@ -810,9 +1043,12 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_geo_import_reports_a_failed_download(): void {
-		add_filter( 'pre_http_request', static function () {
-			return new \WP_Error( 'http_request_failed', 'Connection refused' );
-		} );
+		add_filter(
+			'pre_http_request',
+			static function () {
+				return new \WP_Error( 'http_request_failed', 'Connection refused' );
+			}
+		);
 		$this->login_network();
 		$this->post( 'wp_bouncer_geo_import', array( 'geo_url' => 'https://93.184.216.34/geo.csv.gz' ) );
 
@@ -823,13 +1059,30 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_geo_import_by_url_starts_an_import_and_keeps_the_old_data_if_the_file_is_wrong(): void {
-		$this->plugin->geo_database()->insert_batch( array( array( 'from' => str_repeat( '0', 31 ) . '1', 'to' => str_repeat( '0', 31 ) . '2', 'country' => 'AU' ) ) );
+		$this->plugin->geo_database()->insert_batch(
+			array(
+				array(
+					'from'    => str_repeat( '0', 31 ) . '1',
+					'to'      => str_repeat( '0', 31 ) . '2',
+					'country' => 'AU',
+				),
+			)
+		);
 		$body = "<html><body>404 Not Found</body></html>\n";
 		add_filter(
 			'pre_http_request',
 			static function ( $pre, $args ) use ( $body ) {
 				file_put_contents( $args['filename'], $body );
-				return array( 'headers' => array(), 'body' => '', 'response' => array( 'code' => 200, 'message' => 'OK' ), 'cookies' => array(), 'filename' => $args['filename'] );
+				return array(
+					'headers'  => array(),
+					'body'     => '',
+					'response' => array(
+						'code'    => 200,
+						'message' => 'OK',
+					),
+					'cookies'  => array(),
+					'filename' => $args['filename'],
+				);
 			},
 			10,
 			2
@@ -851,7 +1104,16 @@ final class AdminControllerTest extends IntegrationTestCase {
 			'pre_http_request',
 			static function ( $pre, $args ) use ( $csv ) {
 				file_put_contents( $args['filename'], $csv );
-				return array( 'headers' => array(), 'body' => '', 'response' => array( 'code' => 200, 'message' => 'OK' ), 'cookies' => array(), 'filename' => $args['filename'] );
+				return array(
+					'headers'  => array(),
+					'body'     => '',
+					'response' => array(
+						'code'    => 200,
+						'message' => 'OK',
+					),
+					'cookies'  => array(),
+					'filename' => $args['filename'],
+				);
 			},
 			10,
 			2
@@ -879,7 +1141,13 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_geo_import_refuses_a_file_that_was_not_really_uploaded(): void {
 		$tmp = $this->uploads_dir . '/fake.csv';
 		copy( $this->fixture_csv(), $tmp );
-		$_FILES['geo_file'] = array( 'name' => 'fake.csv', 'tmp_name' => $tmp, 'error' => UPLOAD_ERR_OK, 'size' => filesize( $tmp ), 'type' => 'text/csv' );
+		$_FILES['geo_file'] = array(
+			'name'     => 'fake.csv',
+			'tmp_name' => $tmp,
+			'error'    => UPLOAD_ERR_OK,
+			'size'     => filesize( $tmp ),
+			'type'     => 'text/csv',
+		);
 		$this->login();
 		$this->post( 'wp_bouncer_geo_import' );
 
@@ -892,18 +1160,36 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_geo_import_rejects_the_wrong_file_type_and_upload_errors(): void {
 		$this->login();
-		$_FILES['geo_file'] = array( 'name' => 'geo.exe', 'tmp_name' => '/tmp/x', 'error' => UPLOAD_ERR_OK, 'size' => 1, 'type' => '' );
+		$_FILES['geo_file'] = array(
+			'name'     => 'geo.exe',
+			'tmp_name' => '/tmp/x',
+			'error'    => UPLOAD_ERR_OK,
+			'size'     => 1,
+			'type'     => '',
+		);
 		$this->post( 'wp_bouncer_geo_import' );
 		$r = $this->call( 'handle_geo_import' );
 		$this->assertStringContainsString( 'Please upload a .csv or .csv.gz file.', $r->message() );
 
-		$_FILES['geo_file'] = array( 'name' => 'geo.csv', 'tmp_name' => '', 'error' => UPLOAD_ERR_INI_SIZE, 'size' => 0, 'type' => '' );
+		$_FILES['geo_file'] = array(
+			'name'     => 'geo.csv',
+			'tmp_name' => '',
+			'error'    => UPLOAD_ERR_INI_SIZE,
+			'size'     => 0,
+			'type'     => '',
+		);
 		$this->post( 'wp_bouncer_geo_import' );
 		$r = $this->call( 'handle_geo_import' );
 		$this->assertTrue( $r->is_error() );
 		$this->assertStringContainsString( 'larger than this server accepts', $r->message() );
 
-		$_FILES['geo_file'] = array( 'name' => 'geo.csv', 'tmp_name' => '', 'error' => UPLOAD_ERR_PARTIAL, 'size' => 0, 'type' => '' );
+		$_FILES['geo_file'] = array(
+			'name'     => 'geo.csv',
+			'tmp_name' => '',
+			'error'    => UPLOAD_ERR_PARTIAL,
+			'size'     => 0,
+			'type'     => '',
+		);
 		$this->post( 'wp_bouncer_geo_import' );
 		$this->assertStringContainsString( 'interrupted', $this->call( 'handle_geo_import' )->message() );
 	}
@@ -1020,25 +1306,72 @@ final class AdminControllerTest extends IntegrationTestCase {
 	/* ---------------- request filters and helpers ---------------- */
 
 	public function test_log_filters_from_request_are_sanitised(): void {
-		$_REQUEST = array( 'rule' => 'WAF<script>', 'log_action' => 'blocked', 'country' => 'de', 's' => '  <b>needle</b> ', 'other' => 'x' );
+		$_REQUEST = array(
+			'rule'       => 'WAF<script>',
+			'log_action' => 'blocked',
+			'country'    => 'de',
+			's'          => '  <b>needle</b> ',
+			'other'      => 'x',
+		);
 
 		$filters = AdminController::log_filters_from_request();
 
-		$this->assertSame( array( 'rule' => 'wafscript', 'action' => 'blocked', 'country' => 'DE', 'search' => 'needle' ), $filters );
-		$this->assertSame( array( 'rule' => 'wafscript', 'log_action' => 'blocked', 'country' => 'DE', 's' => 'needle' ), AdminController::log_filters_to_args( $filters ) );
+		$this->assertSame(
+			array(
+				'rule'    => 'wafscript',
+				'action'  => 'blocked',
+				'country' => 'DE',
+				'search'  => 'needle',
+			),
+			$filters
+		);
+		$this->assertSame(
+			array(
+				'rule'       => 'wafscript',
+				'log_action' => 'blocked',
+				'country'    => 'DE',
+				's'          => 'needle',
+			),
+			AdminController::log_filters_to_args( $filters )
+		);
 	}
 
 	public function test_traffic_filters_from_request_accept_only_known_values(): void {
-		$_REQUEST = array( 'client' => 'bot', 'status' => '4xx', 'ip' => '198.51.100.1', 's' => 'x' );
-		$this->assertSame( array( 'client' => 'bot', 'status' => '4xx', 'ip' => '198.51.100.1', 'search' => 'x' ), AdminController::traffic_filters_from_request() );
+		$_REQUEST = array(
+			'client' => 'bot',
+			'status' => '4xx',
+			'ip'     => '198.51.100.1',
+			's'      => 'x',
+		);
+		$this->assertSame(
+			array(
+				'client' => 'bot',
+				'status' => '4xx',
+				'ip'     => '198.51.100.1',
+				'search' => 'x',
+			),
+			AdminController::traffic_filters_from_request()
+		);
 
-		$_REQUEST = array( 'client' => 'martian', 'status' => '9xx', 'ip' => 'nope' );
+		$_REQUEST = array(
+			'client' => 'martian',
+			'status' => '9xx',
+			'ip'     => 'nope',
+		);
 		$this->assertSame( array(), AdminController::traffic_filters_from_request() );
 	}
 
 	public function test_a_filter_cannot_smuggle_sql_into_the_log_query(): void {
-		$this->plugin->log()->record( array( 'ip' => '198.51.100.1', 'rule' => 'waf' ) );
-		$_REQUEST = array( 'rule' => "waf' OR '1'='1", 's' => "' OR 1=1 -- " );
+		$this->plugin->log()->record(
+			array(
+				'ip'   => '198.51.100.1',
+				'rule' => 'waf',
+			)
+		);
+		$_REQUEST = array(
+			'rule' => "waf' OR '1'='1",
+			's'    => "' OR 1=1 -- ",
+		);
 
 		$rows = $this->plugin->log()->query( AdminController::log_filters_from_request() );
 
@@ -1080,10 +1413,22 @@ final class AdminControllerTest extends IntegrationTestCase {
 	/* ---------------- IP setup fixes (RT-03) ---------------- */
 
 	public function test_ip_setup_trust_peer_adds_the_peer_and_keeps_the_source(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array(),
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '10.0.0.44' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => '10.0.0.44' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'    => 'trust_peer',
+				'header' => 'x_real_ip',
+				'peer'   => '10.0.0.44',
+			)
+		);
 
 		$r = $this->call( 'handle_ip_setup' );
 
@@ -1095,10 +1440,21 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_trust_peer_without_a_header_keeps_the_configured_one(): void {
-		$this->set_settings( array( 'ip_source' => 'cf_connecting_ip', 'trusted_proxies' => array( '192.0.2.0/24' ) ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'cf_connecting_ip',
+				'trusted_proxies' => array( '192.0.2.0/24' ),
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '10.0.0.44' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'peer' => '10.0.0.44' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'  => 'trust_peer',
+				'peer' => '10.0.0.44',
+			)
+		);
 
 		$this->call( 'handle_ip_setup' );
 
@@ -1108,9 +1464,21 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_trust_peer_can_switch_a_remote_addr_site_to_the_forwarding_header(): void {
-		$this->fake_request( array( 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '203.0.113.5' ) );
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '127.0.0.1',
+				'HTTP_X_REAL_IP' => '203.0.113.5',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => '127.0.0.1' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'    => 'trust_peer',
+				'header' => 'x_real_ip',
+				'peer'   => '127.0.0.1',
+			)
+		);
 
 		$this->call( 'handle_ip_setup' );
 
@@ -1122,7 +1490,13 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_ip_setup_trust_peer_refuses_when_there_is_no_header_to_read(): void {
 		$this->fake_request( array( 'REMOTE_ADDR' => '10.0.0.44' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'peer' => '10.0.0.44' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'  => 'trust_peer',
+				'peer' => '10.0.0.44',
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_ip_setup' );
@@ -1137,7 +1511,14 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$before = $this->stored();
 
 		foreach ( array( array( 'trust_peer', 'evil' ), array( 'trust_peer', 'remote_addr' ), array( 'nonsense', '' ) ) as $case ) {
-			$this->post( 'wp_bouncer_ip_setup', array( 'fix' => $case[0], 'header' => $case[1], 'peer' => '10.0.0.44' ) );
+			$this->post(
+				'wp_bouncer_ip_setup',
+				array(
+					'fix'    => $case[0],
+					'header' => $case[1],
+					'peer'   => '10.0.0.44',
+				)
+			);
 			$r = $this->call( 'handle_ip_setup' );
 			$this->assertTrue( $r->is_error(), implode( '/', $case ) );
 			$this->assertSame( $before, $this->stored() );
@@ -1145,7 +1526,12 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_use_remote_addr(): void {
-		$this->set_settings( array( 'ip_source' => 'x_forwarded_for', 'trusted_proxies' => array() ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_forwarded_for',
+				'trusted_proxies' => array(),
+			)
+		);
 		$this->login();
 		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'use_remote_addr' ) );
 
@@ -1156,10 +1542,24 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_leaves_the_other_settings_alone(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'mode' => 'monitor', 'rules' => array( 'waf' => array( 'xss' => false ) ), 'allowlist' => array( '203.0.113.0/24' ) ) );
+		$this->set_settings(
+			array(
+				'ip_source' => 'x_real_ip',
+				'mode'      => 'monitor',
+				'rules'     => array( 'waf' => array( 'xss' => false ) ),
+				'allowlist' => array( '203.0.113.0/24' ),
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.44' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => '198.51.100.44' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'    => 'trust_peer',
+				'header' => 'x_real_ip',
+				'peer'   => '198.51.100.44',
+			)
+		);
 
 		$this->call( 'handle_ip_setup' );
 
@@ -1194,9 +1594,20 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_saving_another_tab_keeps_the_ip_settings(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array( '127.0.0.1' ) ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array( '127.0.0.1' ),
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'rules', 'wp_bouncer' => array( 'rules' => array( 'waf' => array( 'enabled' => '1' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'rules',
+				'wp_bouncer' => array( 'rules' => array( 'waf' => array( 'enabled' => '1' ) ) ),
+			)
+		);
 
 		$this->call( 'handle_save' );
 
@@ -1209,14 +1620,43 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	/** @return array<string, mixed> Settings that exclude everyone but Germany. */
 	private function germany_only(): array {
-		return array( 'rules' => array( 'country' => array( 'enabled' => true, 'mode' => 'allow', 'countries' => array( 'DE' ), 'block_unknown' => true ) ) );
+		return array(
+			'rules' => array(
+				'country' => array(
+					'enabled'       => true,
+					'mode'          => 'allow',
+					'countries'     => array( 'DE' ),
+					'block_unknown' => true,
+				),
+			),
+		);
 	}
 
 	public function test_save_refuses_instead_of_allowlisting_a_shared_address(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array(),
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'countries', 'wp_bouncer' => array( 'rules' => array( 'country' => array( 'enabled' => '1', 'mode' => 'allow', 'countries' => 'DE', 'block_unknown' => '1' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'countries',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'country' => array(
+							'enabled'       => '1',
+							'mode'          => 'allow',
+							'countries'     => 'DE',
+							'block_unknown' => '1',
+						),
+					),
+				),
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_save' );
@@ -1231,7 +1671,22 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_save_still_allowlists_an_address_that_can_be_banned(): void {
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'countries', 'wp_bouncer' => array( 'rules' => array( 'country' => array( 'enabled' => '1', 'mode' => 'allow', 'countries' => 'DE', 'block_unknown' => '1' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'countries',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'country' => array(
+							'enabled'       => '1',
+							'mode'          => 'allow',
+							'countries'     => 'DE',
+							'block_unknown' => '1',
+						),
+					),
+				),
+			)
+		);
 
 		$r = $this->call( 'handle_save' );
 
@@ -1241,10 +1696,30 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_ip_setup_allowlists_the_new_address_and_not_the_proxy(): void {
 		// After trusting the peer, the admin's resolved IP is the forwarded 203.0.113.9 (bannable) ...
-		$this->set_settings( array_replace_recursive( $this->germany_only(), array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '10.0.0.5', 'HTTP_X_REAL_IP' => '203.0.113.9' ) );
+		$this->set_settings(
+			array_replace_recursive(
+				$this->germany_only(),
+				array(
+					'ip_source'       => 'x_real_ip',
+					'trusted_proxies' => array(),
+				)
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '10.0.0.5',
+				'HTTP_X_REAL_IP' => '203.0.113.9',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => '10.0.0.5' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'    => 'trust_peer',
+				'header' => 'x_real_ip',
+				'peer'   => '10.0.0.5',
+			)
+		);
 
 		$this->call( 'handle_ip_setup' );
 
@@ -1255,8 +1730,21 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_ip_setup_use_remote_addr_refuses_a_change_that_would_block_a_shared_address(): void {
 		// ... while switching to the connection address makes the admin the shared loopback proxy: refuse.
-		$this->set_settings( array_replace_recursive( $this->germany_only(), array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array( '127.0.0.1' ) ) ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '203.0.113.9' ) );
+		$this->set_settings(
+			array_replace_recursive(
+				$this->germany_only(),
+				array(
+					'ip_source'       => 'x_real_ip',
+					'trusted_proxies' => array( '127.0.0.1' ),
+				)
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '127.0.0.1',
+				'HTTP_X_REAL_IP' => '203.0.113.9',
+			)
+		);
 		$this->login();
 		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'use_remote_addr' ) );
 		$before = $this->stored();
@@ -1269,7 +1757,15 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_use_remote_addr_allowlists_a_bannable_connection_address(): void {
-		$this->set_settings( array_replace_recursive( $this->germany_only(), array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) ) );
+		$this->set_settings(
+			array_replace_recursive(
+				$this->germany_only(),
+				array(
+					'ip_source'       => 'x_real_ip',
+					'trusted_proxies' => array(),
+				)
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
 		$this->login();
 		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'use_remote_addr' ) );
@@ -1282,13 +1778,25 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_trust_peer_refuses_a_peer_that_differs_from_the_connection(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array(),
+			)
+		);
 		$this->fake_request( array( 'REMOTE_ADDR' => '10.0.0.44' ) );
 		$this->login();
 		$before = $this->stored();
 
 		foreach ( array( '10.0.0.45', '', '0.0.0.0/0' ) as $peer ) {
-			$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => $peer ) );
+			$this->post(
+				'wp_bouncer_ip_setup',
+				array(
+					'fix'    => 'trust_peer',
+					'header' => 'x_real_ip',
+					'peer'   => $peer,
+				)
+			);
 			$r = $this->call( 'handle_ip_setup' );
 			$this->assertTrue( $r->is_error(), $peer );
 			$this->assertSame( $before, $this->stored() );
@@ -1296,10 +1804,27 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_ip_setup_trust_peer_refuses_a_public_peer_server_side(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.44', 'HTTP_X_REAL_IP' => '203.0.113.5' ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array(),
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '198.51.100.44',
+				'HTTP_X_REAL_IP' => '203.0.113.5',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_ip_setup', array( 'fix' => 'trust_peer', 'header' => 'x_real_ip', 'peer' => '198.51.100.44' ) );
+		$this->post(
+			'wp_bouncer_ip_setup',
+			array(
+				'fix'    => 'trust_peer',
+				'header' => 'x_real_ip',
+				'peer'   => '198.51.100.44',
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_ip_setup' );
@@ -1310,10 +1835,35 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	/** R2: a refused header makes the proxy the counter subject, but the proxy must never be allowlisted. */
 	public function test_save_refuses_instead_of_allowlisting_the_proxy_when_the_header_was_refused(): void {
-		$this->set_settings( array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array( '127.0.0.1' ) ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '192.168.1.20' ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_real_ip',
+				'trusted_proxies' => array( '127.0.0.1' ),
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '127.0.0.1',
+				'HTTP_X_REAL_IP' => '192.168.1.20',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'countries', 'wp_bouncer' => array( 'rules' => array( 'country' => array( 'enabled' => '1', 'mode' => 'allow', 'countries' => 'DE', 'block_unknown' => '1' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'countries',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'country' => array(
+							'enabled'       => '1',
+							'mode'          => 'allow',
+							'countries'     => 'DE',
+							'block_unknown' => '1',
+						),
+					),
+				),
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_save' );
@@ -1325,10 +1875,34 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	public function test_saving_a_new_ip_source_is_checked_against_the_address_it_would_resolve_to(): void {
 		// Today remote_addr: the admin is 10.0.0.5. Switching to the header makes the admin 203.0.113.9.
-		$this->set_settings( array( 'ip_source' => 'remote_addr', 'rules' => array( 'ip_blocklist' => array( 'enabled' => true, 'ips' => array( '203.0.113.9' ) ) ) ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '127.0.0.1', 'HTTP_X_REAL_IP' => '203.0.113.9' ) );
+		$this->set_settings(
+			array(
+				'ip_source' => 'remote_addr',
+				'rules'     => array(
+					'ip_blocklist' => array(
+						'enabled' => true,
+						'ips'     => array( '203.0.113.9' ),
+					),
+				),
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'    => '127.0.0.1',
+				'HTTP_X_REAL_IP' => '203.0.113.9',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'general', 'wp_bouncer' => array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => '127.0.0.1' ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'general',
+				'wp_bouncer' => array(
+					'ip_source'       => 'x_real_ip',
+					'trusted_proxies' => '127.0.0.1',
+				),
+			)
+		);
 
 		$this->call( 'handle_save' );
 
@@ -1336,10 +1910,35 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_save_refuses_instead_of_allowlisting_an_unlisted_cdn_edge(): void {
-		$this->set_settings( array( 'ip_source' => 'x_forwarded_for', 'trusted_proxies' => array( '198.51.100.1' ) ) );
-		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.7', 'HTTP_X_FORWARDED_FOR' => '203.0.113.99' ) );
+		$this->set_settings(
+			array(
+				'ip_source'       => 'x_forwarded_for',
+				'trusted_proxies' => array( '198.51.100.1' ),
+			)
+		);
+		$this->fake_request(
+			array(
+				'REMOTE_ADDR'          => '203.0.113.7',
+				'HTTP_X_FORWARDED_FOR' => '203.0.113.99',
+			)
+		);
 		$this->login();
-		$this->post( 'wp_bouncer_save', array( 'tab' => 'countries', 'wp_bouncer' => array( 'rules' => array( 'country' => array( 'enabled' => '1', 'mode' => 'allow', 'countries' => 'DE', 'block_unknown' => '1' ) ) ) ) );
+		$this->post(
+			'wp_bouncer_save',
+			array(
+				'tab'        => 'countries',
+				'wp_bouncer' => array(
+					'rules' => array(
+						'country' => array(
+							'enabled'       => '1',
+							'mode'          => 'allow',
+							'countries'     => 'DE',
+							'block_unknown' => '1',
+						),
+					),
+				),
+			)
+		);
 		$before = $this->stored();
 
 		$r = $this->call( 'handle_save' );

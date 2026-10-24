@@ -8,6 +8,7 @@
 namespace WPBouncer\Admin;
 
 use WPBouncer\Alerts\AlertNotifier;
+use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\IpResolver;
 use WPBouncer\Firewall\Request;
 use WPBouncer\Geo\Countries;
@@ -23,6 +24,7 @@ use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Settings;
 use WPBouncer\SettingsDiff;
 use WPBouncer\Support\CsvSanitizer;
+use WPBouncer\Support\CounterSubject;
 use WPBouncer\Support\IpUtils;
 use WPBouncer\Traffic\ClientClassifier;
 
@@ -734,13 +736,14 @@ final class AdminController {
 	 * Add one IP to the blocklist (from the log, traffic log or dashboard).
 	 *
 	 * GET link carrying a per-address nonce: a nonce made for one address is
-	 * refused for any other. Single addresses only, no ranges.
+	 * refused for any other. A single address, or the counter-subject network
+	 * of an IPv6 address (the log shows one address per /64, see CounterSubject).
 	 */
 	public function handle_block_ip(): void {
 		$ip = isset( $_GET['ip'] ) ? trim( sanitize_text_field( wp_unslash( $_GET['ip'] ) ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- the nonce is bound to this value and checked by $this->guard() on the next line.
 		$this->guard( 'wp_bouncer_block_ip|' . $ip );
 		$back = isset( $_GET['back'] ) && 'traffic' === $_GET['back'] ? 'traffic' : 'log'; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- nonce and capability checked in $this->guard() above.
-		if ( ! IpUtils::is_valid( $ip ) ) {
+		if ( ! IpUtils::is_valid( $ip ) && ! self::is_subject_network( $ip ) ) {
 			$this->back( $back, 'ip_invalid', array(), true );
 		}
 		if ( IpUtils::in_range( $this->plugin->client_ip(), $ip ) ) {
@@ -753,6 +756,20 @@ final class AdminController {
 		$this->back( $back, 'ip_blocked', array( 'ip' => $ip ) );
 	}
 
+	/**
+	 * Is the value exactly the counter-subject network of an IPv6 address (e.g. 2001:db8:1:2::/64)?
+	 * Only those ranges can be blocked from the log, never an arbitrary range.
+	 *
+	 * @param string $value Candidate "network/prefix".
+	 */
+	public static function is_subject_network( string $value ): bool {
+		if ( ! str_contains( $value, '/' ) || ! IpUtils::is_valid_range( $value ) ) {
+			return false;
+		}
+		list( $network, $bits ) = explode( '/', $value, 2 );
+		return IpUtils::is_ipv6( $network ) && CounterSubject::of( $network, (int) $bits ) === $value;
+	}
+
 	/** Lift login lockouts and every temporary ban for an IP. */
 	public function handle_unlock_ip(): void {
 		$this->guard( 'wp_bouncer_unlock_ip' );
@@ -761,11 +778,20 @@ final class AdminController {
 			$this->back( 'tools', 'ip_unlock_invalid', array(), true );
 		}
 		$this->plugin->login_guard()->clear( $ip );
-		$this->plugin->store()->delete( RateLimitRule::ban_key( $ip ) );
-		$this->plugin->store()->delete( RateLimitRule::counter_key( $ip ) );
-		$this->plugin->store()->delete( SensitiveFileRule::ban_key( $ip ) );
-		$this->plugin->store()->delete( NotFoundFloodRule::ban_key( $ip ) );
-		$this->plugin->store()->delete( NotFoundFloodRule::counter_key( $ip ) );
+		// Subject keys (the whole IPv6 network) and the exact-string keys of bans placed before the upgrade.
+		$counter_keys = array_merge( SensitiveFileRule::keys_for( $ip ), NotFoundFloodRule::keys_for( $ip ) );
+		$store_keys   = array_merge(
+			RateLimitRule::keys_for( $ip ),
+			$counter_keys,
+			Firewall::log_keys( $ip, array( RateLimitRule::ID, SensitiveFileRule::ID, NotFoundFloodRule::ID ) )
+		);
+		foreach ( $store_keys as $key ) {
+			$this->plugin->store()->delete( $key );
+		}
+		$counter = $this->plugin->attempt_counter();
+		foreach ( $counter_keys as $key ) {
+			$counter->delete( $key );
+		}
 		$this->back( 'tools', 'ip_unlocked', array( 'ip' => $ip ) );
 	}
 
@@ -823,6 +849,10 @@ final class AdminController {
 	public function handle_clear_log(): void {
 		$this->guard( 'wp_bouncer_clear_log' );
 		$this->plugin->log()->clear();
+		/**
+		 * Fires after the activity log was emptied.
+		 */
+		do_action( 'wp_bouncer_log_cleared' );
 		// Clearing the log is how an intruder covers tracks: leave a fresh row and tell the owner.
 		$this->write_audit_row( 'Activity log cleared by ' . $this->actor() );
 		$this->plugin->alerts()->on_log_cleared();
@@ -987,6 +1017,14 @@ final class AdminController {
 		if ( isset( $filters['country'] ) ) {
 			$filters['country'] = strtoupper( $filters['country'] );
 		}
+		if ( ! empty( $_REQUEST['log_ip'] ) ) {
+			// Exact match, so only a well-formed address is accepted. "log_ip": the redirect after blocking an IP already carries "ip".
+			$ip = sanitize_text_field( wp_unslash( $_REQUEST['log_ip'] ) );
+			if ( IpUtils::is_valid( $ip ) ) {
+				// The log stores canonical text, so "::FFFF:1.2.3.4" or an upper-case IPv6 must match it too.
+				$filters['ip'] = IpUtils::canonical( $ip );
+			}
+		}
 		if ( ! empty( $_REQUEST['s'] ) ) {
 			$filters['search'] = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) );
 		}
@@ -1005,6 +1043,7 @@ final class AdminController {
 			'rule'    => 'rule',
 			'action'  => 'log_action',
 			'country' => 'country',
+			'ip'      => 'log_ip',
 			'search'  => 's',
 		);
 		$args = array();

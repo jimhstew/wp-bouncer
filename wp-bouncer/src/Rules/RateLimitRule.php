@@ -11,6 +11,7 @@ use WPBouncer\Firewall\Request;
 use WPBouncer\Firewall\Verdict;
 use WPBouncer\Settings;
 use WPBouncer\Storage\CounterStoreInterface;
+use WPBouncer\Support\CounterSubject;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -62,7 +63,7 @@ final class RateLimitRule extends AbstractRule {
 	public function inspect( Request $request ): ?Verdict {
 		$ip = $request->key_ip();
 		// Nothing is counted or banned for loopback, proxy or shared (fallback) addresses.
-		if ( '' === $ip || $request->is_trusted() || ! $request->can_be_banned() ) {
+		if ( '' === $ip || '' === CounterSubject::of( $ip ) || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return null;
 		}
 
@@ -85,20 +86,35 @@ final class RateLimitRule extends AbstractRule {
 	}
 
 	/**
-	 * Store key for an IP's request counter.
+	 * Store key for an IP's request counter (by counter subject: the IPv4 address or the IPv6 network).
 	 *
 	 * @param string $ip Client IP.
 	 */
 	public static function counter_key( string $ip ): string {
-		return 'rl_count:' . $ip;
+		return 'rl_count:' . CounterSubject::key( $ip );
 	}
 
 	/**
-	 * Store key for an IP's ban.
+	 * Store key for an IP's ban (by counter subject, so one read covers the whole IPv6 network).
 	 *
 	 * @param string $ip Client IP.
 	 */
 	public static function ban_key( string $ip ): string {
-		return 'rl_ban:' . $ip;
+		return 'rl_ban:' . CounterSubject::key( $ip );
+	}
+
+	/**
+	 * Every key to clear when unlocking an address: subject keys and the exact-string keys of earlier versions.
+	 *
+	 * @param string $ip Client IP as typed.
+	 * @return string[]
+	 */
+	public static function keys_for( string $ip ): array {
+		$keys = array();
+		foreach ( CounterSubject::keys( $ip ) as $part ) {
+			$keys[] = 'rl_ban:' . $part;
+			$keys[] = 'rl_count:' . $part;
+		}
+		return $keys;
 	}
 }

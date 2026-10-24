@@ -20,7 +20,7 @@ final class Requests {
 	 * @param array<string, mixed> $args {
 	 *     @type string $ip, $method, $uri, $ua, $body
 	 *     @type array  $query, $post, $server
-	 *     @type bool   $logged_in, $trusted, $local, $bannable
+	 *     @type bool   $logged_in, $trusted, $editor, $local, $bannable
 	 * }
 	 */
 	public static function make( array $args = array() ): Request {
@@ -33,6 +33,9 @@ final class Requests {
 
 		$logged_in = (bool) ( $args['logged_in'] ?? false );
 		$trusted   = (bool) ( $args['trusted'] ?? false );
+		$basic_editor = (bool) ( $args['basic_editor'] ?? false );
+		$nonce_ok     = (bool) ( $args['nonce_ok'] ?? true );
+		$editor    = (bool) ( $args['editor'] ?? false );
 		$body      = (string) ( $args['body'] ?? '' );
 
 		return new Request(
@@ -48,6 +51,15 @@ final class Requests {
 				},
 				'trusted'     => static function () use ( $trusted ) {
 					return $trusted;
+				},
+				'basic_editor' => static function () use ( $basic_editor ) {
+					return $basic_editor;
+				},
+				'nonce_check'  => static function () use ( $nonce_ok ) {
+					return $nonce_ok;
+				},
+				'editor'      => static function () use ( $editor ) {
+					return $editor;
 				},
 				'local'       => (bool) ( $args['local'] ?? false ),
 				'bannable'    => (bool) ( $args['bannable'] ?? true ),

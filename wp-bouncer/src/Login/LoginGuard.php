@@ -317,9 +317,10 @@ final class LoginGuard {
 	public function clear( string $ip ): void {
 		$this->forget( $ip );
 		// Bans and counts placed before IPv6 subjects existed are keyed by the exact string.
-		$typed = trim( $ip );
-		$this->store->delete( 'login_lock:' . $typed );
-		$this->store->delete( 'login_fail:' . $typed );
+		foreach ( CounterSubject::keys( $ip ) as $part ) {
+			$this->store->delete( 'login_lock:' . $part );
+			$this->store->delete( 'login_fail:' . $part );
+		}
 	}
 
 	/**

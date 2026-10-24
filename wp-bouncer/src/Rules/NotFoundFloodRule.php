@@ -12,6 +12,7 @@ use WPBouncer\Firewall\Verdict;
 use WPBouncer\Settings;
 use WPBouncer\Storage\AtomicCounterInterface;
 use WPBouncer\Storage\CounterStoreInterface;
+use WPBouncer\Support\CounterSubject;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -85,7 +86,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 */
 	public function inspect( Request $request ): ?Verdict {
 		$ip = $request->key_ip();
-		if ( '' === $ip || $request->is_trusted() || ! $request->can_be_banned() ) {
+		if ( '' === $ip || '' === CounterSubject::of( $ip ) || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return null;
 		}
 		if ( null !== $this->store->get( self::ban_key( $ip ) ) ) {
@@ -138,7 +139,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param Request $request Request.
 	 */
 	public function counts( Request $request ): bool {
-		if ( ! $this->is_enabled() || '' === $request->ip() || $request->is_trusted() || ! $request->can_be_banned() ) {
+		if ( ! $this->is_enabled() || '' === CounterSubject::of( $request->key_ip() ) || $request->is_trusted() || ! $request->can_be_banned() ) {
 			return false;
 		}
 		if ( preg_match( self::ASSET, $request->path() ) || $request->is_exempt_subresource() ) {
@@ -161,7 +162,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function counter_key( string $ip ): string {
-		return 'nf_count:' . $ip;
+		return 'nf_count:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -170,7 +171,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function foreign_counter_key( string $ip ): string {
-		return 'nf_count_x:' . $ip;
+		return 'nf_count_x:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -179,7 +180,7 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function foreign_ban_key( string $ip ): string {
-		return 'nf_xban:' . $ip;
+		return 'nf_xban:' . CounterSubject::key( $ip );
 	}
 
 	/**
@@ -188,6 +189,22 @@ final class NotFoundFloodRule extends AbstractRule {
 	 * @param string $ip Client IP.
 	 */
 	public static function ban_key( string $ip ): string {
-		return 'nf_ban:' . $ip;
+		return 'nf_ban:' . CounterSubject::key( $ip );
+	}
+
+	/**
+	 * Every key to clear when unlocking an address: subject keys and the exact-string keys of earlier versions.
+	 *
+	 * @param string $ip Client IP as typed.
+	 * @return string[]
+	 */
+	public static function keys_for( string $ip ): array {
+		$keys = array();
+		foreach ( CounterSubject::keys( $ip ) as $part ) {
+			foreach ( array( 'nf_ban:', 'nf_count:', 'nf_count_x:', 'nf_xban:' ) as $prefix ) {
+				$keys[] = $prefix . $part;
+			}
+		}
+		return $keys;
 	}
 }

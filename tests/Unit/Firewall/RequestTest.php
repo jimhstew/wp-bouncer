@@ -122,4 +122,25 @@ final class RequestTest extends TestCase {
 		$this->assertSame( 'DE', $req->header( 'GEOIP_COUNTRY_CODE' ) );
 		$this->assertSame( 'a', $req->header( 'X-Foo' ) );
 	}
+
+	/** @dataProvider api_paths */
+	public function test_core_authenticates_application_passwords_only_on_api_requests( array $args, bool $api ): void {
+		$this->assertSame( $api, Requests::make( $args )->is_api_auth_request() );
+	}
+
+	public static function api_paths(): array {
+		return array(
+			'wp-json'                 => array( array( 'uri' => '/wp-json/wp/v2/posts' ), true ),
+			'index.php/wp-json'       => array( array( 'uri' => '/index.php/wp-json/wp/v2/posts' ), true ),
+			'front page rest_route'   => array( array( 'uri' => '/?rest_route=/wp/v2/posts', 'query' => array( 'rest_route' => '/wp/v2/posts' ) ), true ),
+			'index.php rest_route'    => array( array( 'uri' => '/index.php?rest_route=/x', 'query' => array( 'rest_route' => '/x' ) ), true ),
+			'pretty page rest_route'  => array( array( 'uri' => '/about/?rest_route=/x', 'query' => array( 'rest_route' => '/x' ) ), true ),
+			'xmlrpc'                  => array( array( 'uri' => '/xmlrpc.php' ), true ),
+			'admin-ajax rest_route'   => array( array( 'uri' => '/wp-admin/admin-ajax.php?rest_route=/x', 'query' => array( 'rest_route' => '/x' ) ), false ),
+			'admin-post rest_route'   => array( array( 'uri' => '/wp-admin/admin-post.php?rest_route=/x', 'query' => array( 'rest_route' => '/x' ) ), false ),
+			'wp-login rest_route'     => array( array( 'uri' => '/wp-login.php?rest_route=/x', 'query' => array( 'rest_route' => '/x' ) ), false ),
+			'plain front-end path'    => array( array( 'uri' => '/contact-us/' ), false ),
+			'admin-ajax'              => array( array( 'uri' => '/wp-admin/admin-ajax.php' ), false ),
+		);
+	}
 }

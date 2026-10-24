@@ -139,6 +139,7 @@ final class Settings {
 					'xss'             => true,
 					'traversal'       => true,
 					'code_injection'  => true,
+					'inspect_json'    => true,
 					'excluded_params' => array(),
 				),
 				'user_enumeration' => array(
@@ -379,6 +380,7 @@ final class Settings {
 			'xss'             => self::bool( $rule['xss'] ?? false ),
 			'traversal'       => self::bool( $rule['traversal'] ?? false ),
 			'code_injection'  => self::bool( $rule['code_injection'] ?? false ),
+			'inspect_json'    => self::bool( $rule['inspect_json'] ?? false ),
 			'excluded_params' => array_values(
 				array_unique(
 					array_filter(

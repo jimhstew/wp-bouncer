@@ -19,6 +19,9 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Request {
 
+	/** Default cap, in bytes, for body(). WafRule reads JSON bodies through body_limited() with its own cap. */
+	public const BODY_CAP = 1048576;
+
 	/**
 	 * Client IP address.
 	 *
@@ -74,10 +77,38 @@ final class Request {
 	 * @var callable(): bool
 	 */
 	private $trusted_resolver;
+
+	/**
+	 * Returns whether the user can edit posts, or null.
+	 *
+	 * @var callable|null
+	 */
+	private $editor_resolver;
+
+	/**
+	 * Returns whether valid application-password credentials of an editor came with the request.
+	 *
+	 * @var callable|null
+	 */
+	private $basic_editor_resolver;
+
+	/**
+	 * Verifies a REST nonce, or null.
+	 *
+	 * @var callable|null
+	 */
+	private $nonce_checker;
+
+	/**
+	 * Cached can_edit_posts() answer.
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $editor = null;
 	/**
 	 * Reads the raw request body.
 	 *
-	 * @var callable(): string
+	 * @var callable(int): string
 	 */
 	private $body_reader;
 
@@ -128,6 +159,20 @@ final class Request {
 	private ?string $body = null;
 
 	/**
+	 * Body read by body_limited().
+	 *
+	 * @var string|null
+	 */
+	private ?string $limited = null;
+
+	/**
+	 * Cap used for $limited.
+	 *
+	 * @var int
+	 */
+	private int $limited_cap = 0;
+
+	/**
 	 * Origins (or bare host names) that count as this site, or a closure returning them (evaluated when needed, so filters added later apply).
 	 *
 	 * @var string[]|\Closure
@@ -155,6 +200,7 @@ final class Request {
 	 *     @type array    $server      $_SERVER (used for headers).
 	 *     @type callable $logged_in   Returns whether a user is logged in.
 	 *     @type callable $trusted     Returns whether the user is a site administrator.
+	 *     @type callable $editor      Returns whether the user can edit posts.
 	 *     @type callable $body        Returns the raw request body.
 	 *     @type string[]|\Closure $own_hosts Origins (or bare host names) that count as this site, or a closure returning them. Default none.
 	 *     @type callable $body_stream Opens the raw request body as a readable stream (no size cap).
@@ -178,16 +224,19 @@ final class Request {
 		$this->subject   = (string) ( $args['subject'] ?? '' );
 		$this->bannable  = ! array_key_exists( 'bannable', $args ) || ! empty( $args['bannable'] );
 
-		$this->logged_in_resolver = $args['logged_in'] ?? static function (): bool {
+		$this->logged_in_resolver    = $args['logged_in'] ?? static function (): bool {
 			return false;
 		};
-		$this->trusted_resolver   = $args['trusted'] ?? static function (): bool {
+		$this->basic_editor_resolver = isset( $args['basic_editor'] ) && is_callable( $args['basic_editor'] ) ? $args['basic_editor'] : null;
+		$this->nonce_checker         = isset( $args['nonce_check'] ) && is_callable( $args['nonce_check'] ) ? $args['nonce_check'] : null;
+		$this->editor_resolver       = isset( $args['editor'] ) && is_callable( $args['editor'] ) ? $args['editor'] : null;
+		$this->trusted_resolver      = $args['trusted'] ?? static function (): bool {
 			return false;
 		};
-		$this->body_reader        = $args['body'] ?? static function (): string {
+		$this->body_reader           = $args['body'] ?? static function ( int $limit = 0 ): string { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- same signature as the real reader.
 			return '';
 		};
-		$this->stream_opener      = isset( $args['body_stream'] ) && is_callable( $args['body_stream'] ) ? $args['body_stream'] : null;
+		$this->stream_opener         = isset( $args['body_stream'] ) && is_callable( $args['body_stream'] ) ? $args['body_stream'] : null;
 	}
 
 	/**
@@ -203,29 +252,35 @@ final class Request {
 	 * @param bool                 $bannable  Bans and counters may be kept for this client.
 	 * @param string               $subject   Key for bans and counters when it must differ from the IP.
 	 * @param string[]|\Closure    $own_hosts Origins (or bare host names) that count as this site, or a closure returning them.
+	 * @param callable|null        $editor    Returns whether the user can edit posts (null: no).
+	 * @param callable|null        $basic_editor Returns whether valid application-password credentials of an editor came with the request.
+	 * @param callable|null        $nonce_check  Verifies a REST nonce: fn( string ): bool (null: presence is enough).
 	 */
-	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '', \Closure|array $own_hosts = array() ): self {
+	public static function from_globals( string $ip, array $server, array $get, array $post, callable $logged_in, callable $trusted, bool $local = false, bool $bannable = true, string $subject = '', \Closure|array $own_hosts = array(), ?callable $editor = null, ?callable $basic_editor = null, ?callable $nonce_check = null ): self {
 		return new self(
 			array(
-				'ip'          => $ip,
-				'method'      => (string) ( $server['REQUEST_METHOD'] ?? 'GET' ),
-				'uri'         => (string) ( $server['REQUEST_URI'] ?? '/' ),
-				'query'       => $get,
-				'post'        => $post,
-				'server'      => $server,
-				'logged_in'   => $logged_in,
-				'trusted'     => $trusted,
-				'local'       => $local,
-				'bannable'    => $bannable,
-				'subject'     => $subject,
-				'own_hosts'   => $own_hosts,
-				'body_stream' => static function () {
+				'ip'           => $ip,
+				'method'       => (string) ( $server['REQUEST_METHOD'] ?? 'GET' ),
+				'uri'          => (string) ( $server['REQUEST_URI'] ?? '/' ),
+				'query'        => $get,
+				'post'         => $post,
+				'server'       => $server,
+				'logged_in'    => $logged_in,
+				'trusted'      => $trusted,
+				'editor'       => $editor,
+				'basic_editor' => $basic_editor,
+				'nonce_check'  => $nonce_check,
+				'local'        => $local,
+				'bannable'     => $bannable,
+				'subject'      => $subject,
+				'own_hosts'    => $own_hosts,
+				'body_stream'  => static function () {
 					// Not capped: lets a rule read a large body in chunks without holding it in memory.
 					return fopen( 'php://input', 'rb' ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- php://input is not a file the Filesystem API can open.
 				},
-				'body'        => static function (): string {
+				'body'         => static function ( int $limit = self::BODY_CAP ): string {
 					// php://input can be read more than once on PHP >= 5.6, so WordPress still sees it later.
-					$body = file_get_contents( 'php://input', false, null, 0, 1048576 );
+					$body = file_get_contents( 'php://input', false, null, 0, $limit );
 					return false === $body ? '' : $body;
 				},
 			)
@@ -339,10 +394,54 @@ final class Request {
 		return (string) ( $this->server[ $name ] ?? '' );
 	}
 
+	/**
+	 * Is the body declared as JSON, the way WordPress decides it (wp_is_json_media_type())?
+	 *
+	 * Covers application/json, any application/*+json, +oembed, and lists such as
+	 * "text/plain, application/json". Doesn't read the body.
+	 */
+	public function is_json(): bool {
+		$type = (string) ( $this->server['CONTENT_TYPE'] ?? $this->server['HTTP_CONTENT_TYPE'] ?? '' );
+		return 1 === preg_match( '/(^|\s|,)application\/([\w!#\$&-\^\.\+]+\+)?json(\+oembed)?($|\s|;|,)/i', $type );
+	}
+
+	/**
+	 * Could an undeclared body still be JSON? False for multipart form data
+	 * (php://input is empty there), an empty body (CONTENT_LENGTH 0), and a GET or HEAD
+	 * without Transfer-Encoding. Urlencoded bodies are sniffed too, because a
+	 * plugin may json_decode the raw body whatever the type says. Doesn't read the body.
+	 */
+	public function could_be_json(): bool {
+		$length = (string) ( $this->server['CONTENT_LENGTH'] ?? $this->server['HTTP_CONTENT_LENGTH'] ?? '' );
+		if ( '0' === $length ) {
+			return false;
+		}
+		if ( in_array( $this->method, array( 'GET', 'HEAD' ), true ) && empty( $this->server['HTTP_TRANSFER_ENCODING'] ) ) {
+			return false;
+		}
+		$type = strtolower( ltrim( (string) ( $this->server['CONTENT_TYPE'] ?? $this->server['HTTP_CONTENT_TYPE'] ?? '' ) ) );
+		return 0 !== strpos( $type, 'multipart/form-data' );
+	}
+
+	/**
+	 * At most $cap + 1 bytes of the raw body (one extra byte tells the caller it was cut off).
+	 *
+	 * @param int $cap Largest body the caller accepts.
+	 */
+	public function body_limited( int $cap ): string {
+		$cap = max( 0, $cap );
+		if ( null !== $this->limited && ( $this->limited_cap >= $cap || strlen( $this->limited ) <= $this->limited_cap ) ) {
+			return substr( $this->limited, 0, $cap + 1 );
+		}
+		$this->limited     = substr( (string) call_user_func( $this->body_reader, $cap + 1 ), 0, $cap + 1 );
+		$this->limited_cap = $cap;
+		return $this->limited;
+	}
+
 	/** Raw request body (read lazily, capped at 1 MB). */
 	public function body(): string {
 		if ( null === $this->body ) {
-			$this->body = (string) call_user_func( $this->body_reader );
+			$this->body = (string) call_user_func( $this->body_reader, self::BODY_CAP );
 		}
 		return $this->body;
 	}
@@ -387,6 +486,46 @@ final class Request {
 			$this->trusted = (bool) call_user_func( $this->trusted_resolver );
 		}
 		return $this->trusted;
+	}
+
+	/**
+	 * Can the user edit posts (editor, author, contributor and up)?
+	 *
+	 * Their saves go through JSON REST calls with HTML and code, so the WAF's
+	 * JSON scan skips them. Two ways in. Valid application-password credentials of
+	 * such a user (checked by the basic_editor resolver; Basic auth isn't sent
+	 * automatically across sites, so no nonce is needed). Or a logged-in user with
+	 * a nonce (X-WP-Nonce header or _wpnonce parameter), so a cross-site request
+	 * riding on a cookie is scanned like anyone else's; on REST paths the nonce
+	 * must verify as a "wp_rest" nonce. False when no resolver was given.
+	 */
+	public function can_edit_posts(): bool {
+		if ( null === $this->editor ) {
+			$this->editor = $this->basic_editor() || ( $this->has_valid_nonce() && null !== $this->editor_resolver && (bool) call_user_func( $this->editor_resolver ) );
+		}
+		return $this->editor;
+	}
+
+	/** Did the request bring valid application-password credentials of an editor? */
+	private function basic_editor(): bool {
+		return null !== $this->basic_editor_resolver && (bool) call_user_func( $this->basic_editor_resolver );
+	}
+
+	/** Does the request carry a nonce (verified as a REST nonce on REST paths)? */
+	private function has_valid_nonce(): bool {
+		$nonce = $this->header( 'X-WP-Nonce' );
+		foreach ( array( $this->query, $this->post ) as $source ) {
+			if ( '' === $nonce && isset( $source['_wpnonce'] ) && is_string( $source['_wpnonce'] ) ) {
+				$nonce = $source['_wpnonce'];
+			}
+		}
+		if ( '' === $nonce ) {
+			return false;
+		}
+		if ( '' !== $this->rest_route() && null !== $this->nonce_checker ) {
+			return (bool) call_user_func( $this->nonce_checker, $nonce );
+		}
+		return true;
 	}
 
 	/**
@@ -456,6 +595,23 @@ final class Request {
 	/** Is this a request to wp-login.php (including /wp-login.php/extra PATH_INFO)? */
 	public function is_login(): bool {
 		return self::has_segment( $this->path, '/wp-login.php' );
+	}
+
+	/**
+	 * Is this a request that core authenticates with application passwords: XML-RPC, or a REST call?
+	 *
+	 * A rest_route on admin-ajax.php, wp-login.php or another PHP file never reaches the REST server,
+	 * so credentials there mean nothing. Pretty (/wp-json/...) and front-controller (/?rest_route=,
+	 * index.php) paths count.
+	 */
+	public function is_api_auth_request(): bool {
+		if ( $this->is_xmlrpc() ) {
+			return true;
+		}
+		if ( '' === $this->rest_route() ) {
+			return false;
+		}
+		return false !== strpos( $this->path, '/wp-json/' ) || false === strpos( $this->path, '.php' ) || '/index.php' === substr( $this->path, -10 );
 	}
 
 	/** Is this a request to xmlrpc.php (including /xmlrpc.php/extra PATH_INFO)? */

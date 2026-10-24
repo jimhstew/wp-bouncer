@@ -12,6 +12,7 @@ use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Log\WriteBudget;
 use WPBouncer\Rules\RuleInterface;
 use WPBouncer\Storage\CounterStoreInterface;
+use WPBouncer\Support\CounterSubject;
 use WPBouncer\Support\IpUtils;
 
 defined( 'ABSPATH' ) || exit;
@@ -156,6 +157,34 @@ final class Firewall {
 	}
 
 	/**
+	 * Key that suppresses repeat log rows: per rule and counter subject (an IPv6 network, not one address).
+	 *
+	 * @param string $rule Rule id.
+	 * @param string $ip   Client IP.
+	 */
+	public static function dedupe_key( string $rule, string $ip ): string {
+		return 'log_seen:' . $rule . ':' . CounterSubject::key( $ip );
+	}
+
+	/**
+	 * Every de-dup and dropped-marker key for an address, to clear on unlock.
+	 *
+	 * @param string   $ip    Client IP as typed.
+	 * @param string[] $rules Rule ids.
+	 * @return string[]
+	 */
+	public static function log_keys( string $ip, array $rules ): array {
+		$keys = array();
+		foreach ( $rules as $rule ) {
+			foreach ( CounterSubject::keys( $ip ) as $part ) {
+				$keys[] = 'log_seen:' . $rule . ':' . $part;
+				$keys[] = 'log_dropped:' . $rule . ':' . $part;
+			}
+		}
+		return $keys;
+	}
+
+	/**
 	 * Write a log entry unless the same IP+rule was logged very recently.
 	 *
 	 * Without this, a flood from one IP would mean one database insert per
@@ -166,7 +195,7 @@ final class Firewall {
 	 * @return int Log row id, or 0 if suppressed.
 	 */
 	private function record( Request $request, Verdict $verdict ): int {
-		$key = 'log_seen:' . $verdict->rule() . ':' . $request->ip();
+		$key = self::dedupe_key( $verdict->rule(), $request->ip() );
 		if ( null !== $this->store->get( $key ) ) {
 			return 0;
 		}
@@ -174,7 +203,7 @@ final class Firewall {
 		// A short marker (capped per minute) stops one IP's repeats being counted again.
 		$action = $this->monitor ? BlockLogInterface::ACTION_MONITORED : BlockLogInterface::ACTION_BLOCKED;
 		if ( $this->budget ) {
-			$marker = 'log_dropped:' . $verdict->rule() . ':' . $request->ip();
+			$marker = 'log_dropped:' . $verdict->rule() . ':' . CounterSubject::key( $request->ip() );
 			if ( null !== $this->store->get( $marker ) ) {
 				return 0;
 			}

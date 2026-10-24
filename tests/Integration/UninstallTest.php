@@ -7,6 +7,7 @@
 
 namespace WPBouncer\Tests\Integration;
 
+use WPBouncer\Admin\DashboardWidget;
 use WPBouncer\Geo\GeoImport;
 use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Installer;
@@ -48,7 +49,15 @@ final class UninstallTest extends IntegrationTestCase {
 		set_site_transient( Updater::CACHE, array( 'error' => 'x' ), HOUR_IN_SECONDS );
 		$this->plugin->log()->record( array( 'ip' => '198.51.100.1' ) );
 		$this->plugin->traffic_log()->record( array( 'ip' => '198.51.100.1' ) );
-		$this->plugin->geo_database()->insert_batch( array( array( 'from' => str_repeat( '0', 31 ) . '1', 'to' => str_repeat( '0', 31 ) . '2', 'country' => 'AU' ) ) );
+		$this->plugin->geo_database()->insert_batch(
+			array(
+				array(
+					'from'    => str_repeat( '0', 31 ) . '1',
+					'to'      => str_repeat( '0', 31 ) . '2',
+					'country' => 'AU',
+				),
+			)
+		);
 		( new \WPBouncer\Storage\TableCounter() )->add_or_increment( 'login_n:198.51.100.1', 600 );
 		update_option( \WPBouncer\Storage\RedactionMigration::STATE_OPTION, array( 'log' => 5 ), false );
 		wp_schedule_single_event( time() + 60, \WPBouncer\Storage\RedactionMigration::HOOK );
@@ -111,12 +120,13 @@ final class UninstallTest extends IntegrationTestCase {
 	public function test_it_deletes_all_of_its_transients_and_only_those(): void {
 		global $wpdb;
 		$this->populate();
-		$ours = array(
+		$ours   = array(
 			'wpb_' . md5( 'ban:1' ),
 			'wpb_ctrfb_' . md5( 'x' ),
 			'wpb_flash_7',
 			'wpb_alert_count',
 			'wpb_alert_count_critical',
+			DashboardWidget::TRANSIENT,
 			'wp_bouncer_export_' . md5( 'abc' ),
 			'wp_bouncer_erase_range_5',
 		);

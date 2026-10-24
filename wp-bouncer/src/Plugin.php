@@ -8,6 +8,7 @@
 namespace WPBouncer;
 
 use WPBouncer\Admin\AdminController;
+use WPBouncer\Admin\DashboardWidget;
 use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
@@ -28,6 +29,7 @@ use WPBouncer\Log\BlockLog;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Log\BudgetedBlockLog;
 use WPBouncer\Log\WriteBudget;
+use WPBouncer\Login\BasicAuthEditor;
 use WPBouncer\Login\LoginGuard;
 use WPBouncer\Privacy\PrivacyTools;
 use WPBouncer\Rules\CountryRule;
@@ -117,6 +119,12 @@ final class Plugin {
 	 * @var WriteBudget|null
 	 */
 	private ?WriteBudget $write_budget = null;
+	/**
+	 * Application-password check for Basic credentials.
+	 *
+	 * @var BasicAuthEditor|null
+	 */
+	private ?BasicAuthEditor $basic_auth_editor = null;
 	/**
 	 * Country lookup.
 	 *
@@ -328,6 +336,7 @@ final class Plugin {
 		// Environment checks: built lazily when a screen asks (admin, Site Health, cron), never on the firewall path.
 		if ( is_admin() || wp_doing_cron() ) {
 			( new EnvironmentAdmin() )->register();
+			( new DashboardWidget( $this ) )->register();
 		}
 	}
 
@@ -637,6 +646,25 @@ final class Plugin {
 		return '' !== $subject ? $subject : $this->client_ip();
 	}
 
+	/**
+	 * Who the Basic credentials on this request belong to, if they are a valid application password (memoised).
+	 *
+	 * Core accepts application passwords only after the firewall has run, so this checks the
+	 * password itself, with no side effects. Nothing happens until a rule asks.
+	 */
+	private function basic_auth_editor(): BasicAuthEditor {
+		if ( null === $this->basic_auth_editor ) {
+			$this->basic_auth_editor = new BasicAuthEditor(
+				wp_unslash( $_SERVER ),
+				fn(): bool => $this->current_request()->is_api_auth_request(),
+				fn(): bool => $this->refuses_foreign_basic_auth() || null !== $this->rest_country_refusal(),
+				fn(): bool => $this->login_guard()->is_locked_out( $this->client_key() ),
+				$this->store()
+			);
+		}
+		return $this->basic_auth_editor;
+	}
+
 	/** Snapshot of the current request. */
 	public function current_request(): Request {
 		if ( null === $this->request ) {
@@ -649,13 +677,20 @@ final class Plugin {
 				static function (): bool {
 					return function_exists( 'is_user_logged_in' ) && is_user_logged_in();
 				},
-				static function (): bool {
-					return function_exists( 'current_user_can' ) && current_user_can( 'manage_options' );
+				function (): bool {
+					return ( function_exists( 'current_user_can' ) && current_user_can( 'manage_options' ) ) || $this->basic_auth_editor()->is_admin();
 				},
 				$this->ip_resolver()->is_local_request( wp_unslash( $_SERVER ) ),
 				$this->client_can_be_banned(),
 				$this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) ),
-				fn(): array => $this->own_hosts()
+				fn(): array => $this->own_hosts(),
+				static function (): bool {
+					return function_exists( 'current_user_can' ) && current_user_can( 'edit_posts' );
+				},
+				fn(): bool => $this->basic_auth_editor()->is_editor(),
+				static function ( string $nonce ): bool {
+					return function_exists( 'wp_verify_nonce' ) && false !== wp_verify_nonce( $nonce, 'wp_rest' );
+				}
 			);
 		}
 		return $this->request;
