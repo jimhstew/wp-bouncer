@@ -67,7 +67,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.1.2';
+	public const VERSION = '1.2.0';
 
 	/** Internal state (not a setting): Unix time of the last log purge. */
 	public const LAST_PURGE_OPTION = 'wp_bouncer_last_purge';

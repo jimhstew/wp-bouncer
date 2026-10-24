@@ -1,7 +1,7 @@
 # WP Bouncer backlog
 
 Owner: product-manager. Last updated 2026-10-23, against released version 1.1.1.
-Minimum supported: PHP 7.4, WordPress 5.8. Distribution: GitHub releases (not wp.org), so wp.org review does not gate a release, but the wp.org plugin guidelines (GPL, no tracking, escaped output, no remote calls without disclosure) are still the quality bar.
+Minimum supported: PHP 8.3, WordPress 7.0 (WPB-5, shipping in 1.2.0). Distribution: GitHub releases (not wp.org), so wp.org review does not gate a release, but the wp.org plugin guidelines (GPL, no tracking, escaped output, no remote calls without disclosure) are still the quality bar.
 
 ## Owner decisions (2026-10-23)
 
@@ -79,7 +79,7 @@ A separate effort is adding MySQL/MariaDB e2e runs and a WordPress integration s
 4. `.github/workflows/tests.yml`: the `lint` job no longer has `continue-on-error: true`, and a deliberately introduced violation makes the job fail (verify once on a throwaway branch). The heading comment "Non-blocking" is updated.
 5. `make analyse` still passes at the agreed level, in both configurations (`phpstan.neon.dist` and `phpstan-php74.neon`).
 6. No behaviour change: `make test` and `make e2e` (and `make check` against the built zip) pass with no test edited to make them pass. Any test edit is explained in the PR.
-7. PHP 7.4 and WordPress 5.8 compatibility intact (phpcs `testVersion 7.4-` and `minimum_supported_wp_version 5.8` stay as configured; no `%i` placeholders, no PHP 8 syntax).
+7. PHP and WordPress compatibility intact at the minimums in force when this was written (since superseded by WPB-5: PHP 8.3, WordPress 7.0).
 8. Translation readiness not regressed: `WordPress.WP.I18n` clean for text domain `wp-bouncer`, and every string with placeholders keeps its `translators:` comment.
 9. `documentation/developer-guide.md` and `CLAUDE.md` state that lint is blocking (docs-writer).
 
@@ -209,7 +209,7 @@ A separate effort is adding MySQL/MariaDB e2e runs and a WordPress integration s
 8. **Performance:** with the cache warm the widget runs no queries on `bouncer_log`; with it cold it runs no more than the documented number of queries; both are asserted in a test. The cached value expires and refreshes. A log with 1 million rows does not slow the dashboard visibly (documented measurement on a MySQL test site, not a production one).
 9. **Escaping and privacy:** all values (IPs, rule names, reasons) are escaped; the widget never shows full URLs, User-Agents or referrers (only IP, rule, time). It is visible only to administrators, who can already see the log.
 10. **Accessibility:** headings and lists are semantic; any chart or sparkline has a text alternative; trends are readable without colour; the box can be collapsed, moved and hidden through WordPress's own Screen Options (standard dashboard behaviour); links have visible focus.
-11. **Compatibility:** works on PHP 7.4 and WordPress 5.8, on MySQL, MariaDB and SQLite; no new database table; no new settings. No JavaScript is required (works with it disabled).
+11. **Compatibility:** works on PHP 8.3 and WordPress 7.0 (WPB-5), on MySQL, MariaDB and SQLite; no new database table; no new settings. No JavaScript is required (works with it disabled).
 12. **Translation ready:** all strings use the `wp-bouncer` text domain; numbers use `number_format_i18n`; times use the site's time zone.
 13. Uninstall leaves no widget transient behind (verify against the existing `uninstall.php` cleanup of `wpb_` transients).
 14. Integration test covers capability, rendering and cache invalidation once the integration suite exists; unit tests cover the stat-building logic in a pure class.

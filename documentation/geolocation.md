@@ -6,6 +6,8 @@ Country blocking needs to know where an IP is. WP Bouncer never calls a remote A
 
 A table of IP ranges you import under **Tools → Geo database**, either by URL or by file upload. Importing replaces the previous data.
 
+A URL import downloads only over https, and only from the vendor hosts `download.db-ip.com` and `download.ip2location.com` (filter `wp_bouncer_geo_import_hosts`). Each redirect is checked against the same rules. Downloads and unpacked CSVs are capped at 1 GB by default (filter `wp_bouncer_geo_max_bytes`). On multisite, only network admins can run a URL import; sub-site admins can still upload a file.
+
 ### How an import runs
 
 A full DB-IP file is about 710,000 ranges. Inserting them takes from 20 seconds to a few minutes depending on the database, which is more than many hosts allow a single PHP request. So the import (`Geo\GeoImport`) is split into steps:
@@ -23,6 +25,8 @@ add_filter( 'wp_bouncer_geo_step_seconds', function () { return 3.0; } );
 ```
 
 Uploads are limited by PHP's `upload_max_filesize` and `post_max_size`; the Tools tab shows the current limit. Upload the `.csv.gz` (about 5 MB) rather than the unpacked CSV (about 30 MB), or import by URL.
+
+**URL imports** are restricted. Only `https://` addresses on the vendor hosts `download.db-ip.com` and `download.ip2location.com` are fetched, and each redirect is checked against the same rule. Filter `wp_bouncer_geo_import_hosts` changes the list, and `wp_bouncer_geo_import_allow_http` (for local test servers only) allows `http://`. On a multisite network only network admins can import by URL; site admins can still upload a file. The unpacked CSV is capped at 1 GB by default (`wp_bouncer_geo_max_bytes`), and a file over the cap is refused before any rows are written.
 
 Supported files (`.csv` or `.csv.gz`):
 
@@ -50,8 +54,13 @@ If something in front of WordPress already geolocates requests, read its result 
 | nginx `ngx_http_geoip2_module` / Apache `mod_maxminddb` | whatever variable you export, e.g. `GEOIP_COUNTRY_CODE`, `MM_COUNTRY_CODE` |
 | AWS CloudFront | `CloudFront-Viewer-Country` |
 
-The name is looked up as an HTTP header first (`HTTP_<NAME>`), then as a raw server variable. If the header is missing, the local database is used as a fallback.
+How the name is read depends on its form:
 
-**Only use a header if clients can't reach your origin directly.** Otherwise anyone can send `CF-IPCountry: US`. With Cloudflare, firewall your origin to Cloudflare's IP ranges.
+- A **request header** name (it contains a hyphen, starts with `HTTP_`, is on the known list such as `CF_IPCOUNTRY`, `CLOUDFRONT_VIEWER_COUNTRY`, `X_GEO_COUNTRY`, `X_APPENGINE_COUNTRY`, `FASTLY_GEO_COUNTRY`, or isn't a valid variable name) is read as an HTTP header. The header is believed **only when the request comes from a listed trusted proxy** (General → Trusted proxies). Otherwise it is ignored.
+- A **server variable** (such as `GEOIP_COUNTRY_CODE` or `MM_COUNTRY_CODE`, upper-case letters, digits and underscores) is read straight from the server's variables. It is never read as a request header, so a client can't set it.
+
+If the header can't be believed, the local database is used instead. If the header can't be believed **and** no database is loaded, country blocking pauses and an admin notice says so. Without a database, the rule would otherwise treat every visitor as unknown.
+
+**Only use a header if clients can't reach your origin directly.** Otherwise anyone can send `CF-IPCountry: US`. With Cloudflare, firewall your origin to Cloudflare's IP ranges. Trusting a CDN's ranges as proxies also trusts the headers that CDN sets for its other customers, so lock the origin to the CDN where you can.
 
 Cloudflare reports Tor exit nodes as `T1`, which can be blocked like a country.

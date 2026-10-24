@@ -8,7 +8,7 @@ Security fixes are released as a new version of the plugin. Installed sites get 
 
 | Version | Supported |
 |---|---|
-| Latest release (currently 1.1.x) | ✅ |
+| Latest release (currently 1.2.x) | ✅ |
 | Older minor versions | ❌: please update. Critical fixes may be backported to the previous minor version for 3 months after a new minor release. |
 | Before 1.1.0 | ❌: these versions can't update themselves. Install the latest zip by hand. |
 

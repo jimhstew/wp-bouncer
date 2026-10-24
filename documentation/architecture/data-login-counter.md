@@ -31,7 +31,7 @@ Growth: one row per subject with an attempt in the last window, so bounded by di
 
 ## Migration to version 3 (`Storage\RedactionMigration`)
 
-Redacts rows written before 1.1.3: `uri` in `bouncer_log`, `uri` and `referrer` in `bouncer_traffic` (through `UrlRedactor::redact()`), and usernames of non-existent accounts in lockout reasons (`(last username "x")` becomes `(last: unknown username)`; an existing account keeps its name; the banned-username reason is an admin-chosen word and is left).
+Redacts rows written by earlier versions (the 1.1.3 work was never released on its own): `uri` in `bouncer_log`, `uri` and `referrer` in `bouncer_traffic` (through `UrlRedactor::redact()`), and usernames of non-existent accounts in lockout reasons (`(last username "x")` becomes `(last: unknown username)`; an existing account keeps its name; the banned-username reason is an admin-chosen word and is left).
 
 - Batches of 500 rows by primary key: `WHERE id > last ORDER BY id LIMIT 500` is an index range, so cost does not grow with position. The reasons job uses the `rule` index plus `LIKE`.
 - Only changed rows are updated, one `UPDATE ... WHERE id = %d` each, so a second run changes nothing (idempotent) and rows written while it runs (already redacted) are harmless.

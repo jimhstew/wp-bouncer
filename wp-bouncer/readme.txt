@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 7.0
 Tested up to: 7.1
 Requires PHP: 8.3
-Stable tag: 1.1.2
+Stable tag: 1.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -20,7 +20,7 @@ WP Bouncer checks every request before WordPress does any real work and refuses 
 * **XML-RPC blocking**: all of it, or just multicall password spraying and pingback abuse.
 * **Login lockout**: lock out IPs after repeated failures, lock out instantly on usernames like "admin", hide whether a username exists.
 * **Rate limiting**: temporarily ban IPs that hammer the site.
-* **Web application firewall**: SQL injection, XSS, path traversal and code injection signatures.
+* **Web application firewall**: SQL injection, XSS, path traversal and code injection signatures, in URLs, form fields and JSON request bodies. Users who can edit posts are not checked for JSON.
 * **User enumeration**: stops ?author=N scans, the REST user list and the users sitemap for anonymous visitors.
 * **Sensitive-file probes**: bans IPs that look for .env, .git, wp-config backups, database dumps, logs, phpinfo pages and web shells.
 * **404 flood**: bans IPs that hit many "not found" pages, as vulnerability scanners do. Missing images and search engine crawlers don't count.
@@ -28,9 +28,13 @@ WP Bouncer checks every request before WordPress does any real work and refuses 
 
 **Traffic log** (optional): every request that reaches WordPress, with IP, client type, URL, response code, referrer and User-Agent, kept for 1 to 7 days. Filter, search, export to CSV, block an IP from any row. Secrets such as password-reset keys are removed from URLs before saving.
 
-**Email alerts** tell you when an administrator account is created or promoted, or a plugin is installed, activated, deactivated or deleted, the usual signs that someone else has got in.
+**Email alerts** tell you when an administrator account is created or promoted, or a plugin is installed, activated, deactivated or deleted, the usual signs that someone else has got in. Changes to the firewall's own settings are emailed too.
 
-You also get an Activity Log of everything refused (searchable, filterable, CSV export, one-click "Block IP"), a dashboard with 24-hour, 7-day and 30-day stats, a monitor (log-only) mode for trying rules safely, an allowlist, and proxy/CDN-aware IP detection.
+**Site health**: the Dashboard tab and Site Health show whether your PHP and database versions still get security fixes, and flag PHP and WordPress settings that weaken security.
+
+**Privacy**: the WordPress Export and Erase Personal Data tools cover the traffic log and the block log.
+
+You also get an Activity Log of everything refused (searchable, filterable, CSV export, one-click "Block IP"), a dashboard with 24-hour, 7-day and 30-day stats, a WP Bouncer box on the WordPress Dashboard for administrators, a monitor (log-only) mode for trying rules safely, an allowlist, and proxy/CDN-aware IP detection.
 
 Country lookups are done locally against a free database you import (DB-IP Lite or IP2Location LITE), or read from your CDN's country header. No visitor data leaves your server.
 
@@ -40,6 +44,7 @@ Country lookups are done locally against a free database you import (DB-IP Lite 
 2. Go to **Bouncer → General** and check that "Your IP as currently detected" is correct. If you're behind a proxy or CDN, set the IP source and list the proxy's addresses under trusted proxies (the **IP detection** notice on each admin screen helps with this).
 3. Optionally switch to Monitor mode for a few days and review the Activity Log.
 4. For country blocking, import a geo database under **Bouncer → Tools**, then pick countries on the **Countries** tab.
+5. On a multisite network, network-activate WP Bouncer. Per-site activation can strip the uploads protection.
 
 == Frequently Asked Questions ==
 
@@ -67,21 +72,54 @@ Your Client IP source is set to read a forwarding header (such as X-Forwarded-Fo
 
 Use **Send a test email** under Bouncer → General → Email alerts. If it doesn't arrive, your site can't send mail; many hosts need an SMTP plugin. Every alert is also written to the Activity Log.
 
+= Can I log in from another site, such as a headless front end or an app? =
+
+Not by default. A login that the browser says another site started is refused before the password is checked, and so is a REST request that sends application-password credentials from another site. Add the other site's origin (for example `https://app.example.com`) with the `wp_bouncer_login_allowed_origins` filter, from a plugin or mu-plugin. This needs the login lockout rule switched on.
+
+= Why are my bans shorter now? =
+
+Automatic bans and lockouts last at most 24 hours. Bans placed before the update keep their original length.
+
+= Why was a JSON request blocked? =
+
+Requests with JSON bodies are checked for attack patterns, like form fields, unless the sender can edit posts. A body is refused when it is too large (1 MB for visitors who aren't logged in, 8 MB for logged-in users, both capped by the server's post size limit), nested more than 512 levels, or has more than 5,000 fields. Look for "WAF JSON" in the Activity Log. For a webhook or integration that sends large JSON without logging in, raise the limits with the `wp_bouncer_waf_json_max_bytes` and `wp_bouncer_waf_json_max_fields` filters in a mu-plugin, or untick "Also inspect JSON request bodies" on the Rules tab.
+
+= Does WP Bouncer hold personal data? =
+
+It logs IP addresses, requested URLs, referrers and User-Agents: the Activity Log for blocked requests, and the Traffic log if you switch it on. Secret values in URLs are removed before saving. The WordPress Export and Erase Personal Data tools cover the traffic log by user account. For the block log, erasing a user keeps the rows, but clears the URL and reason of rows that name that account. The privacy policy guide gets a suggested paragraph.
+
 = Does it replace Wordfence? =
 
 It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
 
 == Changelog ==
 
-= 1.1.2 =
-* Security fix: a forwarding header (X-Forwarded-For, X-Real-IP, CF-Connecting-IP and similar) is ignored unless its sender is a listed trusted proxy. Without any trusted proxies, the connection address is used and an admin notice explains how to fix the setup. While this fallback is active, bans and lockouts are suspended; failed logins are still logged.
-* Security fix: private, loopback, link-local, carrier-grade NAT, unique-local and unspecified addresses are refused when they come from a header. New opt-in constant WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS for intranet sites behind a proxy.
-* Security fix: requests from loopback are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned.
-* Security fix: update packages must come from the exact expected GitHub release URL.
-* Over-broad trusted proxy and allowlist entries (wider than /8 for IPv4 or /16 for IPv6) are ignored and dropped on save, with a message naming them.
-* Changed: the update-source filters are only honoured when WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS is true in wp-config.php. Forks and testers must add it.
-* Changed: saving settings that would block you is refused, with a pointer to IP setup, when your address is shared by a proxy or CDN.
-* Changed: release pipeline hardened (pinned actions and downloads, checksum verification, reproducible zip) and CI blocks on coding standards and PHPStan level 6.
+= 1.2.0 =
+* Minimum versions are now PHP 8.3 and WordPress 7.0.
+* Upgrading creates a login-counter table and updates the traffic log's indexes. On a large traffic log this can take a while.
+* Older log rows are redacted: secret values in URLs, and usernames of accounts that don't exist in lockout reasons. This runs in the background after the update.
+* Bans and lockouts last at most 24 hours. Bans placed before the update keep their length.
+* Logins from another site are refused. Headless apps and other sites must be added with the wp_bouncer_login_allowed_origins filter.
+* A sensitive-file probe bans only on a second probe within 10 minutes. Probes and 404s caused by another site's page have their own, higher limits.
+* Forwarding headers (X-Forwarded-For, X-Real-IP, CF-Connecting-IP and similar) are ignored unless the sender is a listed trusted proxy. With no trusted proxies listed, the connection address is used, an admin notice explains the fix, and bans and lockouts are suspended until you configure it.
+* Private, loopback, link-local, carrier-grade NAT, unique-local and unspecified addresses are refused from a header. The opt-in constant WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS allows private client addresses from a trusted proxy on intranet sites.
+* Loopback requests are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned.
+* Over-broad trusted proxy and allowlist entries (wider than /8 for IPv4 or /16 for IPv6) are ignored and dropped on save.
+* IPv6 addresses are counted per /64 network for logins, rate limits, sensitive-file and 404 limits, and bans (WP_BOUNCER_IPV6_PREFIX sets the width). Temporary IPv6 bans placed before the update reset.
+* Security fix: update packages must come from the exact expected GitHub release URL. The update-source filters need WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS set to true in wp-config.php.
+* New settings alert: firewall changes, the Activity Log being cleared, and a daily reminder while WP_BOUNCER_DISABLE is set. On by default.
+* Settings changes are recorded in the Activity Log, naming the changed settings but not their values.
+* New Site Health and Dashboard checks for PHP and database support dates and for PHP and WordPress settings with security effects.
+* Privacy tools: traffic-log exporter and eraser, block-log eraser, and suggested privacy-policy text.
+* Multisite: uninstall and network deactivation clean every site. Sub-site admins can't change the uploads setting, run URL geo imports, or add regex User-Agent patterns.
+* Country header and server variables are read separately: a request header is believed only from a trusted proxy.
+* Geo URL import accepts only https downloads from the vendor hosts.
+* Saving settings that would block you is refused when your address is shared by a proxy or CDN.
+* The WAF blocks a request when a built-in signature can't be checked, and inspects longer values in windows.
+* New: the WAF checks JSON request bodies (on by default, also after an update). Visitors who aren't logged in, and users who can't edit posts, are checked. Bodies that are too large, too deeply nested or have too many fields are refused, and filters can raise the limits. Watch the log after updating.
+* New: a WP Bouncer box on the WordPress Dashboard for administrators, with 24-hour and 7-day block counts, trends, and the top rules, IP addresses and countries.
+* New: the Rules tab is grouped into categories, with flags for rules that need attention or need setting up first.
+* New: Block /64 in the Activity Log blocks the whole IPv6 network of a row.
 
 = 1.1.1 =
 * New: Sensitive-file probes rule. Bans IPs that ask for .env, .git, wp-config backups, database dumps, logs, phpinfo pages, database tools and web shells.
@@ -107,5 +145,5 @@ It replaces the firewall, brute-force, country-blocking and rate-limiting parts.
 
 == Upgrade Notice ==
 
-= 1.1.2 =
-Security fixes to IP detection. If your site is behind a proxy or CDN, check the IP detection notice on the admin screens and list your proxy or CDN addresses under General → Trusted proxies. Until you do, forwarded headers are ignored and bans and lockouts are suspended.
+= 1.2.0 =
+Needs PHP 8.3 and WordPress 7.0, and runs a database upgrade. Bans and lockouts last at most 24 hours. Logins from other sites are refused unless allowed with a filter. Behind a proxy or CDN, list its addresses under Trusted proxies. Watch the log for WAF JSON blocks.

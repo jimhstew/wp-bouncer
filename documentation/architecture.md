@@ -17,14 +17,16 @@ plugins_loaded (priority 1) ──► Plugin::run_firewall()
    │      ├─ allowlisted, or loopback with no forwarding header?  ──► let in
    │      ├─ for each enabled rule: inspect(Request) → Verdict|null
    │      │     first Verdict wins; later rules don't run
-   │      ├─ log (at most once per IP+rule per 60 s)
+   │      ├─ log (at most once per IP+rule, or per IPv6 /64, per 60 s)
    │      └─ enforce mode: HttpResponder::deny() → 403/429 page, exit
    │         monitor mode: carry on
    ▼
 WordPress continues normally
    │
    ├─ init                       ──► UploadsGuard::maybe_sync()       keeps the uploads/.htaccess block in step with the settings
-   ├─ authenticate (priority 999) ──► Plugin::filter_authenticate()   refuses locked-out IPs, generic errors
+   ├─ authenticate (0 / 1 / 999)  ──► Plugin::screen_login_attempt()  refuses cross-site and blocked-country logins
+   │                              Plugin::reserve_login_attempt()  counts the attempt before the password check
+   │                              Plugin::filter_authenticate()    refuses locked-out IPs, generic errors
    ├─ wp_login_failed            ──► LoginGuard::record_failure()    counts, locks out, logs
    ├─ wp_handle_upload/sideload_prefilter ──► UploadsGuard::filter_upload()  refuses scripts in disguise
    ├─ template_redirect (999)    ──► Plugin::track_not_found()       counts 404s, bans floods
@@ -37,9 +39,9 @@ WordPress continues normally
 
 | Layer | Classes | Talks to WordPress? |
 |---|---|---|
-| Decision core | `Firewall\*`, `Rules\*`, `Login\LoginGuard`, `Settings`, `Support\*`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry` | **No.** Pure PHP, unit-tested |
-| Storage adapters | `Storage\TransientStore`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport`, `Traffic\TrafficLog` | Yes (transients, `$wpdb`) |
-| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Traffic\TrafficRecorder` (shutdown hook, purge cron) | Yes |
+| Decision core | `Firewall\*` (including `FetchContext`, `IpSetupAdvisor`), `Rules\*`, `Login\LoginGuard`, `Settings`, `SettingsDiff`, `Support\*` (including `CounterSubject`, `UrlRedactor`, `CsvSanitizer`), `Log\WriteBudget`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Geo\GeoUrlPolicy`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry`, `Environment\*` checks and `Environment\SupportPolicy`, `Admin\RuleCatalog` (rule categories), `Admin\RuleStatus` (the one status every screen reads) and `Admin\WidgetStats` (widget numbers) | **No.** Pure PHP, unit-tested |
+| Storage adapters | `Storage\TransientStore`, `Storage\TableCounter`, `Storage\ObjectCacheCounter`, `Storage\RedactionMigration`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport`, `Traffic\TrafficLog` | Yes (transients, object cache, `$wpdb`) |
+| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Admin\RuleOverview` (gathers the facts and runs `wp_bouncer_rule_info`), `Admin\RuleLabels` (translated text), `Admin\DashboardWidget` (capability and transient cache), `Traffic\TrafficRecorder` (shutdown hook, purge cron), `Log\BudgetedBlockLog` (decorator around `BlockLog`), `Privacy\PrivacyTools` (exporter, erasers, policy text), `Environment\EnvironmentAdmin` and `SiteHealth` | Yes |
 
 Collaborators reach the core through four interfaces, each with a test double in `tests/Support/`:
 
@@ -58,7 +60,11 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 **Rule order.** `Plugin::build_rules()` orders rules by cost: IP list, sensitive-file probes and the 404-flood ban check (a ban lookup each, so banned scanners are turned away before anything else), lockout check, rate limit, User-Agent, XML-RPC, user enumeration, country (one indexed DB query), WAF (regex over every parameter).
 
-**Bans that outlast the request.** Three rules place a ban in the counter store and refuse the IP on later requests: rate limiting, sensitive-file probes and the 404 flood. The 404 flood can't be decided at `plugins_loaded`, because only WordPress's query knows whether a page exists, so `Plugin::track_not_found()` counts on `template_redirect` and `NotFoundFloodRule::inspect()` enforces the ban from the next request.
+**Bans that outlast the request.** Three rules place a ban in the counter store and refuse the IP on later requests: rate limiting, sensitive-file probes and the 404 flood. The 404 flood can't be decided at `plugins_loaded`, because only WordPress's query knows whether a page exists, so `Plugin::track_not_found()` counts on `template_redirect` and `NotFoundFloodRule::inspect()` enforces the ban from the next request. Automatic bans and lockouts are capped at 24 hours. A sensitive-file probe bans on the second hit within 10 minutes, not the first.
+
+**Requests from another site.** A browser's `Sec-Fetch-Site` header (or, on older browsers, `Origin`) says whether a request was started by another site. `Firewall\FetchContext` classifies it, and `Request` exposes the result. Login posts that another site started are refused before the password check, so forged headers get no guesses. A probe or 404 caused by another site's page has its own, higher limit and can only refuse that visitor's requests from other sites. Nothing caused by another site can place a site-wide ban.
+
+**Login counting.** Each login attempt is reserved in an atomic counter before the password check (`authenticate` priority 1). A successful login releases the reservation on `wp_login` (or `application_password_did_authenticate` for application passwords). A failure keeps the reservation as the counted failure: `wp_login_failed` settles it through `LoginGuard::record_failure()` and doesn't count it a second time. The counter is `Storage\TableCounter` (`{prefix}bouncer_counters`) unless a shared object cache is declared through `wp_bouncer_atomic_object_cache`. Keys use `Support\CounterSubject`: the IPv4 address, or the IPv6 /64 network (`WP_BOUNCER_IPV6_PREFIX`). The rate limit, sensitive-file and 404 rules and the log's de-duplication use the same subject.
 
 **Uploads protection works through the web server.** A script in `wp-content/uploads` is run by the web server without WordPress loading, so no PHP-side check can stop it. `UploadsGuard` writes an access rule into `uploads/.htaccess` instead, and its **Test now** probe checks the server really obeys it (nginx doesn't read `.htaccess`).
 
@@ -66,7 +72,13 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 **Alerts are batched and never block.** `AlertNotifier` queues events and sends one email on `shutdown`, throttled to 20 an hour, and logs every event first. It stays registered while `WP_BOUNCER_DISABLE` is on.
 
-**Log flood protection.** A flood of requests from one IP would otherwise mean one `INSERT` per request. `Firewall` writes at most one log row per IP+rule per 60 seconds. Every request is still blocked.
+**Log flood protection.** A flood of requests from one IP would otherwise mean one `INSERT` per request. `Firewall` writes at most one log row per IP+rule per 60 seconds (per /64 network for IPv6), and a site-wide write budget (`Log\WriteBudget`, 120 rows a minute by default, with a separate 30 a minute for lockouts and uploads blocks) caps the total. Rows over the budget are counted into one `suppressed` summary row for the minute. The budget is checked before the de-duplication key is written, so a flood of distinct IPs creates neither rows nor keys beyond the budget. Alert rows bypass it. Every request is still blocked.
+
+**JSON bodies.** `WafRule` scans a JSON body the way it scans form fields, within a size, depth, field-count and memory budget. A body it can't check is refused (fail closed). Users who can edit posts are skipped, because their REST saves carry HTML and code. WAF verdicts block the request and never ban (only the rate limit, probe, 404 and login rules place bans).
+
+**Rule categories and one status.** `Admin\RuleCatalog` says which category each rule belongs to, and `Admin\RuleStatus` says whether it is on and whether it needs attention or set-up. Both are pure. `Admin\RuleOverview` gathers the facts once per screen, and the Rules tab, Dashboard tab, notices and widget read its result, so they can't disagree. Nothing here touches the firewall path, and third-party rules are described through the `wp_bouncer_rule_info` filter, not by changing `RuleInterface`.
+
+**Dashboard widget.** `Admin\WidgetStats` builds the numbers from the log with no WordPress calls. `Admin\DashboardWidget` checks the capability, caches the result in transients (5 minutes, or an hour while the log is flooded) and clears the cache when the log is cleared, settings change, or the daily purge runs.
 
 **Settings forms.** Each admin tab owns specific keys (`Settings::TAB_FIELDS`). `Settings::apply_form()` replaces only those keys, so an unticked checkbox on one tab can't change another tab's settings. Everything then passes through `Settings::sanitize()`, which allow-lists every value.
 
@@ -80,12 +92,17 @@ Collaborators reach the core through four interfaces, each with a test double in
 |---|---|
 | Option `wp_bouncer_settings` | All settings (one array, autoloaded) |
 | Option `wp_bouncer_geo_meta` | Row count, source and import time of the geo DB |
-| Option `wp_bouncer_db_version` | Schema version for upgrades |
+| Option `wp_bouncer_db_version` | Schema version for upgrades (currently 3) |
 | Table `{prefix}bouncer_log` | Activity log. Times in UTC. Indexed on time, IP, rule. Purged daily by cron per retention setting |
-| Table `{prefix}bouncer_traffic` | Traffic log, if switched on: one row per request that reached WordPress. Times in UTC. Kept 1 to 7 days, purged hourly by cron |
+| Table `{prefix}bouncer_traffic` | Traffic log, if switched on: one row per request that reached WordPress. Times in UTC. Indexed on time, IP, client, status and user (`user_id`, added by dbDelta in schema version 3). Kept 1 to 7 days, purged hourly by cron |
 | Table `{prefix}bouncer_geo` | IP ranges → country. Bounds stored as 32-char hex of the 16-byte address (IPv4 mapped to `::ffff:a.b.c.d`), so string order equals address order on MySQL and SQLite alike |
-| Transients `wpb_<md5>` | Failed-login counters, lockouts, rate-limit, probe and 404-flood counters and bans, log de-dup markers. All expire on their own |
+| Table `{prefix}bouncer_counters` (version 3) | Login-attempt counters (`counter_key`, `hits`, `expires_at`), purged hourly by cron. Empty when an object cache holds the counters. Dropped on uninstall |
+| Transients `wpb_<md5>` | Rate-limit, probe and 404-flood counters and bans, log budget and de-dup markers. All expire on their own. (Login counters are in the counters table, or the object cache.) |
 | Transient `wpb_alert_count` | Alert emails sent in the current hour |
+| Transients `wpb_widget_stats`, `wpb_widget_stats_stale`, `wpb_widget_stats_lock` | Dashboard widget numbers (cached 5 minutes, or an hour while the log is flooded), a copy kept a day for other requests while one rebuilds, and a 30-second rebuild lock. Cleared when the log or settings change, and after the daily purge |
+| Option `wp_bouncer_migration_3` (internal) | Cursors of the version 3 redaction of older rows. Deleted when the migration finishes; a short lock option sits beside it |
+| Option `wp_bouncer_last_purge` (internal) | When the log purge last ran, so it can run from admin visits if WP-Cron is not running |
+| Option `wpb_disabled_alerted` (internal) | Time of the last `WP_BOUNCER_DISABLE` reminder (one a day) |
 | Option `wp_bouncer_uploads_htaccess` | Fingerprint of the uploads `.htaccess` block last written, and whether that worked |
 | Option `wp_bouncer_uploads_probe` | Result of the last uploads **Test now** |
 | `wp-content/uploads/.htaccess` | The `# BEGIN WP Bouncer` … `# END WP Bouncer` block. Other lines in the file are never touched |
@@ -95,4 +112,6 @@ Deactivating keeps the data but removes the uploads `.htaccess` block. Deleting 
 ## Extending
 
 - `wp_bouncer_rules` filter: add, remove or reorder rules. See [adding-a-rule.md](adding-a-rule.md).
+- `wp_bouncer_rule_info` filter: give a third-party rule a category and a title on the Rules tab. See [adding-a-rule.md](adding-a-rule.md#give-the-rule-a-category-and-a-title-optional).
+- Filters, the `wp_bouncer_settings_changed` action and wp-config constants: see the [developer guide](developer-guide.md#hooks-filters-and-constants).
 - `WP_BOUNCER_DISABLE` constant: emergency off switch.

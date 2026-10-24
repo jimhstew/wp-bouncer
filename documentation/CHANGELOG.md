@@ -2,25 +2,94 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [1.1.2] - 2026-10-24
+## [1.2.0] - 2026-10-24
+
+Folds in the work planned for the never-released 1.1.2 and 1.1.3 releases. Sites on PHP below 8.3 or WordPress below 7.0 stay on their current version.
+
+### Upgrade notes
+
+- **Minimum versions are now PHP 8.3 and WordPress 7.0.** The plugin header declares both, so WordPress doesn't offer 1.2.0 to older sites. Upgrade the PHP and WordPress versions first.
+- **Database upgrade (schema version 3).** On the first request after the update, the plugin creates `{prefix}bouncer_counters` (login attempt counters) and runs dbDelta on `{prefix}bouncer_traffic`, which adds an index on `user_id` with ALTER TABLE. On a large traffic table that can take a while, so update on a quiet day on busy sites, and take a backup first.
+- **Data cleanup of older rows.** Rows written by earlier versions are redacted: secret query values in URLs in the Activity Log and Traffic log, and in traffic referrers, become `[removed]`. A lockout reason that names an account which doesn't exist now reads "(last: unknown username)". The first slice runs during the upgrade request; the rest runs from cron, a minute later, in 20-second slices, until it is done. Rows are not deleted, and the removed text can't be recovered.
+- **Bans last at most 24 hours.** Automatic bans and lockouts placed after the update last at most 1,440 minutes. Stored settings above that are read as 1,440. Bans placed before the update keep their original expiry, except temporary IPv6 bans, which reset (see IPv6 under Security).
+- **Bans are suspended in IP-fallback mode.** While a forwarding header is set as the IP source with no trusted proxies listed, bans and lockouts are logged but not enforced. Fix the IP setup (see the notice on each admin screen).
+- **Log write budget.** Block-log writes are limited site-wide to 120 ordinary rows a minute and 30 lockout or uploads-block rows a minute. Events over the limit are counted in one "suppressed" summary row. Worst case is about 173,000 ordinary rows a day, plus up to 43,000 priority rows. Blocking is never affected, and alert rows aren't limited.
+- **WAF cost.** Large values (over 8 KB) add about 2.5 to 5 ms per request.
+- **WAF JSON inspection is new and on by default.** After updating, check the Activity Log for `WAF JSON` entries. A webhook or integration that posts large JSON without a login cookie may be refused. Raise `wp_bouncer_waf_json_max_bytes` or `wp_bouncer_waf_json_max_fields` in a mu-plugin, or untick **Also inspect JSON request bodies** on the Rules tab.
+- **Logins from another site.** Headless front ends and apps on another domain that log in to WordPress must add their origin with the `wp_bouncer_login_allowed_origins` filter, from a plugin or mu-plugin. This check needs the login lockout rule on.
+- **Multisite.** Network-activate WP Bouncer. Per-site activation can strip the uploads protection. On a network, only network admins can change the uploads `.htaccess` setting, run URL geo imports and the uploads test or sync, or add regex User-Agent patterns.
+- **Settings.** Nothing is removed or reset. New settings get their defaults. Email alerts for firewall changes (`firewall_changes`) are on by default.
+- **Downgrading to 1.1.x** keeps working. Uninstalling 1.1.x doesn't drop `{prefix}bouncer_counters`; drop it by hand if you need to.
 
 ### Security
-- Fixed a security issue where the visitor's IP address could be taken from a forwarding header (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and similar) that no trusted proxy had vouched for, so a visitor could appear to be someone else. The plugin now ignores the header when no trusted proxies are listed, reads the connection address instead, and shows an admin notice explaining how to fix the setup. While that fallback is active, bans and lockouts are suspended (failed logins are still logged) and rate limiting is effectively off. The WAF, User-Agent, blocklist and sensitive-file checks still apply.
-- Header values that are private, loopback, link-local, carrier-grade NAT, unique-local (IPv6) or unspecified are refused. The new opt-in constant `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS` accepts private (not loopback) values from a trusted proxy, for intranet sites.
-- Loopback requests (127.0.0.1 and ::1) are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned, and requests that carry a forwarding header from an unlisted private address (such as a local proxy you haven't listed yet) are not banned.
-- Over-broad entries in Trusted proxies and the Allowlist (wider than /8 for IPv4 or /16 for IPv6, including IPv6 forms that cover all of IPv4) are ignored, and dropped on save with a message naming them.
-- Fixed a security issue where an update package could come from a URL other than the expected GitHub release. The package URL must now match the expected release URL exactly.
+
+- **Forwarded IP addresses.** A forwarding header (`X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and similar) is ignored unless the request comes from a listed trusted proxy. With no trusted proxies listed, the connection address is used and an admin notice explains the fix. While that fallback is active, bans and lockouts are suspended; failed logins are still logged, and the WAF, User-Agent, blocklist and sensitive-file checks still apply.
+- Header values that are private, loopback, link-local, carrier-grade NAT, unique-local (IPv6) or unspecified are refused. The opt-in constant `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS` accepts private (not loopback) values from a trusted proxy, for intranet sites.
+- Loopback requests (127.0.0.1 and ::1) are exempt only when they carry no forwarding header. Loopback and trusted-proxy addresses are never banned.
+- Trusted proxy and allowlist entries wider than /8 (IPv4) or /16 (IPv6) are ignored and dropped on save, with a message naming them.
+- **Cross-site logins are refused.** A login attempt that the browser says another site started (or a sibling subdomain, unless its origin is this site's or on the allowed list) is refused before the password is checked. This covers wp-login.php, xmlrpc.php, WooCommerce and custom login forms. Refused attempts aren't counted, and a forged header gains nothing. Monitor mode doesn't refuse.
+- REST requests that send application-password (Basic) credentials from another site are refused the same way.
+- **Cross-site probes and 404s.** A probe or 404 caused by another site's page is counted separately. It needs 5 probes (`wp_bouncer_cross_site_probe_limit`) or five times the 404 limit (`wp_bouncer_cross_site_404_multiplier`). Then it only refuses that visitor's requests from other sites, never the whole site.
+- **Login attempts are counted before the password check**, so a burst of parallel guesses can't all get through. Application-password attempts on REST and XML-RPC are counted the same way. Login counters are kept in `{prefix}bouncer_counters`, unless an object cache is enabled with `wp_bouncer_atomic_object_cache`.
+- **IPv6 counts are per /64** (`WP_BOUNCER_IPV6_PREFIX`, 48 to 128, default 64; 128 means per address). This covers login counting, the rate limit, sensitive-file and 404 counters and bans, and the Activity Log's de-duplication. Attempts from one /48 are limited to 8 times the per-/64 limit (`wp_bouncer_ipv6_wide_multiplier`, login only). Unlock an IP clears every key for its /64, and the old per-address keys too. Temporary IPv6 bans placed before the update reset, because their keys are now per /64.
+- Update packages must come from the exact expected GitHub release URL.
+- **WAF fails closed.** If the regex engine errors on a built-in signature, the request is refused. Values up to 64 KB are scanned in overlapping 8 KB windows, plus the last 8 KB of longer values.
+- XML-RPC `system.multicall` is detected by reading `methodName` with PHP's own XML parser. `/xmlrpc.php/extra` and `/wp-login.php/extra` paths are recognised.
+- **User enumeration.** For logged-out visitors, `?author=N` with N above 0 and `?author_name=` count as scans. The oEmbed response no longer includes the author name or URL. With generic errors on, the lost-password error is generic too, though WordPress can still reveal whether an account exists (a known limitation).
+- **Uploads.** `<?=` is detected as PHP code (with a relaxed rule for compressed media, to avoid false alarms). The `.htaccess` block is removed only after two failed checks in a row, not after one server error. Leftover self-test files are swept daily.
+- **Privacy.** Secret query values are removed from URLs in the Activity Log and Traffic log. Lockout reasons don't store usernames of accounts that don't exist. Alert rows don't carry email addresses. If WP-Cron isn't running, the log purge still runs from admin visits.
+- **Country lookup.** A country header is read only from a listed trusted proxy. Server variables (such as `GEOIP_COUNTRY_CODE`) are read directly and never as request headers. If the header can't be trusted and no geo database is loaded, country blocking is paused and an admin notice says so.
+- **Geo URL import.** Only https downloads from the vendor hosts (`download.db-ip.com`, `download.ip2location.com`) are allowed, and each redirect is checked. Downloads and unpacked CSVs are size-capped (1 GB by default, `wp_bouncer_geo_max_bytes`).
+- **Multisite capability.** The `wpb_manage_firewall` capability is held by network admins on multisite and by administrators on a single site. Sub-site admins can still upload geo CSV files, within the size cap.
+- **Admin hardening.** Block-IP links use a nonce per address and accept one address. Admin notices show fixed text only, never free text from the URL. CSV export neutralises more spreadsheet formula triggers. Switching on the IP blocklist, country or User-Agent rule runs the self-lockout guard.
+- Uninstall and network deactivation clean up every site on a multisite network.
+- Critical alerts (a new administrator account, and WP Bouncer being deactivated) have their own limit of 20 an hour, so a flood of other alerts can't push them out.
 
 ### Changed
-- The update-source filters `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` are only honoured when `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS` is defined as `true` in wp-config.php. Forks and testers that relied on the filters alone must add the constant.
-- Saving settings that would block the admin is refused, with a pointer to the IP setup, when the admin's address is shared (behind a proxy, CDN or the fallback), instead of allowlisting the shared address.
-- Release pipeline hardening: publishing is separated from the build, actions and downloads are pinned, the zip is reproducible, and the downloaded checksum is verified.
-- CI now blocks on phpcs (coding standards) and PHPStan level 6.
-- Code cleaned up to WordPress Coding Standards. No change in behaviour.
+
+- Minimum PHP 8.3 and WordPress 7.0. Compatibility code for older versions is removed. CI runs unit tests on PHP 8.3 to 8.5, and integration and end-to-end tests on WordPress 7.0, latest and nightly (nightly is allowed to fail), on MySQL and MariaDB.
+- Automatic bans and lockouts are capped at 24 hours (see the upgrade notes).
+- **Rules tab in categories.** The rules are grouped into Block lists (`block-lists`), Login and accounts (`login-accounts`), Scanners and floods (`scanners-floods`), and Attack payloads and hardening (`payloads-hardening`). Rules from other plugins go under Other (`other`). Each rule shows On or Off, and a flag: **Needs attention** when it is on but not fully working, or **Before switching on** when it is off and needs setting up (rate limiting, and country blocking before a geo database is loaded). The Dashboard's rules overview uses the same groups and status, and the notices read the same status.
+- **A sensitive-file probe no longer bans on its own.** The first probe is refused. A second probe within 10 minutes that another site's page didn't cause bans the IP from every page for the ban length. Probes caused by another site are counted separately (see Security). A ban length of 0 still refuses only the probe.
+- **Loopback is narrower.** A same-host proxy that forwards a header is no longer exempt. Counting and banning still skip loopback addresses.
+- **Settings audit.** Saving settings writes one `alert` row to the Activity Log. It names the changed settings and the user, never the values. Changes that weaken the firewall (mode, allowlist, trusted proxies, IP source, geo source or header, alert recipients, the XML-RPC mode, a rule switched off, the firewall-change alert itself, or a shorter Activity Log or Traffic log retention, which makes the daily purge erase older rows) also send a `firewall_changes` email. Clearing the Activity Log is audited and emailed too.
+- The update-source filters `wp_bouncer_update_manifest_url` and `wp_bouncer_update_package_prefix` are honoured only when `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS` is `true` in wp-config.php. Forks and testers must add the constant.
+- Saving settings that would block you is refused when your address is shared (behind a proxy, CDN or the fallback). The save points you to the IP setup instead of allowlisting the shared address.
+- Release pipeline hardened for maintainers: publishing is separate from the build, actions and downloads are pinned, the zip is reproducible, and the downloaded checksum is verified.
+- CI blocks on phpcs (WordPress Coding Standards) and PHPStan level 6. Code is cleaned up to the coding standard; no change in behaviour.
 
 ### Added
-- Integration tests (`make integration`) against MySQL/MariaDB, run in CI for single-site and multisite.
-- End-to-end suite can run against MySQL/MariaDB and a chosen WordPress version.
+
+- **Email alert `firewall_changes`** (on by default): the risky settings changes above, a daily reminder while `WP_BOUNCER_DISABLE` is set, and the Activity Log being cleared.
+- **Environment checks**, on the Dashboard tab and in Site Health:
+  - PHP and database (MySQL, MariaDB) versions against their security support end dates. A warning starts 90 days before the end date, and a critical notice follows the end date. Unknown versions get no warning.
+  - PHP settings with security effects: `allow_url_include`, `display_errors`, `display_startup_errors`, `log_errors`, error log location, `expose_php`, `zend.assertions`, `cgi.fix_pathinfo`, session cookie and strict-mode settings, `open_basedir`, `disable_functions`, `auto_prepend_file`, and upload limits (for context).
+  - WordPress settings: `DISALLOW_FILE_EDIT`, a web-readable debug log, and `WP_DEBUG_DISPLAY`.
+  - Filter `wp_bouncer_environment_checks` to add or remove checks.
+- **Privacy tools.** WordPress's Export and Erase Personal Data tools include a traffic-log exporter and eraser, and a block-log eraser. The block log keeps its rows and times, but the URL and reason of rows that name the account are cleared. A privacy-policy text is added to the policy guide. Exports and erasure are by user account only, not by IP address.
+- **Multisite alerts.** On a network, the network admin email gets firewall alerts too.
+- **Constants:** `WP_BOUNCER_IPV6_PREFIX`, `WP_BOUNCER_ALLOW_PRIVATE_CLIENT_IPS`, `WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS`.
+- **Filters:** `wp_bouncer_settings_changed` (action), `wp_bouncer_geo_import_hosts`, `wp_bouncer_geo_import_allow_http`, `wp_bouncer_log_budget_per_minute`, `wp_bouncer_log_priority_budget_per_minute`, `wp_bouncer_atomic_object_cache`, `wp_bouncer_ipv6_wide_multiplier`, `wp_bouncer_cross_site_404_multiplier`, `wp_bouncer_cross_site_probe_limit`, `wp_bouncer_environment_checks`, `wp_bouncer_geo_max_bytes`, `wp_bouncer_login_allowed_origins`, `wp_bouncer_waf_json_max_bytes`, `wp_bouncer_waf_json_max_fields`, `wp_bouncer_widget_cache_ttl`, `wp_bouncer_rule_info`. Signatures are in the [developer guide](developer-guide.md#hooks-filters-and-constants).
+- Integration tests (`make integration`) against MySQL and MariaDB, in single-site and multisite.
+- End-to-end suite can run against MySQL or MariaDB and a chosen WordPress version.
+- **WAF JSON body inspection** (`inspect_json`, on by default, also on existing sites; checkbox on the Rules tab). JSON request bodies are checked with the same signatures as form fields. A body counts as JSON when its Content-Type says so, the way WordPress reads it (`application/json`, any `+json` type, `+oembed`, and lists such as `text/plain, application/json`). A body that isn't declared as JSON, and isn't multipart, is also treated as JSON if its first non-blank byte is `{`, `[` or `"`, because many plugins decode the raw body whatever its type says.
+  - Checked: visitors who aren't logged in, and logged-in users who can't edit posts.
+  - Not checked: users who can edit posts. A cookie session counts only with a valid REST nonce (`X-WP-Nonce` or `_wpnonce`). Application-password credentials count only on REST or XML-RPC requests. Administrators aren't inspected by the WAF at all.
+  - Fails closed: a body the plugin can't check gets a 403 when it is over the size limit, nested more than 512 levels, holds more than 5,000 fields (values and containers), or would need too much memory to decode (estimated against `memory_limit`). The size limit is 1 MB for anonymous visitors and 8 MB for logged-in users, each capped by `post_max_size`. Invalid JSON gets no WAF verdict, because WordPress refuses it.
+  - WAF verdicts block the request and never ban the IP.
+  - Filters: `wp_bouncer_waf_json_max_bytes( $max, $logged_in )` and `wp_bouncer_waf_json_max_fields( $max )`.
+  - Known limitation: plugins that receive large signed JSON webhooks without a cookie may need the byte or field limit raised.
+- **Dashboard widget** (WPB-4). A WP Bouncer box on the WordPress Dashboard, for users with `manage_options`. It is per site: each site's Dashboard shows its own log, and the network Dashboard has none. It shows blocks in the last 24 hours and the last 7 days, each with a trend against the period before, and the top three rules, IP addresses and countries for the last 7 days (countries only when a geo database is loaded), and the latest five blocks. The status line says whether the firewall is enforcing, in monitor mode or switched off. The numbers are cached for 5 minutes, or for an hour while the log is flooded (more than 100,000 rows in 14 days). Filter `wp_bouncer_widget_cache_ttl` sets the cache length in seconds (60 to 3600). The cache is cleared when settings change, when the Activity Log is cleared and after the daily purge.
+- **Activity Log: Block /64.** For an IPv6 row, this blocks its whole /64 network, which matches how the firewall counts that client.
+- **Action `wp_bouncer_log_cleared`**, fired after the Activity Log is emptied.
+- **Filter `wp_bouncer_rule_info`** describes rules from other plugins for the Rules and Dashboard tabs: their category and title. Built-in rules ignore it. See [adding-a-rule.md](adding-a-rule.md).
+
+### Fixed
+
+- Network uninstall and network deactivation now cover every site, not just the current one.
+- Regex errors in User-Agent patterns are recorded instead of silently ignored. More than 100 patterns are ignored.
+- A single server error while checking uploads no longer removes the uploads block.
+- Rule switches have accessible names. Screen readers announced only "Enabled" for every rule, and the Traffic switch had the same problem.
 
 ## [1.1.1] - 2026-10-20
 

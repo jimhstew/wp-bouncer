@@ -1,11 +1,23 @@
 # WPB-2: Rules UI in categories (design)
 
-Status: design, ready for owner review. Author: architect, 2026-10-23.
+Status: implemented in 1.2.0. Author: architect, 2026-10-23. This is the design record. Where it differs from the code, the code is right, and the differences are listed under "As built" below.
 Spec: `documentation/backlog.md` → WPB-2 and "Owner decisions" 3 and 6.
 Target release: 1.2.0, or 1.3.0 if it slips (owner decision 5).
 
 This document is the design only. It changes no settings keys, no option structure, no
 database schema and no existing hook. The data-engineer is not needed: nothing new is stored.
+
+---
+
+## As built (1.2.0)
+
+Where the implementation differs from the sections below. The code is the reference.
+
+- **Location.** `Admin\RuleCatalog` and `Admin\RuleStatus` live in `src/Admin/`, not in a separate core folder. Both make no WordPress calls and are unit-tested. `Admin\RuleOverview` is the WordPress-facing assembler (§7.2), and `Admin\RuleLabels` holds the text (§6.3).
+- **`rule_switch()`.** The signature is `rule_switch( string $id, bool $checked, bool $disabled = false, string $title = '' )`. `$title` is the **fourth** parameter, after `$disabled`. §3.4 and §8.2 say "third"; that was wrong.
+- **`back()`.** The signature is `back( string $tab, string $code, array $args = array(), bool $error = false, string $fragment = '' )`. When the fragment is `rule-<id>` for a built-in id, `back()` also adds `wpb_rule=<id>` to the redirect, so the row's settings are open where the admin lands (§4.2).
+- **Multisite exception to "never disabled".** On multisite, a user without `wpb_manage_firewall` sees the uploads rule's switch and its `.htaccess` checkbox disabled, with the note "Managed by your network administrator." `Settings::preserve_privileged()` keeps the stored `enabled` and `htaccess` values on save, so the disabled controls change nothing. This is the only disabled input the Rules tab renders (see the contract in `partials/rule-row.php`). Regex User-Agent patterns that a sub-site admin adds are dropped by the same function, and the field stays editable.
+- **Notice reasons.** `RuleLabels::notice()` has screen-wide text for four reasons: `NO_GEO_DB`, `GEO_HEADER_UNTRUSTED`, `UPLOADS_BROKEN` and `UPLOADS_WRITE_FAILED`. §6.2 lists three. The country-paused notice (`GEO_HEADER_UNTRUSTED`, see RT-06) is screen-wide too.
 
 ---
 
@@ -119,7 +131,7 @@ Server-rendered (no JS needed, and no flash of content collapsing after load):
 
 ### 3.4 Keyboard and screen readers
 
-- **Switch name (fix).** `AdminController::rule_switch( string $id, bool $checked, string $title = '' )`. The new optional third parameter keeps existing calls valid. The screen-reader text becomes the rule title (fallback: `__( 'Enabled' )` if `$title` is empty). The input gets `role="switch"`, so screen readers announce "IP blocklist, switch, on". The Countries tab passes "Country blocking". Fix the Traffic tab the same way ("Record traffic"); it is the same bug.
+- **Switch name (fix).** `AdminController::rule_switch( string $id, bool $checked, string $title = '' )`. The new optional fourth parameter (`$title`, after `$disabled`) keeps existing calls valid. The screen-reader text becomes the rule title (fallback: `__( 'Enabled' )` if `$title` is empty). The input gets `role="switch"`, so screen readers announce "IP blocklist, switch, on". The Countries tab passes "Country blocking". Fix the Traffic tab the same way ("Record traffic"); it is the same bug.
 - Tab order per row: switch → (fix link, if any) → "Settings" summary → panel inputs when open. Reading order and visual order are the same.
 - Headings: `h1` page → `h2` category → `h3` rule, and `h4` for any sub-heading inside a panel (none today). The Dashboard partial uses `h2` for its card and `h3` per category.
 - The summary text is "Settings" plus hidden ": <title>", so a list of controls reads "Settings: IP blocklist". There are no interactive elements inside `<summary>`, and no heading inside it, because summary has an implicit button role that would flatten the heading.
@@ -165,7 +177,7 @@ Used by:
 | `notices()` uploads broken / write failed | The text "See Rules → No PHP in uploads." becomes a link "Go to No PHP in uploads" → `rule_url( 'uploads_php' )`. Keep the sentence before it **unchanged**: e2e greps "answered uploaded files (images too) with an error". |
 | `notices()` country without geo DB | Keep the text. Add a link "Import one under Tools" → `url( 'tools' )`. The rule card on the Rules tab shows the same flag. |
 | `notices()` proxy warning (optional, same pattern) | Link "General → Trusted proxies" → `url( 'general' ) . '#wpb-proxies'`. |
-| `handle_uploads_probe`, `handle_uploads_sync` | Redirect to `rule_url( 'uploads_php' )` plus `wpb_msg`. `back()` gains an optional `string $fragment = ''` and `array $args = []`. The existing integration assertion `tab=rules` still passes. |
+| `handle_uploads_probe`, `handle_uploads_sync` | Redirect to `rule_url( 'uploads_php' )` plus `wpb_msg`. `back()` takes an optional `array $args` and `string $fragment` (as built, see "As built"). A `rule-<id>` fragment for a built-in id also adds `wpb_rule=<id>`, so the row's settings open. The existing integration assertion `tab=rules` still passes. |
 | Dashboard overview titles | `rule_url( $id )`. |
 
 `notice()` becomes `notice( string $type, string $message, string $link_url = '', string $link_text = '' )`. It prints `esc_html( $message )`, then, if given, ` <a href="esc_url">esc_html</a>`. `wpb_msg` notices never get a link, so there's no new content-spoofing surface.
@@ -426,7 +438,7 @@ Partial includes: `rule-row.php` includes `__DIR__ . '/../rules/' . $id . '.php'
 | `src/Admin/views/dashboard.php` | Rules card replaced by `partials/rule-overview.php`. Stats and the other cards are unchanged. |
 | `src/Admin/views/countries.php` | `rule_switch( 'country', …, __( 'Country blocking' ) )`. Optional back link "See all rules" → `url('rules') . '#rule-country'`. |
 | `src/Admin/views/traffic.php` | Switch screen-reader text "Record traffic", plus `role="switch"`. |
-| `src/Admin/AdminController.php` | `rule_labels()` delegates to `RuleLabels::rules()`. `rule_switch()` gets the optional `$title` and `role="switch"`. New `rule_url()`. `notice()` gets an optional link and a role. `notices()` uses `RuleOverview::statuses()`. `back()` gets optional args and fragment. Probe/sync redirects go to `rule_url( 'uploads_php' )`. `render()` passes `$overview`. `enqueue_assets()` adds i18n strings (`notSaved`, `unsaved`, `expandAll`, `collapseAll`). |
+| `src/Admin/AdminController.php` | `rule_labels()` delegates to `RuleLabels::rules()`. `rule_switch()` gets the optional fourth parameter `$title` and `role="switch"`. New `rule_url()`. `notice()` gets an optional link and a role. `notices()` uses `RuleOverview::statuses()`. `back()` gets optional args and fragment. Probe/sync redirects go to `rule_url( 'uploads_php' )`. `render()` passes `$overview`. `enqueue_assets()` adds i18n strings (`notSaved`, `unsaved`, `expandAll`, `collapseAll`). |
 | `src/Plugin.php` | `registered_rules()` memo; `run_firewall()` uses it; `reload_settings()` resets it. |
 | `assets/admin.css` | §9.3 |
 | `assets/admin.js` | §9.1, 9.2 |
@@ -554,7 +566,7 @@ PHPStan array shapes on `RuleStatus::builtin()` facts and the `RuleOverview` vie
 
 ### 12.2 Compatibility
 
-- **PHP 7.4 / WP 5.8:** no enums, `match`, `readonly`, named arguments or `str_contains`. `??=` is 7.4. `<details>`, `role="switch"`, `scroll-margin`, `:focus-visible`, `forced-colors` and logical properties are all supported by the browsers WP 5.8 supports (IE11 was dropped in 5.8). In older browsers the extra CSS degrades gracefully.
+- **Minimums (WPB-5):** PHP 8.3 and WordPress 7.0. The earlier PHP 7.4 / WP 5.8 limits (no enums, `match`, `readonly`, named arguments or `str_contains`) no longer apply. `<details>`, `role="switch"`, `scroll-margin`, `:focus-visible`, `forced-colors` and logical properties are all supported by the browsers WordPress 7.0 supports. In older browsers the extra CSS degrades gracefully.
 - **Settings:** the structure of `wp_bouncer_settings` is unchanged; no migration and no `DB_VERSION` bump. Upgrade shows the same values. **Downgrade to 1.1.x:** nothing new is stored. `sessionStorage` is client-side and short-lived. The `wpb_rule` arg in old links is ignored by 1.1.x.
 - **Public PHP API:** `AdminController::rule_labels()` keeps its shape. `rule_switch()` and `notice()` only gain optional parameters. `RuleInterface`, `AbstractRule` and `wp_bouncer_rules` are unchanged. New: `wp_bouncer_rule_info` filter, `Plugin::registered_rules()`, `AdminController::rule_url()`.
 - **Anchors and links:** every `#rule-<id>` that existed still exists, `#rule-country` is new, and `#wpb-alerts` is unchanged.
