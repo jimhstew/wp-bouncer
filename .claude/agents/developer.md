@@ -42,3 +42,5 @@ changed and anything the tester should focus on.
 Keep test output small: pipe PHPUnit through `tail -n 30` (PHPUnit 9 has no `--no-progress`), filter long e2e logs to
 failures and the final counts, and re-run only the failing test with
 `--filter` while fixing. Report counts and failures, never full logs.
+
+While iterating on e2e, run only the affected section with `WPB_E2E_ONLY="<section heading>"` (see tests/e2e/run.sh header); run the full suite once before reporting done.

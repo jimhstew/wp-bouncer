@@ -22,6 +22,19 @@
 #   WPB_E2E_WP_VERSION=latest latest | nightly | a version such as 7.0 or 7.1.3.
 #                         WordPress is unpacked into $WPB_E2E_DIR/wordpress-<db>-<version>, so a
 #                         reused work directory never mixes databases or versions.
+#   WPB_E2E_CACHE=dir     Download cache (default builds/e2e-cache, which is git-ignored). WordPress,
+#                         wp-cli and the SQLite plugin are fetched once and reused. Every file is
+#                         checked against its checksum each time it is used and fetched again if it
+#                         does not match, so a corrupted cache is never used. WordPress is cached
+#                         per version; "latest" is resolved through api.wordpress.org (falling back
+#                         to the newest cached release when offline); "nightly" is reused for 3 hours.
+#   WPB_E2E_ONLY="Updates,Traffic"  Local debugging only: run setup plus just the sections whose
+#                         "==> " heading contains any of these comma-separated words (case-insensitive).
+#                         The summary says it was a partial run. Sections that need earlier state run
+#                         it themselves: "Emergency switch" runs "Brute-force protection" first and
+#                         "Admin screens" runs "Bad visitors" first. Others stand alone (a few counts,
+#                         such as the Activity Log, only make sense after the whole suite).
+#                         CI never sets it.
 #
 # Requests come from 127.0.0.1. A request from loopback with no forwarding header is the
 # server itself and skips every rule, so the test switches the IP source to X-Real-IP,
@@ -54,9 +67,49 @@ case "$DB_NAME" in ""|*[!A-Za-z0-9_]*) echo "WPB_E2E_DB_NAME may only contain le
 W="$WORK/wordpress-$DB-$WPV"
 WP="$PHP -d memory_limit=512M $WORK/wp-cli.phar --path=$W --quiet"
 
+CACHE=${WPB_E2E_CACHE:-$REPO_DIR/builds/e2e-cache}
+ONLY=${WPB_E2E_ONLY:-}
+SECTIONS_RAN=""
+
 pass=0
 fail=0
 SERVER_PID=""
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+selected() { # selected HEADING -> 0 if WPB_E2E_ONLY names it (or is empty: everything runs)
+	[ -z "$ONLY" ] && return 0
+	local h t; h=$(lower "$1")
+	local IFS=,
+	for t in $ONLY; do
+		t=$(lower "$t"); t=${t# }; t=${t% }
+		[ -n "$t" ] && case "$h" in *"$t"*) return 0 ;; esac
+	done
+	return 1
+}
+want() { # want HEADING -> prints the heading and returns 0 if the section should run
+	local reason=""
+	if ! selected "$1"; then
+		# Sections whose state later sections build on run when those are selected.
+		case "$1" in
+			"Brute-force protection") selected "Emergency switch" && reason="needed by Emergency switch" ;;
+			"Bad visitors") selected "Admin screens" && reason="needed by Admin screens" ;;
+		esac
+		[ -n "$reason" ] || return 1
+		reason=" ($reason)"
+	fi
+	SECTIONS_RAN="$SECTIONS_RAN$1$reason
+"
+	echo "==> $1$reason"
+}
+if [ -n "$ONLY" ]; then   # fail early on a word that matches nothing
+	headings=$(grep -o '^if want "[^"]*"' "${BASH_SOURCE[0]}" | cut -d'"' -f2)
+	IFS=, read -r -a terms <<< "$ONLY"
+	for t in "${terms[@]}"; do
+		t=$(lower "$t"); t=${t# }; t=${t% }
+		[ -n "$t" ] && [ -z "$(lower "$headings" | grep -F -- "$t")" ] && { printf 'WPB_E2E_ONLY: no section matches "%s". Sections:\n%s\n' "$t" "$headings"; exit 1; }
+	done
+	echo "!!! PARTIAL RUN: WPB_E2E_ONLY=\"$ONLY\". Not a substitute for the full suite."
+fi
 
 cleanup() {
 	for pid in $SERVER_PID; do
@@ -123,30 +176,79 @@ fetch_wordpress() { # fetch_wordpress URL OUTFILE
 	esac
 }
 
-if [ ! -f wp-cli.phar ]; then
-	curl -sfLo wp-cli.phar.part "https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar" || { echo "download wp-cli failed"; exit 1; }
-	verify 512 wp-cli.phar.part "$WPCLI_SHA512" "wp-cli ${WPCLI_VERSION}"
-	mv wp-cli.phar.part wp-cli.phar
-fi
-# A phar left over from an older run must match the pin too.
+mkdir -p "$CACHE" || { echo "cannot create download cache $CACHE"; exit 1; }
+matches() { [ "$(hash_of "$1" "$2" 2>/dev/null)" = "$3" ]; }   # matches ALGO FILE EXPECTED
+# cached_file CACHEFILE ALGO EXPECTED URL LABEL -> a verified copy at CACHEFILE. A cached file that does
+# not match its checksum is deleted and fetched again; a fresh download that does not match is fatal.
+cached_file() {
+	if [ -f "$1" ] && matches "$2" "$1" "$3"; then return 0; fi
+	[ -f "$1" ] && echo "    cached $5 failed its checksum: downloading it again"
+	rm -f "$1"
+	curl -sfLo "$1.part" "$4" || { rm -f "$1.part"; echo "download $5 failed"; exit 1; }
+	verify "$2" "$1.part" "$3" "$5"
+	mv "$1.part" "$1"
+}
+cached_file "$CACHE/wp-cli-${WPCLI_VERSION}.phar" 512 "$WPCLI_SHA512" \
+	"https://github.com/wp-cli/wp-cli/releases/download/v${WPCLI_VERSION}/wp-cli-${WPCLI_VERSION}.phar" "wp-cli ${WPCLI_VERSION}"
+cp "$CACHE/wp-cli-${WPCLI_VERSION}.phar" wp-cli.phar
+# The copy that runs must match the pin too.
 verify 512 wp-cli.phar "$WPCLI_SHA512" "wp-cli ${WPCLI_VERSION}"
-if [ "$WPV" = nightly ]; then rm -rf "$W"; fi   # a moving target: always fetch it again
+
+# WordPress tarball for one release, cached with the .sha1 WordPress.org published for it.
+cached_wordpress() { # cached_wordpress VERSION -> path of a verified tarball in $WP_TARBALL
+	local v=$1 f="$CACHE/wordpress-$1.tar.gz" want
+	WP_TARBALL=$f
+	if [ -f "$f" ] && [ -f "$f.sha1" ]; then
+		want=$(tr -d '[:space:]' < "$f.sha1")
+		if [ -n "$want" ] && matches 1 "$f" "$want"; then return 0; fi
+		echo "    cached WordPress $v failed its checksum: downloading it again"
+	fi
+	rm -f "$f" "$f.sha1"
+	fetch_wordpress "https://wordpress.org/wordpress-$v.tar.gz" "$f.part" || { rm -f "$f.part"; echo "download WordPress ($v) failed"; exit 1; }
+	hash_of 1 "$f.part" > "$f.sha1.part"   # fetch_wordpress just proved this equals the digest WordPress.org published
+	mv "$f.part" "$f"; mv "$f.sha1.part" "$f.sha1"
+}
+resolve_latest() { # newest stable WordPress version, from the update API; empty on failure
+	curl -sfL --max-time 20 "https://api.wordpress.org/core/version-check/1.7/" | "$PHP" -r '$j = json_decode( stream_get_contents( STDIN ), true ); $v = $j["offers"][0]["version"] ?? ""; echo preg_match( "/^[0-9]+(\\.[0-9]+){1,2}$/", $v ) ? $v : "";' 2>/dev/null
+}
+if [ "$WPV" = nightly ]; then rm -rf "$W"; fi   # a moving target: always unpack it again
 if [ ! -d "$W" ]; then
 	DL="$WORK/download.$$"
 	rm -rf "$DL"; mkdir -p "$DL"
 	if [ "$WPV" = nightly ]; then
-		{ fetch_wordpress "$WP_URL" "$DL/wp.zip" && unzip -q "$DL/wp.zip" -d "$DL"; } || { echo "download WordPress ($WPV) failed"; exit 1; }
+		NF="$CACHE/wordpress-nightly.zip"
+		# Reuse for 3 hours, but only if it still unzips and matches the hash recorded when it was fetched.
+		if [ -f "$NF" ] && [ -n "$(find "$NF" -mmin -180 2>/dev/null)" ] && [ -f "$NF.sha256" ] \
+			&& matches 256 "$NF" "$(tr -d '[:space:]' < "$NF.sha256")" && unzip -tq "$NF" > /dev/null 2>&1; then :
+		else
+			rm -f "$NF" "$NF.sha256"
+			fetch_wordpress "$WP_URL" "$NF.part" && unzip -tq "$NF.part" > /dev/null 2>&1 || { rm -f "$NF.part"; echo "download WordPress ($WPV) failed"; exit 1; }
+			hash_of 256 "$NF.part" > "$NF.sha256"; mv "$NF.part" "$NF"
+		fi
+		unzip -q "$NF" -d "$DL" || { echo "unpacking WordPress ($WPV) failed"; exit 1; }
 	else
-		{ fetch_wordpress "$WP_URL" "$DL/wp.tar.gz" && tar xzf "$DL/wp.tar.gz" -C "$DL"; } || { echo "download WordPress ($WPV) failed"; exit 1; }
+		if [ "$WPV" = latest ]; then
+			LATEST=$(resolve_latest)
+			if [ -z "$LATEST" ]; then   # offline: the newest cached release, which is still checksum-verified
+				LATEST=$(ls -t "$CACHE"/wordpress-[0-9]*.tar.gz 2>/dev/null | head -1 | sed -E 's#.*/wordpress-(.*)\.tar\.gz#\1#')
+				[ -n "$LATEST" ] || { echo "cannot find out the latest WordPress version and nothing is cached"; exit 1; }
+				echo "    (could not reach api.wordpress.org: using cached WordPress $LATEST)"
+			fi
+			echo "    WordPress latest = $LATEST"
+			cached_wordpress "$LATEST"
+		else
+			cached_wordpress "$WPV"
+		fi
+		tar xzf "$WP_TARBALL" -C "$DL" || { echo "unpacking WordPress ($WPV) failed"; exit 1; }
 	fi
 	mv "$DL/wordpress" "$W" || { echo "unpacking WordPress ($WPV) failed"; exit 1; }
 	rm -rf "$DL"
 fi
 if [ "$DB" = sqlite ]; then
 	if [ ! -d "$W/wp-content/plugins/sqlite-database-integration" ]; then
-		curl -sfLo sqlite.zip "https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip" || { echo "download SQLite plugin failed"; exit 1; }
-		verify 256 sqlite.zip "$SQLITE_PLUGIN_SHA256" "sqlite-database-integration ${SQLITE_PLUGIN_VERSION}"
-		unzip -q sqlite.zip -d "$W/wp-content/plugins/"
+		SQ="$CACHE/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip"
+		cached_file "$SQ" 256 "$SQLITE_PLUGIN_SHA256" "https://downloads.wordpress.org/plugin/sqlite-database-integration.${SQLITE_PLUGIN_VERSION}.zip" "sqlite-database-integration ${SQLITE_PLUGIN_VERSION}"
+		unzip -q "$SQ" -d "$W/wp-content/plugins/"
 		sed "s#{SQLITE_IMPLEMENTATION_FOLDER_PATH}#$W/wp-content/plugins/sqlite-database-integration#; s#{SQLITE_PLUGIN}#sqlite-database-integration/load.php#" \
 			"$W/wp-content/plugins/sqlite-database-integration/db.copy" > "$W/wp-content/db.php"
 	fi
@@ -292,6 +394,27 @@ FILES_URL="$U/e2e-files"
 MOZ="Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0"
 GOOGLEBOT="Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
 
+J="$WORK/cookies.txt"
+admin_login() { # the admin session the admin screens use (cookie jar $J)
+	rm -f "$J"
+	curl -s -o /dev/null -c "$J" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" \
+		-d "log=admin_e2e&pwd=e2e-pass-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
+}
+[ -n "$ONLY" ] && admin_login   # a partial run may skip the section that normally logs in
+# Helpers for the admin screens, shared by several sections (so a partial run has them).
+admin() { # admin URL [curl args...] -> body to $WORK/admin.html, prints status
+	local url=$1; shift
+	curl -s -o "$WORK/admin.html" -D "$WORK/admin.headers" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$@" "$url"
+}
+nonce_for() { # nonce_for ACTION [TAB] -> the _wpnonce of the form with that action (on the Tools tab by default)
+	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=${2:-tools}" > /dev/null
+	"$PHP" -r 'preg_match("/name=\"_wpnonce\" value=\"([0-9a-f]+)\"(?:(?!_wpnonce).)*?name=\"action\" value=\"" . $argv[2] . "\"/s", file_get_contents($argv[1]), $m); echo $m[1] ?? "";' "$WORK/admin.html" "$1"
+}
+ajax_nonce() { grep -o '"geoNonce":"[0-9a-f]*"' "$WORK/admin.html" | cut -d'"' -f4; }
+redirect_has() { # redirect_has TEXT -> 1 if the last response's Location contains TEXT
+	grep -i '^location:' "$WORK/admin.headers" | grep -c "$1"
+}
+
 count_in() { # count_in TEXT FILE -> matching lines in FILE (0 if it doesn't exist)
 	if [ -f "$2" ]; then grep -cF -- "$1" "$2"; else echo 0; fi
 }
@@ -300,12 +423,13 @@ log_value() { # log_value COLUMN "WHERE ..." -> first matching value from the bo
 	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_log WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
 }
 
-echo "==> Normal traffic"
+if want "Normal traffic"; then
 check "home page"                    200 "$(status 203.0.113.10 "$MOZ" "$U/")"
 check "search"                       200 "$(status 203.0.113.10 "$MOZ" "$U/?s=hello+world")"
 check "REST posts endpoint"          200 "$(status 203.0.113.10 "$MOZ" "$U/?rest_route=/wp/v2/posts")"
 
-echo "==> Bad visitors"
+fi
+if want "Bad visitors"; then
 check "scanner User-Agent"           403 "$(status 203.0.113.21 "sqlmap/1.7" "$U/")"
 check "empty User-Agent"             403 "$(status 203.0.113.22 "" "$U/")"
 check "xmlrpc.php"                   403 "$(status 203.0.113.23 "$MOZ" "$U/xmlrpc.php")"
@@ -316,7 +440,8 @@ check "WAF: SQL injection"           403 "$(status 203.0.113.27 "$MOZ" "$U/?id=1
 check "WAF: path traversal"          403 "$(status 203.0.113.28 "$MOZ" "$U/?file=../../../../etc/passwd")"
 check "users sitemap removed"        404 "$(status 203.0.113.10 "$MOZ" "$U/wp-sitemap-users-1.xml")"
 
-echo "==> Brute-force protection"
+fi
+if want "Brute-force protection"; then
 for i in 1 2 3 4; do login 198.51.100.5 admin_e2e "wrong$i" > /dev/null; done
 check "generic login error"          1 "$(grep -c 'username or password you entered is incorrect' "$WORK/login.html")"
 check "5th failure still answered"   200 "$(login 198.51.100.5 admin_e2e wrong5)"
@@ -325,7 +450,8 @@ login 198.51.100.6 admin x > /dev/null
 check "banned username locks out"    403 "$(login 198.51.100.6 admin_e2e e2e-pass-123)"
 check "other IPs can still log in"   302 "$(login 198.51.100.7 admin_e2e e2e-pass-123)"
 
-echo "==> Emergency switch (WP_BOUNCER_DISABLE)"
+fi
+if want "Emergency switch (WP_BOUNCER_DISABLE)"; then
 # A must-use plugin loads before plugins, the same as a define in wp-config.php.
 mkdir -p "$W/wp-content/mu-plugins"
 echo "<?php define( 'WP_BOUNCER_DISABLE', true );" > "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
@@ -338,7 +464,8 @@ check "switch removed: scanner out"  403 "$(status 203.0.113.43 "sqlmap/1.7" "$U
 $WP eval '(new WPBouncer\Login\LoginGuard(WPBouncer\Settings::load()->rule("login_lockout"), new WPBouncer\Storage\TransientStore(), WPBouncer\Plugin::instance()->log()))->clear("198.51.100.5");'
 check "unlocked IP can log in"       302 "$(login 198.51.100.5 admin_e2e e2e-pass-123)"
 
-echo "==> Country blocking"
+fi
+if want "Country blocking"; then
 $WP eval '$g = WPBouncer\Plugin::instance()->geo_database(); $g->import_file("'"$FIXTURES"'/geo-sample.csv"); update_option(WPBouncer\Plugin::GEO_META_OPTION, ["rows" => $g->count(), "source" => "fixture", "imported" => time()]);'
 set_settings '$s["rules"]["country"] = ["enabled" => true, "mode" => "block", "countries" => ["CN"], "block_unknown" => false, "scope" => "site"]'
 check "blocked country (CN)"         403 "$(status 1.0.2.5 "$MOZ" "$U/")"
@@ -349,24 +476,28 @@ check "login-only scope: page ok"    200 "$(status 1.0.2.6 "$MOZ" "$U/")"
 check "login-only scope: login"      403 "$(status 1.0.2.6 "$MOZ" "$U/wp-login.php")"
 set_settings '$s["rules"]["country"]["enabled"] = false'
 
-echo "==> Rate limiting"
+fi
+if want "Rate limiting"; then
 set_settings '$s["rules"]["rate_limit"] = ["enabled" => true, "max_requests" => 10, "window_seconds" => 60, "ban_minutes" => 1]'
 codes=""; for _ in $(seq 1 11); do codes="$codes$(status 203.0.113.88 "$MOZ" "$U/") "; done
 check "10 requests allowed, 11th throttled" "200 200 200 200 200 200 200 200 200 200 429 " "$codes"
 set_settings '$s["rules"]["rate_limit"]["enabled"] = false'
 
-echo "==> Monitor mode"
+fi
+if want "Monitor mode"; then
 set_settings '$s["mode"] = "monitor"'
 check "monitor mode lets scanner in" 200 "$(status 203.0.113.77 "sqlmap/1.7" "$U/")"
 check "...but logs it"               monitored "$($WP eval 'global $wpdb; echo $wpdb->get_var("SELECT action FROM {$wpdb->prefix}bouncer_log WHERE ip = \"203.0.113.77\"");')"
 set_settings '$s["mode"] = "enforce"'
 
-echo "==> Per-rule switches"
+fi
+if want "Per-rule switches"; then
 set_settings '$s["rules"]["user_agent"]["enabled"] = false'
 check "User-Agent rule off"          200 "$(status 203.0.113.31 "sqlmap/1.7" "$U/")"
 set_settings '$s["rules"]["user_agent"]["enabled"] = true'
 
-echo "==> Sensitive-file probes"
+fi
+if want "Sensitive-file probes"; then
 check "/.env refused"                403 "$(status 203.0.113.61 "$MOZ" "$U/.env")"
 check "  ...prober banned site-wide" 403 "$(status 203.0.113.61 "$MOZ" "$U/")"
 check "  ...other visitors fine"     200 "$(status 203.0.113.62 "$MOZ" "$U/")"
@@ -384,7 +515,8 @@ set_settings '$s["rules"]["sensitive_files"]["enabled"] = false'
 check "rule off: /.env is a 404"     404 "$(status 203.0.113.69 "$MOZ" "$U/.env")"
 set_settings '$s["rules"]["sensitive_files"] = ["enabled" => true, "ban_minutes" => 60, "extra_paths" => []]'
 
-echo "==> 404 flood"
+fi
+if want "404 flood"; then
 set_settings '$s["rules"]["not_found"]["max_404"] = 5'
 codes=""; for i in 1 2 3 4 5 6; do codes="$codes$(status 203.0.113.71 "$MOZ" "$U/wp-content/plugins/scan-$i/readme.txt") "; done
 check "six 404s answered as 404s"    "404 404 404 404 404 404 " "$codes"
@@ -398,10 +530,9 @@ codes=""; for i in 1 2 3; do codes="$codes$(status 203.0.113.74 "$MOZ" "$U/typo-
 check "a few 404s are fine"          "404 404 404 200" "$codes$(status 203.0.113.74 "$MOZ" "$U/")"
 set_settings '$s["rules"]["not_found"]["max_404"] = 20'
 
-echo "==> Admin screens"
-J="$WORK/cookies.txt"; rm -f "$J"
-curl -s -o /dev/null -c "$J" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" \
-	-d "log=admin_e2e&pwd=e2e-pass-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
+fi
+if want "Admin screens"; then
+admin_login
 for tab in dashboard general rules countries log traffic tools; do
 	out="$WORK/tab-$tab.html"
 	code=$(curl -s -o "$out" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-admin/admin.php?page=wp-bouncer&tab=$tab")
@@ -412,7 +543,8 @@ check "log lists blocked entries" 1 "$( [ "$(grep -o 'wpb-badge-blocked' "$WORK/
 check "admin is never banned for probes" 404 "$(status 198.51.100.50 "$MOZ" "$U/.env" -b "$J")"
 check "  ...still gets in"           200 "$(status 198.51.100.50 "$MOZ" "$U/wp-admin/" -b "$J")"
 
-echo "==> Geo import through the Tools screen"
+fi
+if want "Geo import through the Tools screen"; then
 # One 500-row batch per step, so even a small file needs several steps.
 mkdir -p "$W/wp-content/mu-plugins"
 cat > "$W/wp-content/mu-plugins/wpb-e2e.php" <<'PHPEOF'
@@ -427,18 +559,6 @@ printf '<!DOCTYPE html><html><body><h1>404 Not Found</h1></body></html>\n' > "$W
 head -c 3000000 /dev/urandom | gzip -1 > "$WORK/too-big.csv.gz"   # over upload_max_filesize (2M)
 head -c 9000000 /dev/urandom > "$WORK/way-too-big.csv"              # over post_max_size (8M)
 
-admin() { # admin URL [curl args...] -> body to $WORK/admin.html, prints status
-	local url=$1; shift
-	curl -s -o "$WORK/admin.html" -D "$WORK/admin.headers" -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$@" "$url"
-}
-nonce_for() { # nonce_for ACTION [TAB] -> the _wpnonce of the form with that action (on the Tools tab by default)
-	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=${2:-tools}" > /dev/null
-	"$PHP" -r 'preg_match("/name=\"_wpnonce\" value=\"([0-9a-f]+)\"(?:(?!_wpnonce).)*?name=\"action\" value=\"" . $argv[2] . "\"/s", file_get_contents($argv[1]), $m); echo $m[1] ?? "";' "$WORK/admin.html" "$1"
-}
-ajax_nonce() { grep -o '"geoNonce":"[0-9a-f]*"' "$WORK/admin.html" | cut -d'"' -f4; }
-redirect_has() { # redirect_has TEXT -> 1 if the last response's Location contains TEXT
-	grep -i '^location:' "$WORK/admin.headers" | grep -c "$1"
-}
 geo_rows() { $WP eval 'echo WPBouncer\Plugin::instance()->geo_database()->count();'; }
 import_running() { $WP eval 'echo null === WPBouncer\Plugin::instance()->geo_import()->status() ? 0 : 1;'; }
 run_steps() { # run_steps -> number of AJAX steps until done, or "error: ..."
@@ -471,12 +591,12 @@ TOOLS_POST="$U/wp-admin/admin-post.php?action=wp_bouncer_geo_import"
 
 before=$(geo_rows)
 check "non-geo file is refused"      302 "$(upload "$WORK/not-geo.csv")"
-check "  ...with an explanation"     1   "$(redirect_has "look%20like")"
+check "  ...with an explanation"     1   "$(redirect_has "wpb_msg=geo_error")"
 check "  ...and old data kept"       "$before" "$(geo_rows)"
 upload "$WORK/too-big.csv.gz" > /dev/null
-check "over upload limit explained"  1   "$(redirect_has "larger%20than")"
+check "over upload limit explained"  1   "$(redirect_has "wpb_msg=geo_upload_error")"
 upload "$WORK/way-too-big.csv" > /dev/null
-check "over post limit explained"    1   "$(redirect_has "larger%20than")"
+check "over post limit explained"    1   "$(redirect_has "wpb_msg=geo_upload_error")"
 check "  ...and old data kept"       "$before" "$(geo_rows)"
 
 check "upload starts an import"      302 "$(upload "$FILES/geo.csv.gz")"
@@ -498,7 +618,7 @@ check "  ...and an import is running" 1   "$(import_running)"
 check "  ...and finishes"            ok  "$(at_least 6 "$(run_steps)")"
 check "  ...with all ranges"         3000 "$(geo_rows)"
 from_url "$FILES_URL/missing.csv.gz" > /dev/null
-check "bad URL explained"            1   "$(redirect_has "Download%20failed")"
+check "bad URL explained"            1   "$(redirect_has "wpb_msg=geo_download_failed")"
 check "  ...and old data kept"       3000 "$(geo_rows)"
 
 upload "$FILES/geo.csv.gz" > /dev/null
@@ -512,7 +632,8 @@ check "step with nothing running"    1   "$(curl -s -b "$J" -H "X-Real-IP: 198.5
 check "AJAX step needs a nonce"      403 "$(curl -s -o /dev/null -w '%{http_code}' -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "action=wp_bouncer_geo_step&_ajax_nonce=bad" "$U/wp-admin/admin-ajax.php")"
 rm -f "$W/wp-content/mu-plugins/wpb-e2e.php"
 
-echo "==> No PHP in uploads"
+fi
+if want "No PHP in uploads"; then
 UP="$W/wp-content/uploads"
 HT="$UP/.htaccess"
 rm -f "$HT" "$W/wp-content/e2e-htaccess-500"  # left by an earlier run in a reused WPB_E2E_DIR
@@ -592,7 +713,8 @@ check "REST upload: real image fine" 201 "$(rest_upload "$WORK/dot.png" dot.png 
 check "refused uploads are logged"   uploads_php "$(log_value rule "rule = 'uploads_php'")"
 check "  ...no PHP left in uploads"  0 "$(find "$UP" \( -name '*.php*' -o -name 'pic*.gif' \) ! -name index.php | wc -l | tr -d ' ')"
 
-echo "==> Email alerts"
+fi
+if want "Email alerts"; then
 rm -f "$MAILLOG"
 $WP user create eve_e2e eve@example.test --role=administrator --user_pass=e2e-pass-eve
 check "new administrator: one email" 1 "$(mail_count)"
@@ -630,7 +752,7 @@ $WP plugin delete e2e-sample
 check "plugin deleted: email"        1 "$(count_in 'Plugin deleted: e2e-sample/e2e-sample.php' "$MAILLOG")"
 rm -f "$MAILLOG"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_test_alert general)&action=wp_bouncer_test_alert" > /dev/null
-check "Send a test email button"     1 "$(redirect_has "Test%20email%20sent")"
+check "Send a test email button"     1 "$(redirect_has "wpb_msg=test_sent")"
 check "  ...email captured"          1 "$(count_in 'WP Bouncer alert: Test alert' "$MAILLOG")"
 check "  ...shows who and where"     1 "$(count_in 'admin_e2e (user ID 1)' "$MAILLOG")"
 set_settings '$s["alerts"]["recipients"] = ["security@example.test", "owner@example.test"]'
@@ -659,7 +781,8 @@ check "Activity Log shows alerts"    1 "$( [ "$(grep -o 'wpb-badge-alert' "$WORK
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard" > /dev/null
 check "Dashboard still loads"        200 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard")"
 
-echo "==> Traffic log"
+fi
+if want "Traffic log"; then
 traffic_value() { # traffic_value COLUMN "WHERE ..." -> newest matching value from the traffic log
 	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_traffic WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
 }
@@ -739,7 +862,8 @@ set_settings '$s["traffic"]["enabled"] = false'
 status 203.0.113.89 "$MOZ" "$U/" > /dev/null
 check "switched off: not recorded"   0 "$(traffic_count "ip = '203.0.113.89'")"
 
-echo "==> IP trust (header ignored without trusted proxies, loopback, setup notice)"
+fi
+if want "IP trust (header ignored without trusted proxies, loopback, setup notice)"; then
 ipsetup_nonce() { nonce_for wp_bouncer_ip_setup dashboard; }
 stored_ip() { $WP eval '$s = get_option( "wp_bouncer_settings" ); echo $s["ip_source"] . "|" . implode( ",", $s["trusted_proxies"] );'; }
 # Loopback as the forwarded address is refused: the request resolves to the proxy, which is never
@@ -792,7 +916,8 @@ set_settings '$s["ip_source"] = "x_real_ip"; $s["trusted_proxies"] = ["127.0.0.1
 check "restored: header honoured"       403 "$(status 203.0.113.145 "$MOZ" "$U/.env")"
 check "  ...others unaffected"          200 "$(status 203.0.113.146 "$MOZ" "$U/")"
 
-echo "==> Updates (a local server stands in for GitHub releases)"
+fi
+if want "Updates (a local server stands in for GitHub releases)"; then
 # An update deletes the installed plugin folder and unpacks the new one. When the
 # plugin is a link to the source folder, that would delete the source, so switch
 # to a copy first and refuse to go on if it is still a link.
@@ -803,6 +928,8 @@ fi
 if [ -L "$INSTALLED" ] || [ "$(cd "$INSTALLED" && pwd -P)" = "$(cd "$PLUGIN_DIR" && pwd -P)" ]; then
 	echo "Refusing to test updates: $INSTALLED is the source folder"; exit 1
 fi
+# The update alert needs plugin_updates on; the Email alerts section leaves it so, and a partial run may skip that section.
+set_settings '$s["alerts"] = ["enabled" => true, "recipients" => [], "new_admin" => true, "plugin_changes" => true, "plugin_updates" => true]'
 CURRENT=$($WP plugin get wp-bouncer --field=version)
 $WP plugin auto-updates disable wp-bouncer > /dev/null 2>&1   # left on by an earlier run in a reused WPB_E2E_DIR
 
@@ -897,7 +1024,8 @@ refresh_updates
 check "WP_BOUNCER_DISABLE_UPDATES"   unsupported "$(offered)"
 rm -f "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php" "$W/wp-content/mu-plugins/wpb-e2e-update.php"
 
-echo "==> PHP debug log"
+fi
+if want "PHP debug log"; then
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'
 touch "$W/debug.log"
@@ -908,6 +1036,12 @@ check "no PHP warnings or notices" 0 "$(site_problems | grep -c .)"
 # One line per distinct message and location, most frequent first.
 site_problems | sed -E 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -10 | cut -c1-300
 
+fi
+
 echo
+if [ -n "$ONLY" ]; then
+	echo "!!! PARTIAL RUN (WPB_E2E_ONLY=\"$ONLY\"). Sections that ran:"
+	printf '%s' "$SECTIONS_RAN" | sed 's/^/      /'
+fi
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

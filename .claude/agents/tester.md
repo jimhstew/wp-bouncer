@@ -48,3 +48,5 @@ only when needed), and filter long e2e logs to failures and the final
 counts (for example `| grep -E 'FAIL|passed|failed'`). Re-run just the
 failing test or section with `--filter` while fixing, and the full suite
 once at the end. Report counts and failures, never full logs. Use only local/test databases.
+
+While iterating on e2e, run only the affected section with `WPB_E2E_ONLY="<section heading>"` (see tests/e2e/run.sh header); run the full suite once before reporting done.

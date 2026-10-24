@@ -242,6 +242,20 @@ jobs:
         with:
           name: wp-bouncer-zip
           path: builds/
+      # WordPress, wp-cli and the SQLite plugin are cached by version; run.sh re-checks every
+      # checksum on use and downloads again on a mismatch, so a bad cache can't pass.
+      - name: E2E cache key
+        id: e2ekey
+        run: |
+          pins="$(grep -E '^(WPCLI_VERSION|SQLITE_PLUGIN_VERSION)=' tests/e2e/run.sh | cut -d'"' -f2 | tr '\n' '-')"
+          echo "pins=${pins}" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: builds/e2e-cache
+          key: e2e-${{ steps.e2ekey.outputs.pins }}wp-latest-${{ steps.e2ekey.outputs.month }}
+          restore-keys: |
+            e2e-${{ steps.e2ekey.outputs.pins }}wp-latest-
       - run: WPB_E2E_ZIP="$PWD/builds/wp-bouncer-$(make -s version).zip" tests/e2e/run.sh
 
   # Real MySQL / MariaDB service containers across PHP and WordPress versions.
@@ -327,6 +341,20 @@ jobs:
         with:
           name: wp-bouncer-zip
           path: builds/
+      # WordPress, wp-cli and the SQLite plugin are cached by version; run.sh re-checks every
+      # checksum on use and downloads again on a mismatch, so a bad cache can't pass.
+      - name: E2E cache key
+        id: e2ekey
+        run: |
+          pins="$(grep -E '^(WPCLI_VERSION|SQLITE_PLUGIN_VERSION)=' tests/e2e/run.sh | cut -d'"' -f2 | tr '\n' '-')"
+          echo "pins=${pins}" >> "$GITHUB_OUTPUT"
+          echo "month=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: builds/e2e-cache
+          key: e2e-${{ steps.e2ekey.outputs.pins }}wp-${{ matrix.wp }}-${{ steps.e2ekey.outputs.month }}
+          restore-keys: |
+            e2e-${{ steps.e2ekey.outputs.pins }}wp-${{ matrix.wp }}-
       - name: End-to-end tests
         env:
           WPB_E2E_DB: mysql

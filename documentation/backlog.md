@@ -391,3 +391,4 @@ then 1.2.0 (S10 to S14, then WPB-4, then WPB-2).
 - WPB-6 and WPB-7 move into 1.2.0 so the whole release goes through one test and audit cycle.
 - Skipping 1.1.2 is acceptable: the owner's sites all run current PHP and WordPress, so none are left on 1.1.1.
 - WPB-7 includes WordPress-level checks (owner, 2026-10-24): `DISALLOW_FILE_EDIT` off and a web-readable debug log as warnings; `WP_DEBUG_DISPLAY` on the Dashboard tab only; `FORCE_SSL_ADMIN` left to core's HTTPS test. Other WordPress hardening checks go to a later item. See documentation/architecture/env-checks-and-widget.md.
+- WPB-4 widget (owner, 2026-10-24, may revisit): all seven proposed items; IPs shown (admins only); per-site widget, nothing on the network dashboard; 5-minute cache. See documentation/architecture/env-checks-and-widget.md.

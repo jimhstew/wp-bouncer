@@ -79,6 +79,8 @@ Database and WordPress version:
 - `WPB_E2E_DB=sqlite` (default) or `mysql`. The `mysql` setting covers MariaDB too.
 - `WPB_E2E_DB_HOST` (default `127.0.0.1`, may include a port), `WPB_E2E_DB_USER` (default `root`, needs CREATE and DROP on the database), `WPB_E2E_DB_PASSWORD` (default empty), `WPB_E2E_DB_NAME` (default `wpb_e2e`). The database is **dropped and recreated**, so use a disposable one. The name may only contain letters, digits and `_`.
 - `WPB_E2E_WP_VERSION=latest` (default), `nightly`, or a version such as `6.4` or `5.8.3`.
+- `WPB_E2E_CACHE=dir` (default `builds/e2e-cache/`, git-ignored). WordPress, wp-cli and the SQLite plugin are downloaded once and reused. Every cached file is checked against its checksum each time it is used and fetched again on a mismatch, so a corrupted cache never passes. WordPress is cached per version; `latest` is resolved through api.wordpress.org first (offline, the newest cached release is used), and `nightly` is reused for 3 hours. CI caches this folder for the e2e jobs; the release workflow does not.
+- `WPB_E2E_ONLY="Updates,Traffic"` runs setup plus only the sections whose `==> ` heading contains one of the comma-separated words (case-insensitive). For local debugging; CI never sets it. The run prints that it was partial and which sections ran, and the pass/fail summary works as usual. "Emergency switch" runs "Brute-force protection" first and "Admin screens" runs "Bad visitors" first; the other sections stand alone, but a few counts (such as the Activity Log entries) assume the whole suite ran. An unknown word is an error that lists the section names.
 
 Example, against a local MariaDB:
 
