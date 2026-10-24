@@ -664,6 +664,25 @@ final class Plugin {
 			10,
 			2
 		);
+		// Older WordPress (before 6.x) answers a request for a missing sitemap provider
+		// with a 200 page instead of a 404, so answer it here, before WP_Sitemaps does (priority 10).
+		add_action( 'template_redirect', array( $this, 'block_users_sitemap' ), 1 );
+	}
+
+	/**
+	 * Answer a request for the users sitemap with a 404 (template_redirect, priority 1).
+	 *
+	 * The provider is removed, but WordPress 5.8 to 6.4 then fall through to a normal page.
+	 */
+	public function block_users_sitemap(): void {
+		global $wp_query;
+		if ( ! $wp_query instanceof \WP_Query || 'users' !== $wp_query->get( 'sitemap' ) ) {
+			return;
+		}
+		$wp_query->set( 'sitemap', '' ); // So WP_Sitemaps::render_sitemaps() has nothing to render.
+		$wp_query->set_404();
+		status_header( 404 );
+		nocache_headers();
 	}
 
 	/**

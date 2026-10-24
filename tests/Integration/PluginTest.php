@@ -585,4 +585,26 @@ final class PluginTest extends IntegrationTestCase {
 		$this->assertCount( 1, $rows );
 		$this->assertSame( (string) $new, $rows[0]['id'] );
 	}
+
+	public function test_the_users_sitemap_request_is_a_404(): void {
+		$this->assertSame( 1, has_action( 'template_redirect', array( $this->plugin, 'block_users_sitemap' ) ), 'before WP_Sitemaps at priority 10' );
+
+		$this->go_to( '/' );
+		$GLOBALS['wp_query']->set( 'sitemap', 'users' ); // What the sitemap rewrite rule sets.
+		$this->plugin->block_users_sitemap();
+
+		$this->assertTrue( is_404() );
+		$this->assertSame( '', get_query_var( 'sitemap' ) );
+	}
+
+	public function test_other_sitemaps_and_pages_are_left_alone(): void {
+		$this->go_to( '/' );
+		$GLOBALS['wp_query']->set( 'sitemap', 'posts' );
+		$this->plugin->block_users_sitemap();
+		$this->assertFalse( is_404() );
+
+		$this->go_to( '/' );
+		$this->plugin->block_users_sitemap();
+		$this->assertFalse( is_404() );
+	}
 }
