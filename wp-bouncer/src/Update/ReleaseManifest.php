@@ -197,11 +197,22 @@ final class ReleaseManifest {
 	/**
 	 * Whether a site on these versions can run this release.
 	 *
+	 * Fails closed: a manifest with a missing or malformed `requires` or
+	 * `requires_php` is treated as incompatible, because scripts/build-manifest.php
+	 * always writes both from the plugin header. Pre-release suffixes on the
+	 * site's versions ("7.0-RC1", "8.3.0-dev") are ignored, so a release
+	 * candidate of the minimum counts as meeting it.
+	 *
 	 * @param string $wp_version  The site's WordPress version.
 	 * @param string $php_version The site's PHP version.
 	 */
 	public function is_compatible( string $wp_version, string $php_version ): bool {
-		return version_compare( $wp_version, $this->requires, '>=' ) && version_compare( $php_version, $this->requires_php, '>=' );
+		if ( '' === $this->requires || '' === $this->requires_php ) {
+			return false;
+		}
+		$wp  = preg_replace( '/-.*$/', '', $wp_version );
+		$php = preg_replace( '/-.*$/', '', $php_version );
+		return version_compare( (string) $wp, $this->requires, '>=' ) && version_compare( (string) $php, $this->requires_php, '>=' );
 	}
 
 	/** Minimum WordPress version, or ''. */

@@ -7,6 +7,11 @@
 
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
+// The classes below need PHP 8.3. On an older PHP leave the data alone rather than fatal.
+if ( version_compare( preg_replace( '/-.*$/', '', (string) phpversion() ), '8.3', '<' ) ) {
+	return;
+}
+
 global $wpdb;
 
 // Remove our block from uploads/.htaccess (anything else in that file stays).

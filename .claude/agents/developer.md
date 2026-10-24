@@ -39,6 +39,6 @@ Do not touch CI/infrastructure files (devops) or markdown docs (docs-writer).
 After changes, run `make lint`, `make analyse` and `make test`, and summarize files
 changed and anything the tester should focus on.
 
-Keep test output small: use PHPUnit `--no-progress`, filter long e2e logs to
+Keep test output small: pipe PHPUnit through `tail -n 30` (PHPUnit 9 has no `--no-progress`), filter long e2e logs to
 failures and the final counts, and re-run only the failing test with
 `--filter` while fixing. Report counts and failures, never full logs.

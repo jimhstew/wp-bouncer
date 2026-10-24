@@ -13,7 +13,7 @@ defined( 'ABSPATH' ) || exit;
 
 /**
  * The plugin header declares "Update URI: https://github.com/jimhstew/wp-bouncer".
- * Because of that, WordPress (5.8+) never takes updates for this plugin from
+ * Because of that, WordPress (7.0+, this plugin's minimum) never takes updates for this plugin from
  * WordPress.org, so an unrelated wordpress.org plugin with the same folder
  * name can't replace it. Instead WordPress asks the update_plugins_github.com
  * filter, which this class answers from the update.json file attached to the
@@ -182,6 +182,16 @@ final class Updater {
 		}
 	}
 
+	/**
+	 * Whether this site meets the release's WordPress and PHP requirements.
+	 *
+	 * @param ReleaseManifest $manifest The release to check.
+	 */
+	private function compatible( ReleaseManifest $manifest ): bool {
+		global $wp_version;
+		return $manifest->is_compatible( (string) $wp_version, PHP_VERSION );
+	}
+
 	/** This plugin's file relative to the plugins folder: wp-bouncer/wp-bouncer.php. */
 	private function basename(): string {
 		return plugin_basename( $this->plugin_file );
@@ -207,8 +217,7 @@ final class Updater {
 		if ( null === $manifest ) {
 			return $update;
 		}
-		global $wp_version;
-		if ( ! $manifest->is_compatible( (string) $wp_version, PHP_VERSION ) ) {
+		if ( ! $this->compatible( $manifest ) ) {
 			// Don't offer a release this site can't run. Reporting the installed
 			// version keeps the plugin in the "no update" list (auto-update toggle).
 			return array(
@@ -250,6 +259,7 @@ final class Updater {
 		if ( null === $manifest ) {
 			return $result;
 		}
+		$compatible = $this->compatible( $manifest );
 		return (object) array(
 			'name'          => 'WP Bouncer',
 			'slug'          => self::SLUG,
@@ -260,7 +270,7 @@ final class Updater {
 			'requires_php'  => $manifest->requires_php(),
 			'tested'        => $manifest->tested(),
 			'last_updated'  => $manifest->released(),
-			'download_link' => $manifest->package(),
+			'download_link' => $compatible ? $manifest->package() : '',
 			'sections'      => array(
 				'description' => '<p>' . esc_html__( 'A self-contained firewall that turns away unwanted visitors at the door: IP and country blocking, bad user-agents, brute-force login lockouts, XML-RPC blocking, rate limiting, user-enumeration protection and a lightweight WAF. No cloud service, no subscription.', 'wp-bouncer' ) . '</p>'
 					. '<p><a href="' . esc_url( self::repository_url() ) . '">' . esc_html( self::repository_url() ) . '</a></p>',
@@ -293,6 +303,19 @@ final class Updater {
 		}
 		if ( null === $manifest || $manifest->package() !== $package ) {
 			return new \WP_Error( 'wp_bouncer_update_changed', __( 'The WP Bouncer release information changed while updating. Go to Dashboard → Updates, click "Check again", and retry.', 'wp-bouncer' ) );
+		}
+
+		if ( ! $this->compatible( $manifest ) ) {
+			return new \WP_Error(
+				'wp_bouncer_incompatible',
+				sprintf(
+					/* translators: 1: WP Bouncer version, 2: required WordPress version, 3: required PHP version. */
+					__( 'WP Bouncer %1$s needs WordPress %2$s and PHP %3$s or newer, so it was not installed.', 'wp-bouncer' ),
+					$manifest->version(),
+					$manifest->requires(),
+					$manifest->requires_php()
+				)
+			);
 		}
 
 		if ( isset( $upgrader->skin ) && is_object( $upgrader->skin ) && method_exists( $upgrader->skin, 'feedback' ) ) {

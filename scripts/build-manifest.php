@@ -59,6 +59,13 @@ $version = wpb_header( $main, 'Version' );
 if ( ! preg_match( '/^\d+\.\d+(\.\d+)?(-[0-9A-Za-z.]+)?$/', $version ) ) {
 	$fail( "no usable Version header in {$main}" );
 }
+// Installed sites refuse a release whose requirements are missing, so a
+// manifest without them would block every update.
+foreach ( array( 'Requires at least', 'Requires PHP' ) as $wpb_required ) {
+	if ( ! preg_match( '/^\d+\.\d+(\.\d+)?$/', wpb_header( $main, $wpb_required ) ) ) {
+		$fail( "no usable {$wpb_required} header in {$main}" );
+	}
+}
 if ( basename( $zip ) !== "wp-bouncer-{$version}.zip" ) {
 	$fail( basename( $zip ) . " does not match the plugin version {$version}" );
 }

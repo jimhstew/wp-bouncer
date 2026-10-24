@@ -62,6 +62,41 @@ final class ReleaseManifestTest extends TestCase {
 		$this->assertTrue( $m->is_compatible( '7.1.3', '8.4.1' ) );
 	}
 
+	public function test_patch_versions_compare_against_a_two_part_requirement(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertTrue( $m->is_compatible( '7.0.1', '8.3.1' ) );
+		$this->assertFalse( $m->is_compatible( '6.9.9', '8.3.0' ) );
+
+		$patch = ReleaseManifest::from_json( $this->json( array( 'requires' => '7.0.1', 'requires_php' => '8.3.2' ) ), self::PREFIX );
+		$this->assertFalse( $patch->is_compatible( '7.0', '8.3.2' ) );
+		$this->assertFalse( $patch->is_compatible( '7.0.1', '8.3.1' ) );
+		$this->assertTrue( $patch->is_compatible( '7.0.1', '8.3.2' ) );
+	}
+
+	public function test_pre_release_site_versions_count_as_their_base_version(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertTrue( $m->is_compatible( '7.0-RC1', '8.3.0' ) );
+		$this->assertTrue( $m->is_compatible( '7.1-beta2', '8.3.0-dev' ) );
+		$this->assertFalse( $m->is_compatible( '6.9-RC1', '8.3.0' ) );
+		$this->assertFalse( $m->is_compatible( '7.0', '8.2.0-dev' ) );
+	}
+
+	public function test_one_requirement_met_exactly_does_not_rescue_the_other(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertFalse( $m->is_compatible( '7.0', '8.2.99' ), 'WP at the boundary, PHP too old' );
+		$this->assertFalse( $m->is_compatible( '6.9.9', '8.3.0' ), 'PHP at the boundary, WP too old' );
+	}
+
+	public function test_missing_or_malformed_requirements_fail_closed(): void {
+		foreach ( array( 'requires', 'requires_php' ) as $field ) {
+			foreach ( array( '', 'soon', '7.0; rm -rf' ) as $bad ) {
+				$m = ReleaseManifest::from_json( $this->json( array( $field => $bad ) ), self::PREFIX );
+				$this->assertNotNull( $m );
+				$this->assertFalse( $m->is_compatible( '99.0', '99.0' ), "$field = '$bad'" );
+			}
+		}
+	}
+
 	public function test_sha256_is_normalised_to_lowercase(): void {
 		$m = ReleaseManifest::from_json( $this->json( array( 'sha256' => str_repeat( 'AB', 32 ) ) ), self::PREFIX );
 		$this->assertNotNull( $m );

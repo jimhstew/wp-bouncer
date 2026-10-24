@@ -324,6 +324,23 @@ final class UpdaterTest extends IntegrationTestCase {
 		$this->assertFalse( version_compare( $update['version'], Plugin::VERSION, '>' ), 'WordPress sees no newer version, so it lists the plugin under "no update"' );
 	}
 
+	public function test_plugin_info_has_no_download_link_when_incompatible(): void {
+		$this->serve( $this->manifest_json( array( 'requires_php' => '99.0' ) ) );
+
+		$info = $this->updater->filter_plugin_info( false, 'plugin_information', (object) array( 'slug' => 'wp-bouncer' ) );
+
+		$this->assertSame( '', $info->download_link );
+	}
+
+	public function test_pre_download_refuses_an_incompatible_release(): void {
+		$this->serve( $this->manifest_json( array( 'requires' => '99.0' ) ) );
+
+		$result = $this->updater->filter_pre_download( false, self::PACKAGE, (object) array(), array() );
+
+		$this->assertWPError( $result );
+		$this->assertSame( 'wp_bouncer_incompatible', $result->get_error_code() );
+	}
+
 	/* ---------------- plugins_api ---------------- */
 
 	public function test_plugin_info_describes_the_release(): void {

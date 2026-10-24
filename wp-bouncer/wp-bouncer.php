@@ -27,7 +27,8 @@ define( 'WP_BOUNCER_DIR', __DIR__ );
 define( 'WP_BOUNCER_MIN_PHP', '8.3' );
 define( 'WP_BOUNCER_MIN_WP', '7.0' );
 
-if ( version_compare( PHP_VERSION, WP_BOUNCER_MIN_PHP, '<' ) || version_compare( $GLOBALS['wp_version'], WP_BOUNCER_MIN_WP, '<' ) ) {
+// Pre-release suffixes ("7.0-RC1") are ignored so a release candidate of the minimum passes.
+if ( version_compare( preg_replace( '/-.*$/', '', PHP_VERSION ), WP_BOUNCER_MIN_PHP, '<' ) || version_compare( preg_replace( '/-.*$/', '', $GLOBALS['wp_version'] ), WP_BOUNCER_MIN_WP, '<' ) ) {
 	/**
 	 * Tell admins why the plugin did not start.
 	 *

@@ -43,7 +43,7 @@ that fails before the fix.
 Run the suite and report: commands used, pass/fail counts, failures with
 cause, coverage gaps, and flaky tests.
 
-Keep test output small: run PHPUnit with `--no-progress` (and `--testdox`
+Keep test output small: pipe PHPUnit through `tail -n 30` (PHPUnit 9 has no `--no-progress`; use `--testdox`
 only when needed), and filter long e2e logs to failures and the final
 counts (for example `| grep -E 'FAIL|passed|failed'`). Re-run just the
 failing test or section with `--filter` while fixing, and the full suite
