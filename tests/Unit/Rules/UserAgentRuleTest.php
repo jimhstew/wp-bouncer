@@ -83,4 +83,28 @@ final class UserAgentRuleTest extends TestCase {
 		$verdict = $this->rule( array( 'evil' ) )->inspect( Requests::make( array( 'ua' => 'evil' ) ) );
 		$this->assertStringContainsString( '"evil"', $verdict->reason() );
 	}
+
+	public function test_catastrophic_pattern_returns_quickly_without_a_warning_and_is_recorded(): void {
+		UserAgentRule::reset_errors();
+		$rule  = $this->rule( array( '/^(a+)+$/' ) );
+		$start = microtime( true );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ua' => str_repeat( 'a', 500 ) . 'b' ) ) ) );
+		$this->assertLessThan( 1.0, microtime( true ) - $start );
+		$this->assertArrayHasKey( '/^(a+)+$/', UserAgentRule::last_errors() );
+	}
+
+	public function test_a_failing_pattern_does_not_block_visitors_or_hide_later_patterns(): void {
+		UserAgentRule::reset_errors();
+		$rule = $this->rule( array( '/(unclosed/', 'badbot' ) );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ua' => 'Mozilla/5.0' ) ) ) );
+		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ua' => 'badbot/1.0' ) ) ) );
+	}
+
+	public function test_only_the_first_100_patterns_are_used(): void {
+		$patterns   = array_map( static fn( $i ) => "pat{$i}x", range( 1, 100 ) );
+		$patterns[] = 'late';
+		$rule       = $this->rule( $patterns );
+		$this->assertNotNull( $rule->inspect( Requests::make( array( 'ua' => 'pat100x' ) ) ) );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ua' => 'late' ) ) ) );
+	}
 }

@@ -86,32 +86,55 @@ final class GeoImport {
 	 * @param string $source_path The uploaded or downloaded .csv / .csv.gz file.
 	 * @param string $label       Where it came from (file name or URL), for display.
 	 * @throws \RuntimeException When the file is unreadable or not a geo CSV. The current data is untouched.
+	 * @throws \Throwable When clearing the table or saving progress fails; the working file is removed.
 	 */
 	public function start( string $source_path, string $label ): void {
 		$this->discard_working_file();
+		$this->sweep_stale_files();
 
 		$work = $this->work_dir() . '/geo-import-' . wp_generate_password( 16, false ) . '.csv';
 		try {
-			$size = CsvImporter::prepare( $source_path, $work );
+			/**
+			 * Filters the most bytes an imported geo CSV may occupy once unpacked.
+			 *
+			 * @param int $max_bytes Default 1 GB.
+			 */
+			$max_bytes = (int) apply_filters( 'wp_bouncer_geo_max_bytes', CsvImporter::DEFAULT_MAX_BYTES );
+			$size      = CsvImporter::prepare( $source_path, $work, 200, $max_bytes );
 		} catch ( \RuntimeException $e ) {
 			wp_delete_file( $work );
 			throw $e;
 		}
 
-		$this->db->truncate();
-		update_option(
-			self::STATE_OPTION,
-			array(
-				'file'     => $work,
-				'size'     => $size,
-				'offset'   => 0,
-				'imported' => 0,
-				'skipped'  => 0,
-				'source'   => UrlRedactor::label( $label ),
-				'started'  => time(),
-			),
-			false
-		);
+		try {
+			$this->db->truncate();
+			update_option(
+				self::STATE_OPTION,
+				array(
+					'file'     => $work,
+					'size'     => $size,
+					'offset'   => 0,
+					'imported' => 0,
+					'skipped'  => 0,
+					'source'   => UrlRedactor::label( $label ),
+					'started'  => time(),
+				),
+				false
+			);
+		} catch ( \Throwable $e ) {
+			wp_delete_file( $work );
+			throw $e;
+		}
+	}
+
+	/** Delete working files left behind by crashed imports (older than 24 hours). */
+	private function sweep_stale_files(): void {
+		$files = glob( $this->work_dir() . '/geo-import-*.csv' );
+		foreach ( false === $files ? array() : $files as $file ) {
+			if ( filemtime( $file ) < time() - DAY_IN_SECONDS ) {
+				wp_delete_file( $file );
+			}
+		}
 	}
 
 	/**

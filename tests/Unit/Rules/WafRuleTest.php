@@ -155,4 +155,139 @@ final class WafRuleTest extends TestCase {
 			}
 		}
 	}
+
+	private function all_categories(): array {
+		return WafRule::SIGNATURES;
+	}
+
+	public function test_signature_after_8kb_of_padding_is_detected(): void {
+		$value = str_repeat( 'a ', 5000 ) . '<script>alert(1)</script>';
+		$this->assertNotNull( WafRule::match_value( $value, $this->all_categories() ) );
+		$verdict = $this->rule()->inspect( Requests::make( array( 'post' => array( 'c' => $value ) ) ) );
+		$this->assertNotNull( $verdict );
+	}
+
+	public function test_signature_straddling_a_window_boundary_is_detected(): void {
+		// 8192-byte windows, 7168 apart: put "<script" across the first boundary.
+		$value = str_repeat( 'a', 8190 ) . '<script>';
+		$this->assertSame( array( 'xss', 'script tag' ), WafRule::match_value( $value, $this->all_categories() ) );
+	}
+
+	public function test_signature_at_the_end_of_a_huge_value_is_detected(): void {
+		$value = str_repeat( 'a ', 100000 ) . '<script>';
+		$this->assertSame( 'xss', WafRule::match_value( $value, $this->all_categories() )[0] );
+	}
+
+	public function test_encoded_signature_after_padding_is_detected(): void {
+		$value = str_repeat( 'a ', 5000 ) . '%3Cscript%3E';
+		$this->assertNotNull( WafRule::match_value( $value, $this->all_categories() ) );
+	}
+
+	public function test_a_pcre_error_is_a_verdict_and_is_reported(): void {
+		// A pattern that backtracks catastrophically stands in for any signature that trips the engine.
+		$categories = array( 'sqli' => array( 'evil' => '/^(a+)+$/' ) );
+		$verdict    = WafRule::match_value( str_repeat( 'a', 5000 ) . 'b', $categories );
+		$this->assertSame( array( 'sqli', 'pattern error (evil)' ), $verdict );
+		$this->assertSame( array( 'evil', PREG_BACKTRACK_LIMIT_ERROR ), WafRule::last_error() );
+	}
+
+	public function test_no_error_is_reported_for_clean_requests(): void {
+		$this->rule()->inspect( Requests::make( array( 'query' => array( 'q' => 'hello' ) ) ) );
+		$this->assertNull( WafRule::last_error() );
+	}
+
+	/**
+	 * Built-in signatures must not match, or fail, on ordinary large content.
+	 *
+	 * @dataProvider benign_corpus
+	 */
+	public function test_benign_content_has_no_match_and_no_pcre_error( string $value ): void {
+		$this->assertNull( WafRule::match_value( $value, $this->all_categories() ) );
+		$this->assertSame( PREG_NO_ERROR, preg_last_error() );
+	}
+
+	public static function benign_corpus(): array {
+		$block = '<!-- wp:paragraph --><p class="has-text-align-center">Some <strong>bold</strong> text, a <a href="https://example.org/a?b=1&amp;c=2">link</a>.</p><!-- /wp:paragraph -->' . "\n"
+			. '<!-- wp:image {"id":12,"sizeSlug":"large"} --><figure class="wp-block-image size-large"><img src="https://example.org/wp-content/uploads/2026/01/a.jpg" alt="x" class="wp-image-12"/></figure><!-- /wp:image -->' . "\n";
+		return array(
+			'long html comment'      => array( '<!-- ' . str_repeat( 'lorem ipsum dolor sit amet ', 3000 ) . ' -->' ),
+			'base64 blob'            => array( base64_encode( str_repeat( "\x00\x01binary\xff", 20000 ) ) ),
+			'60 KB block editor post' => array( substr( str_repeat( $block, 400 ), 0, 61440 ) ),
+			'woo checkout fields'    => array( 'billing_first_name=Jane&billing_last_name=O%27Neil&billing_address_1=12+Main+St&billing_postcode=SW1A+1AA&order_comments=Please+leave+at+the+door.+Thanks%21&shipping_method%5B0%5D=flat_rate%3A1&payment_method=stripe&woocommerce-process-checkout-nonce=abc123&_wp_http_referer=%2Fcheckout%2F' ),
+			'long prose with quotes' => array( str_repeat( "It's a \"fine\" day -- isn't it? ", 3000 ) ),
+			'long percent text'      => array( str_repeat( '100%25 done and %C3%A9 ', 3000 ) ),
+		);
+	}
+
+	public function test_trusted_users_skip_long_value_scanning(): void {
+		$value = str_repeat( 'a ', 5000 ) . '<script>';
+		$this->assertNull( $this->rule()->inspect( Requests::make( array( 'post' => array( 'c' => $value ), 'trusted' => true ) ) ) );
+	}
+
+	public function test_no_signature_uses_the_unicode_modifier(): void {
+		foreach ( WafRule::SIGNATURES as $category => $signatures ) {
+			foreach ( $signatures as $name => $regex ) {
+				$flags = substr( $regex, (int) strrpos( $regex, '/' ) + 1 );
+				$this->assertStringNotContainsString( 'u', $flags, "{$category}/{$name} must not be /u: bad UTF-8 would be a PCRE error" );
+			}
+		}
+	}
+
+	public function test_no_signature_has_an_unbounded_quantifier(): void {
+		foreach ( WafRule::SIGNATURES as $category => $signatures ) {
+			foreach ( $signatures as $name => $regex ) {
+				$this->assertSame( 0, preg_match( '/(?<!\\\\)[+*](?![^\[]*\])|\{\d+,\}/', preg_replace( '/\\\\./', '', $regex ) ), "{$category}/{$name} has an unbounded quantifier" );
+			}
+		}
+	}
+
+	/** @dataProvider attacks */
+	public function test_every_attack_is_found_in_the_middle_of_a_boundary_with_1500_bytes_of_padding( string $category, string $payload ): void {
+		// 8192-byte windows start every 7168 bytes; put the payload across the first boundary.
+		foreach ( array( 8192 - (int) ( strlen( $payload ) / 2 ), 7168 + 8192 - (int) ( strlen( $payload ) / 2 ) ) as $at ) {
+			$value = str_repeat( 'x ', (int) ( $at / 2 ) ) . $payload . str_repeat( 'y ', 750 );
+			$this->assertNotNull( WafRule::match_value( $value, array( $category => WafRule::SIGNATURES[ $category ] ) ), "{$category}: {$payload}" );
+		}
+	}
+
+	public function test_long_padding_inside_a_tag_before_an_event_handler_still_matches_across_a_boundary(): void {
+		$tag   = '<img title="' . str_repeat( 'q', 700 ) . '" onerror=alert(1)>';
+		$value = str_repeat( 'x ', 3800 ) . $tag . str_repeat( 'y ', 750 );
+		$this->assertSame( 'xss', WafRule::match_value( $value, WafRule::SIGNATURES )[0] );
+	}
+
+	public function test_a_word_edge_made_by_a_window_start_is_not_a_match(): void {
+		// The second window starts at byte 7168, in the middle of "reunion select".
+		$value = str_repeat( 'a', 7168 - 2 ) . 'reunion select the best' . str_repeat( 'b', 9000 );
+		$this->assertNull( WafRule::match_value( $value, WafRule::SIGNATURES ) );
+		// Same for "href=\"#": "^"-style edges do not appear either.
+		$value = str_repeat( 'a', 7168 - 6 ) . '<a href="#top">up</a>' . str_repeat( 'b', 9000 );
+		$this->assertNull( WafRule::match_value( $value, WafRule::SIGNATURES ) );
+		// Window 1 ends exactly after href="#, where "$" would match falsely.
+		$value = str_repeat( 'a', 8192 - 8 ) . 'href="#' . str_repeat( 'b ', 9000 );
+		$this->assertNull( WafRule::match_value( $value, WafRule::SIGNATURES ) );
+		$value = str_repeat( 'a', 7168 - 3 ) . 'my-wp-config.php notes' . str_repeat( 'b', 9000 );
+		$this->assertNull( WafRule::match_value( $value, WafRule::SIGNATURES ) );
+	}
+
+	public function test_a_real_union_select_at_the_boundary_still_matches(): void {
+		$value = str_repeat( 'a ', 3583 ) . 'x union select 1' . str_repeat( 'b', 9000 );
+		$this->assertSame( array( 'sqli', 'union select' ), WafRule::match_value( $value, WafRule::SIGNATURES ) );
+	}
+
+	public function test_a_trailing_comment_terminator_only_counts_at_the_end_of_the_value(): void {
+		$cats = array( 'sqli' => array( 'comment terminator' => WafRule::SIGNATURES['sqli']['comment terminator'] ) );
+		$this->assertNotNull( WafRule::match_value( "admin' --", $cats ) );
+		$this->assertNotNull( WafRule::match_value( str_repeat( 'a', 9000 ) . "admin' --", $cats ) );
+		// The quote-dash sits at the end of the first window, but the value goes on.
+		$this->assertNull( WafRule::match_value( str_repeat( 'a', 8192 - 4 ) . "' -- " . str_repeat( 'b', 3000 ), $cats ) );
+	}
+
+	public function test_plain_large_values_are_skipped_by_the_gate_but_attacks_never_are(): void {
+		$plain = str_repeat( 'lorem ipsum dolor ', 3000 );
+		$this->assertNull( WafRule::match_value( $plain, WafRule::SIGNATURES ) );
+		foreach ( array( 'x union select 1', 'into outfile x', '=wp-config.php', 'document.cookie' ) as $p ) {
+			$this->assertNotNull( WafRule::match_value( $plain . $p, WafRule::SIGNATURES ), $p );
+		}
+	}
 }

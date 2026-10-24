@@ -191,6 +191,40 @@ final class GeoImportTest extends IntegrationTestCase {
 		$this->assertSame( 4, $this->db->count() );
 	}
 
+	public function test_the_working_file_is_removed_when_the_unpacked_size_passes_the_cap(): void {
+		$gz = $this->uploads_dir . '/bomb.csv.gz';
+		file_put_contents( $gz, gzencode( str_repeat( "\0", 2 * 1048576 ), 9 ) );
+		$cap = static function (): int {
+			return 1048576;
+		};
+		add_filter( 'wp_bouncer_geo_max_bytes', $cap );
+		try {
+			$this->import->start( $gz, 'bomb.csv.gz' );
+			$this->fail( 'expected the cap to stop the import' );
+		} catch ( \RuntimeException $e ) {
+			$this->assertStringContainsString( 'larger than', $e->getMessage() );
+		} finally {
+			remove_filter( 'wp_bouncer_geo_max_bytes', $cap );
+		}
+		$this->assertNull( $this->import->status() );
+		$this->assertSame( array(), glob( $this->uploads_dir . '/wp-bouncer/geo-import-*.csv' ) ?: array() );
+	}
+
+	public function test_start_sweeps_stale_working_files_only(): void {
+		$dir   = $this->uploads_dir . '/wp-bouncer';
+		wp_mkdir_p( $dir );
+		$old   = $dir . '/geo-import-old.csv';
+		$fresh = $dir . '/geo-import-fresh.csv';
+		file_put_contents( $old, 'x' );
+		file_put_contents( $fresh, 'x' );
+		touch( $old, time() - 2 * DAY_IN_SECONDS );
+
+		$this->import->start( $this->fixture(), 'sample.csv' );
+
+		$this->assertFileDoesNotExist( $old );
+		$this->assertFileExists( $fresh );
+	}
+
 	public function test_percent_helper(): void {
 		$this->assertSame( 0, GeoImport::percent( array( 'size' => 0, 'offset' => 0 ) ) );
 		$this->assertSame( 50, GeoImport::percent( array( 'size' => 200, 'offset' => 100 ) ) );

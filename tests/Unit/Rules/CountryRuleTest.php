@@ -27,7 +27,7 @@ final class CountryRuleTest extends TestCase {
 		);
 	}
 
-	private function rule( array $overrides = array() ): CountryRule {
+	private function rule( array $overrides = array(), bool $paused = false ): CountryRule {
 		return new CountryRule(
 			array_merge(
 				array(
@@ -39,8 +39,15 @@ final class CountryRuleTest extends TestCase {
 				),
 				$overrides
 			),
-			$this->geo
+			$this->geo,
+			$paused
 		);
+	}
+
+	public function test_paused_rule_gives_no_verdict_even_with_block_unknown(): void {
+		$rule = $this->rule( array( 'block_unknown' => true ), true );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '1.1.1.1' ) ) ) );
+		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '9.9.9.9' ) ) ) );
 	}
 
 	public function test_block_mode_blocks_listed_countries(): void {

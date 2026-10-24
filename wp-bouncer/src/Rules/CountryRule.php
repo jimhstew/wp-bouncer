@@ -34,14 +34,23 @@ final class CountryRule extends AbstractRule {
 	private GeoProviderInterface $geo;
 
 	/**
+	 * Paused: the only country source is an untrusted header, so there is nothing to decide on.
+	 *
+	 * @var bool
+	 */
+	private bool $paused;
+
+	/**
 	 * Set up the CountryRule.
 	 *
 	 * @param array<string, mixed> $settings Rule settings.
 	 * @param GeoProviderInterface $geo      Country lookup.
+	 * @param bool                 $paused   Skip the rule (no verdicts at all).
 	 */
-	public function __construct( array $settings, GeoProviderInterface $geo ) {
+	public function __construct( array $settings, GeoProviderInterface $geo, bool $paused = false ) {
 		parent::__construct( $settings );
-		$this->geo = $geo;
+		$this->geo    = $geo;
+		$this->paused = $paused;
 	}
 
 	/** {@inheritDoc} */
@@ -65,6 +74,9 @@ final class CountryRule extends AbstractRule {
 	 * @return Verdict|null A Verdict to refuse the request, or null to let it through.
 	 */
 	public function inspect( Request $request ): ?Verdict {
+		if ( $this->paused ) {
+			return null;
+		}
 		if ( 'login' === $this->setting( 'scope', 'site' ) && ! ( $request->is_login() || $request->is_xmlrpc() || $request->is_admin_area() ) ) {
 			return null;
 		}

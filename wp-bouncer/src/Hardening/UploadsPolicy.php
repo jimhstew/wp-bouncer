@@ -85,7 +85,22 @@ final class UploadsPolicy {
 	}
 
 	/**
-	 * Does the file contain a PHP opening tag ("<?php", any case)?
+	 * Does the text hold "<?php", or a "<?=" that is followed by PHP-looking code?
+	 *
+	 * A bare "<?=" occurs by chance in compressed data (photos, video), so it
+	 * only counts when a variable, a quote or a function call follows.
+	 *
+	 * @param string $data Bytes to check.
+	 */
+	public static function has_php_tag( string $data ): bool {
+		if ( false !== stripos( $data, '<?php' ) ) {
+			return true;
+		}
+		return false !== strpos( $data, '<?=' ) && 1 === preg_match( '/<\?=\s{0,64}(\$|[a-z_\\\\]{1,64}\s{0,64}\(|[\'"])/i', $data );
+	}
+
+	/**
+	 * Does the file contain a PHP opening tag ("<?php" in any case, or "<?=")?
 	 *
 	 * Reads in chunks with an overlap so a tag split across two chunks is
 	 * still found. Files larger than $max_bytes are only checked up to that point.
@@ -107,11 +122,12 @@ final class UploadsPolicy {
 				break;
 			}
 			$read += strlen( $chunk );
-			if ( false !== stripos( $tail . $chunk, '<?php' ) ) {
+			$scan  = $tail . $chunk;
+			if ( self::has_php_tag( $scan ) ) {
 				$found = true;
 				break;
 			}
-			$tail = substr( $chunk, -4 );
+			$tail = substr( $chunk, -256 ); // Longer than any tag plus the context checked after "<?=".
 		}
 		fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- reads only the first bytes of a local file with a size cap; WP_Filesystem has no partial read.
 		return $found;
@@ -151,7 +167,7 @@ final class UploadsPolicy {
 				return 'unprotected';
 			}
 			// The script's own source: the server handed it out as text instead of running it.
-			return false !== stripos( $body, '<?php' ) ? 'protected' : 'unknown';
+			return self::has_php_tag( $body ) ? 'protected' : 'unknown';
 		}
 		if ( 401 === $status || 403 === $status ) {
 			return 'protected';

@@ -295,6 +295,11 @@ final class Request {
 	 * @param string $name Header name, e.g. "X-Forwarded-For".
 	 */
 	public function header( string $name ): string {
+		// A name without a hyphen may be a server variable (GEOIP_COUNTRY_CODE) that a client could
+		// forge as a header (Geoip-Country-Code), so the real variable wins.
+		if ( false === strpos( $name, '-' ) && isset( $this->server[ $name ] ) ) {
+			return (string) $this->server[ $name ];
+		}
 		$key = 'HTTP_' . strtoupper( str_replace( '-', '_', $name ) );
 		if ( isset( $this->server[ $key ] ) ) {
 			return (string) $this->server[ $key ];
@@ -331,19 +336,35 @@ final class Request {
 		return $this->trusted;
 	}
 
-	/** Is this a request to wp-login.php? */
+	/** Is this a request to wp-login.php (including /wp-login.php/extra PATH_INFO)? */
 	public function is_login(): bool {
-		return self::ends_with( $this->path, '/wp-login.php' );
+		return self::has_segment( $this->path, '/wp-login.php' );
 	}
 
-	/** Is this a request to xmlrpc.php? */
+	/** Is this a request to xmlrpc.php (including /xmlrpc.php/extra PATH_INFO)? */
 	public function is_xmlrpc(): bool {
-		return self::ends_with( $this->path, '/xmlrpc.php' );
+		return self::has_segment( $this->path, '/xmlrpc.php' );
 	}
 
-	/** Is this a request inside /wp-admin/ (including admin-ajax.php)? */
+	/**
+	 * Is this a request inside /wp-admin/ (including admin-ajax.php)?
+	 *
+	 * The admin folder must be at the start of the path (after the site's own
+	 * folder, if WordPress is installed in one), so "/index.php/wp-admin/" does
+	 * not count. When the server reports SCRIPT_NAME it must point into
+	 * wp-admin too, which is how a subdirectory install is told apart.
+	 */
 	public function is_admin_area(): bool {
-		return false !== strpos( $this->path, '/wp-admin/' ) || self::ends_with( $this->path, '/wp-admin' );
+		$base   = '';
+		$script = strtolower( (string) ( $this->server['SCRIPT_NAME'] ?? '' ) );
+		if ( '' !== $script ) {
+			$pos = strpos( $script, '/wp-admin/' );
+			if ( false === $pos ) {
+				return false;
+			}
+			$base = substr( $script, 0, $pos );
+		}
+		return 0 === strpos( $this->path, $base . '/wp-admin/' ) || $this->path === $base . '/wp-admin';
 	}
 
 	/**
@@ -353,8 +374,11 @@ final class Request {
 	 * ?rest_route=/wp/v2/users fallback.
 	 */
 	public function rest_route(): string {
-		if ( isset( $this->query['rest_route'] ) && is_string( $this->query['rest_route'] ) ) {
-			return strtolower( '/' . ltrim( $this->query['rest_route'], '/' ) );
+		// WordPress reads query variables from the query string and from a POST body.
+		foreach ( array( $this->query, $this->post ) as $source ) {
+			if ( isset( $source['rest_route'] ) && is_string( $source['rest_route'] ) ) {
+				return strtolower( '/' . ltrim( $source['rest_route'], '/' ) );
+			}
 		}
 		$pos = strpos( $this->path, '/wp-json/' );
 		if ( false !== $pos ) {
@@ -364,12 +388,20 @@ final class Request {
 	}
 
 	/**
-	 * Does $haystack end with $needle?
+	 * Does the path contain the file name as a whole segment, at the end or followed by "/"?
 	 *
-	 * @param string $haystack Subject.
-	 * @param string $needle   Suffix.
+	 * @param string $path Normalised path.
+	 * @param string $name File name with leading slash.
 	 */
-	private static function ends_with( string $haystack, string $needle ): bool {
-		return substr( $haystack, -strlen( $needle ) ) === $needle;
+	private static function has_segment( string $path, string $name ): bool {
+		$pos = strpos( $path, $name );
+		while ( false !== $pos ) {
+			$end = $pos + strlen( $name );
+			if ( strlen( $path ) === $end || '/' === $path[ $end ] ) {
+				return true;
+			}
+			$pos = strpos( $path, $name, $end );
+		}
+		return false;
 	}
 }

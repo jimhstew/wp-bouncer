@@ -117,7 +117,7 @@ trait PluginHelpers {
 	 */
 	protected function reset_request(): void {
 		$ref = new \ReflectionClass( Plugin::class );
-		foreach ( array( 'request', 'client_ip', 'guard', 'geo' ) as $prop ) {
+		foreach ( array( 'request', 'client_ip', 'guard', 'geo', 'geo_peer_trusted' ) as $prop ) {
 			// Private properties are writable through reflection since PHP 8.1.
 			$ref->getProperty( $prop )->setValue( $this->plugin, null );
 		}

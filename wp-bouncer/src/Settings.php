@@ -570,6 +570,6 @@ final class Settings {
 			}
 			$out[] = $pattern;
 		}
-		return array_values( array_unique( $out ) );
+		return array_slice( array_values( array_unique( $out ) ), 0, UserAgentRule::MAX_PATTERNS );
 	}
 }

@@ -439,6 +439,14 @@ check "WAF: XSS"                     403 "$(status 203.0.113.26 "$MOZ" "$U/?s=%3
 check "WAF: SQL injection"           403 "$(status 203.0.113.27 "$MOZ" "$U/?id=1%27%20UNION%20SELECT%20user_pass%20FROM%20wp_users--")"
 check "WAF: path traversal"          403 "$(status 203.0.113.28 "$MOZ" "$U/?file=../../../../etc/passwd")"
 check "users sitemap removed"        404 "$(status 203.0.113.10 "$MOZ" "$U/wp-sitemap-users-1.xml")"
+check "xmlrpc.php/PATH_INFO"         403 "$(status 203.0.113.44 "$MOZ" "$U/xmlrpc.php/x")"
+check "?author=1abc scan"            403 "$(status 203.0.113.45 "$MOZ" "$U/?author=1abc")"
+check "?author_name= scan"           403 "$(status 203.0.113.46 "$MOZ" "$U/?author_name=admin_e2e")"
+check "fake /wp-admin/ path scan"     403 "$(status 203.0.113.49 "$MOZ" "$U/index.php/wp-admin/?author=1")"
+check "?author=1 in a POST body"     403 "$(status 203.0.113.50 "$MOZ" "$U/" -X POST -d author=1)"
+WAF_PAD=$(head -c 12000 /dev/zero | tr '\0' 'a')
+check "WAF: XSS after 12 KB padding" 403 "$(status 203.0.113.47 "$MOZ" "$U/" -X POST --data-urlencode "comment=${WAF_PAD}<script>alert(1)</script>")"
+check "WAF: long benign POST"        200 "$(status 203.0.113.48 "$MOZ" "$U/" -X POST --data-urlencode "comment=${WAF_PAD} hello world")"
 
 fi
 if want "Brute-force protection"; then
@@ -563,6 +571,10 @@ cat > "$W/wp-content/mu-plugins/wpb-e2e.php" <<'PHPEOF'
 add_filter( 'wp_bouncer_geo_step_seconds', '__return_zero' );
 // Let download_url() fetch from the local stand-in for download.db-ip.com.
 add_filter( 'http_request_host_is_external', '__return_true' );
+// wp_safe_remote_get() only talks to ports 80, 443 and 8080 by default.
+add_filter( 'http_allowed_safe_ports', static function ( $ports ) { $ports[] = (int) wp_parse_url( home_url(), PHP_URL_PORT ); return $ports; } );
+// A tiny unpack cap while this flag file exists.
+add_filter( 'wp_bouncer_geo_max_bytes', static function ( $max ) { return file_exists( WP_CONTENT_DIR . '/wpb-small-cap' ) ? 100000 : $max; } );
 PHPEOF
 # 3000 ranges 5.0.0.0/24 .. 5.11.183.0/24, all NL, gzipped like the DB-IP file.
 "$PHP" -r '$o = ""; for ($i = 0; $i < 3000; $i++) { $b = intdiv($i, 256); $c = $i % 256; $o .= "5.$b.$c.0,5.$b.$c.255,NL\n"; } file_put_contents($argv[1], gzencode($o));' "$FILES/geo.csv.gz"
@@ -631,6 +643,13 @@ check "  ...with all ranges"         3000 "$(geo_rows)"
 from_url "$FILES_URL/missing.csv.gz" > /dev/null
 check "bad URL explained"            1   "$(redirect_has "wpb_msg=geo_download_failed")"
 check "  ...and old data kept"       3000 "$(geo_rows)"
+"$PHP" -r 'file_put_contents($argv[1], gzencode(str_repeat("1.0.0.0,1.0.0.255,AU\n", 50000), 9));' "$FILES/bomb.csv.gz"
+touch "$W/wp-content/wpb-small-cap"
+from_url "$FILES_URL/bomb.csv.gz" > /dev/null
+check "oversize unpack refused"      1   "$(redirect_has "wpb_msg=geo_error")"
+check "  ...old data kept"           3000 "$(geo_rows)"
+check "  ...working file removed"    0   "$(find "$W/wp-content/uploads/wp-bouncer" -name '*.csv' | wc -l | tr -d ' ')"
+rm -f "$W/wp-content/wpb-small-cap" "$FILES/bomb.csv.gz"
 
 upload "$FILES/geo.csv.gz" > /dev/null
 check "no-JS step button works"      302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_geo_step)&action=wp_bouncer_geo_step")"

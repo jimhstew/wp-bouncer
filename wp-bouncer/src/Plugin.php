@@ -100,6 +100,12 @@ final class Plugin {
 	 */
 	private ?GeoProviderInterface $geo = null;
 	/**
+	 * Is this connection from a listed trusted proxy (memoised per request)?
+	 *
+	 * @var bool|null
+	 */
+	private ?bool $geo_peer_trusted = null;
+	/**
 	 * Geo database table.
 	 *
 	 * @var GeoDatabase|null
@@ -239,9 +245,10 @@ final class Plugin {
 
 	/** Re-read settings after the admin saves them. */
 	public function reload_settings(): void {
-		$this->settings = Settings::load();
-		$this->guard    = null;
-		$this->geo      = null;
+		$this->settings         = Settings::load();
+		$this->guard            = null;
+		$this->geo              = null;
+		$this->geo_peer_trusted = null;
 		// The IP settings may have changed, so resolve the client again.
 		$this->resolver  = null;
 		$this->client_ip = null;
@@ -303,7 +310,7 @@ final class Plugin {
 		if ( null === $this->geo ) {
 			$providers = array();
 			if ( 'header' === $this->settings->get( 'geo_source' ) ) {
-				$providers[] = new HeaderGeoProvider( wp_unslash( $_SERVER ), (string) $this->settings->get( 'geo_header' ), $this->client_ip() );
+				$providers[] = new HeaderGeoProvider( wp_unslash( $_SERVER ), (string) $this->settings->get( 'geo_header' ), $this->client_ip(), $this->geo_headers_trusted() );
 			}
 			$meta = get_option( self::GEO_META_OPTION, array() );
 			if ( ! empty( $meta['rows'] ) ) {
@@ -312,6 +319,49 @@ final class Plugin {
 			$this->geo = new ChainGeoProvider( $providers );
 		}
 		return $this->geo;
+	}
+
+	/**
+	 * May request headers be believed as a geo source?
+	 *
+	 * Only when this connection comes from a listed trusted proxy (the
+	 * effective list, as the IP resolver sees it).
+	 */
+	private function geo_headers_trusted(): bool {
+		if ( null === $this->geo_peer_trusted ) {
+			$server = wp_unslash( $_SERVER );
+			$remote = isset( $server['REMOTE_ADDR'] ) && is_string( $server['REMOTE_ADDR'] ) ? $server['REMOTE_ADDR'] : '';
+			$list   = $this->ip_resolver()->proxies();
+
+			$this->geo_peer_trusted = '' !== $remote && IpUtils::is_valid( $remote ) && array() !== $list && IpUtils::matches_any( $remote, $list );
+		}
+		return $this->geo_peer_trusted;
+	}
+
+	/**
+	 * Is the geo header unusable because of the configuration?
+	 *
+	 * True when the source is a request header (not a server variable) and
+	 * no trusted proxy is listed, so the header can never be believed. This
+	 * depends on settings only, not on who is connecting. With proxies listed
+	 * but an unlisted peer, the header is ignored for that request without
+	 * being "gated" here: the country is then unknown (fail closed).
+	 */
+	public function geo_header_gated(): bool {
+		return 'header' === $this->settings->get( 'geo_source' )
+			&& HeaderGeoProvider::KIND_HEADER === HeaderGeoProvider::kind( (string) $this->settings->get( 'geo_header' ) )
+			&& array() === $this->ip_resolver()->proxies();
+	}
+
+	/** Is a geo database loaded? */
+	public function geo_database_loaded(): bool {
+		$meta = get_option( self::GEO_META_OPTION, array() );
+		return is_array( $meta ) && ! empty( $meta['rows'] );
+	}
+
+	/** Is country blocking paused (header unusable by configuration and no database to fall back on)? */
+	public function country_paused(): bool {
+		return $this->geo_header_gated() && ! $this->geo_database_loaded();
 	}
 
 	/** Keeps PHP from running in the uploads folder. */
@@ -468,7 +518,7 @@ final class Plugin {
 			new UserAgentRule( $s->rule( UserAgentRule::ID ) ),
 			new XmlRpcRule( $s->rule( XmlRpcRule::ID ) ),
 			new UserEnumerationRule( $s->rule( UserEnumerationRule::ID ) ),
-			new CountryRule( $s->rule( CountryRule::ID ), $this->geo() ),
+			new CountryRule( $s->rule( CountryRule::ID ), $this->geo(), ! empty( $s->rule( CountryRule::ID )['enabled'] ) && $this->country_paused() ),
 			new WafRule( $s->rule( WafRule::ID ) ),
 		);
 
@@ -511,7 +561,33 @@ final class Plugin {
 			$this->geo()
 		);
 
+		// Blocking ends the request, so PCRE failures are recorded on shutdown.
+		register_shutdown_function( array( $this, 'record_pcre_errors' ) );
+
 		$firewall->handle( $this->current_request(), new HttpResponder(), (string) $this->settings->get( 'block_message' ) );
+	}
+
+	/**
+	 * Remember PCRE failures seen by the WAF or the User-Agent rule (shutdown).
+	 *
+	 * Each signature or pattern is recorded at most once an hour, as the
+	 * counter-store key "pcre_error:<id>" holding preg_last_error().
+	 */
+	public function record_pcre_errors(): void {
+		$errors = array();
+		$waf    = WafRule::last_error();
+		if ( null !== $waf ) {
+			$errors[ 'waf:' . $waf[0] ] = $waf[1];
+		}
+		foreach ( UserAgentRule::last_errors() as $pattern => $code ) {
+			$errors[ 'ua:' . md5( (string) $pattern ) ] = $code;
+		}
+		foreach ( $errors as $id => $code ) {
+			$key = 'pcre_error:' . $id;
+			if ( null === $this->store()->get( $key ) ) {
+				$this->store()->set( $key, $code, HOUR_IN_SECONDS );
+			}
+		}
 	}
 
 	/**
@@ -606,6 +682,10 @@ final class Plugin {
 
 		if ( ! $this->settings->is_monitor_mode() && ! $this->client_is_allowlisted() && $this->client_can_be_banned() ) {
 			$remaining = $guard->lockout_remaining( $this->client_key() );
+			// Failures already at the limit: refuse now, before the lockout is written (shortens the race window).
+			if ( 0 === $remaining && $guard->failures( $this->client_key() ) >= $guard->max_attempts() ) {
+				$remaining = 60;
+			}
 			if ( $remaining > 0 ) {
 				return new \WP_Error(
 					'wp_bouncer_locked_out',
@@ -700,9 +780,67 @@ final class Plugin {
 			10,
 			2
 		);
+		add_filter( 'oembed_response_data', array( $this, 'filter_oembed_response' ), 10, 1 );
+		if ( ! empty( $rule['block_rest_users'] ) ) {
+			add_filter( 'rest_prepare_user', array( $this, 'filter_rest_user' ), 10, 1 );
+		}
+		if ( $this->login_guard()->wants_generic_errors() ) {
+			add_filter( 'lostpassword_errors', array( $this, 'filter_lostpassword_errors' ), 10, 1 );
+		}
 		// WordPress 7.0 answers a request for a missing sitemap provider with a 200 page
 		// instead of a 404 (7.1 fixed it), so answer it here, before WP_Sitemaps does (priority 10).
 		add_action( 'template_redirect', array( $this, 'block_users_sitemap' ), 1 );
+	}
+
+	/**
+	 * Drop the author fields from oEmbed responses (oembed_response_data).
+	 *
+	 * @param mixed $data Response data.
+	 * @return mixed
+	 */
+	public function filter_oembed_response( $data ) {
+		if ( is_array( $data ) ) {
+			unset( $data['author_name'], $data['author_url'] );
+		}
+		return $data;
+	}
+
+	/**
+	 * Hide the username-bearing fields of user objects from logged-out visitors (rest_prepare_user).
+	 *
+	 * Covers users embedded in other responses (for example a post's author
+	 * with _embed), which the route check does not see.
+	 *
+	 * @param mixed $response REST response for one user.
+	 * @return mixed
+	 */
+	public function filter_rest_user( $response ) {
+		if ( $response instanceof \WP_REST_Response && ! is_user_logged_in() ) {
+			$data = $response->get_data();
+			if ( is_array( $data ) ) {
+				unset( $data['slug'], $data['name'], $data['link'] );
+				$response->set_data( $data );
+			}
+		}
+		return $response;
+	}
+
+	/**
+	 * Give the "no account with that email address" lost-password error the generic wording (lostpassword_errors).
+	 *
+	 * Only the invalid_email error exists when this filter runs. For an unknown
+	 * username core adds invalidcombo after the filter, so that message cannot
+	 * be changed here, and both cases still differ from the success message.
+	 *
+	 * @param mixed $errors Errors so far.
+	 * @return mixed
+	 */
+	public function filter_lostpassword_errors( $errors ) {
+		if ( $errors instanceof \WP_Error && in_array( 'invalid_email', $errors->get_error_codes(), true ) ) {
+			$errors->remove( 'invalid_email' );
+			$errors->add( 'wp_bouncer_lostpassword', __( '<strong>Error:</strong> A password reset could not be started for that username or email address.', 'wp-bouncer' ) );
+		}
+		return $errors;
 	}
 
 	/**

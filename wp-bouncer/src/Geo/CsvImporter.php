@@ -25,6 +25,9 @@ defined( 'ABSPATH' ) || exit;
  */
 final class CsvImporter {
 
+	/** Default cap on the unpacked CSV: 1 GB. */
+	public const DEFAULT_MAX_BYTES = 1073741824;
+
 	/**
 	 * Turn one CSV row into a range.
 	 *
@@ -128,10 +131,13 @@ final class CsvImporter {
 	 * @param string $source      File to read (gzip is detected automatically).
 	 * @param string $dest        Plain CSV to write.
 	 * @param int    $probe_lines How many data lines to test.
+	 * @param int    $max_bytes   Most bytes to write to $dest (0 = DEFAULT_MAX_BYTES). Stops a decompression bomb.
 	 * @return int Size of $dest in bytes.
-	 * @throws \RuntimeException When the file can't be read or has no usable ranges.
+	 * @throws \RuntimeException When the file can't be read, is too large once unpacked, or has no usable ranges.
 	 */
-	public static function prepare( string $source, string $dest, int $probe_lines = 200 ): int {
+	public static function prepare( string $source, string $dest, int $probe_lines = 200, int $max_bytes = 0 ): int {
+		$max_bytes = $max_bytes > 0 ? $max_bytes : self::DEFAULT_MAX_BYTES;
+
 		$in = @gzopen( $source, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- handled below.
 		if ( false === $in ) {
 			throw new \RuntimeException( 'Could not open geo database file.' );
@@ -146,6 +152,11 @@ final class CsvImporter {
 			$chunk = gzread( $in, 1048576 );
 			if ( false === $chunk || '' === $chunk ) {
 				break;
+			}
+			if ( $bytes + strlen( $chunk ) > $max_bytes ) {
+				gzclose( $in );
+				fclose( $out ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
+				throw new \RuntimeException( 'The geo database is larger than the allowed size once unpacked.' );
 			}
 			$written = fwrite( $out, $chunk ); // phpcs:ignore WordPress.WP.AlternativeFunctions -- streams a large plugin-owned file in chunks; WP_Filesystem would read it all into memory.
 			if ( strlen( $chunk ) !== $written ) {

@@ -66,6 +66,33 @@ final class UploadsPolicyTest extends TestCase {
 		$this->assertTrue( UploadsPolicy::contains_php( $this->file( '<?PHP echo 1;' ) ) );
 	}
 
+	public function test_finds_short_echo_tag(): void {
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( "GIF89a<?= \$_GET['c'] ?>" ) ) );
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( str_repeat( 'a', 1048576 - 1 ) . '<?=$x' ) ) );
+	}
+
+	public function test_bare_echo_open_in_binary_data_is_not_php(): void {
+		$this->assertFalse( UploadsPolicy::has_php_tag( "\x01<?=\xff\x02" ) );
+		$this->assertFalse( UploadsPolicy::has_php_tag( '<?=' ) );
+		$this->assertTrue( UploadsPolicy::has_php_tag( '<?= $x ?>' ) );
+		$this->assertTrue( UploadsPolicy::has_php_tag( '<?=system(1)' ) );
+		$this->assertTrue( UploadsPolicy::has_php_tag( '<?=  \\Foo\\bar ( 1 )' ) );
+		$this->assertTrue( UploadsPolicy::has_php_tag( "<?='x'" ) );
+	}
+
+	public function test_context_after_the_tag_is_found_across_chunks(): void {
+		$this->assertTrue( UploadsPolicy::contains_php( $this->file( str_repeat( 'a', 1048576 - 3 ) . '<?=' . str_repeat( ' ', 10 ) . '$x' ) ) );
+	}
+
+	public function test_8mb_of_seeded_random_bytes_has_no_match(): void {
+		$data = '';
+		for ( $i = 0; $i < 262144; $i++ ) {
+			$data .= hash( 'sha256', 'wpb-seed-' . $i, true );
+		}
+		$this->assertSame( 8388608, strlen( $data ) );
+		$this->assertFalse( UploadsPolicy::contains_php( $this->file( $data ) ) );
+	}
+
 	public function test_clean_files_pass(): void {
 		$this->assertFalse( UploadsPolicy::contains_php( $this->file( "\x89PNG\r\n\x1a\n" . str_repeat( 'x', 5000 ) ) ) );
 		$this->assertFalse( UploadsPolicy::contains_php( $this->file( '<?xml version="1.0"?><svg></svg>' ) ) );

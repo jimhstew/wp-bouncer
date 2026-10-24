@@ -35,6 +35,11 @@ final class RequestTest extends TestCase {
 		$this->assertTrue( Requests::make( array( 'uri' => '/wp-login.php?action=login' ) )->is_login() );
 		$this->assertTrue( Requests::make( array( 'uri' => '/blog/wp-login.php' ) )->is_login() );
 		$this->assertFalse( Requests::make( array( 'uri' => '/wp-login.php.bak' ) )->is_login() );
+		$this->assertTrue( Requests::make( array( 'uri' => '/wp-login.php/x' ) )->is_login() );
+		$this->assertTrue( Requests::make( array( 'uri' => '/blog/xmlrpc.php/a/b' ) )->is_xmlrpc() );
+		$this->assertTrue( Requests::make( array( 'uri' => '/xmlrpc.php.bak/xmlrpc.php/x' ) )->is_xmlrpc() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/xmlrpc.php.bak/x' ) )->is_xmlrpc() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/my-xmlrpc.php/x' ) )->is_xmlrpc() );
 
 		$this->assertTrue( Requests::make( array( 'uri' => '/xmlrpc.php' ) )->is_xmlrpc() );
 		$this->assertTrue( Requests::make( array( 'uri' => '//XmlRpc.php' ) )->is_xmlrpc() );
@@ -89,5 +94,32 @@ final class RequestTest extends TestCase {
 		$this->assertSame( '203.0.113.5', Requests::make( array( 'ip' => '203.0.113.5' ) )->key_ip() );
 		$this->assertSame( 'rejected:127.0.0.1', Requests::make( array( 'ip' => '127.0.0.1', 'subject' => 'rejected:127.0.0.1' ) )->key_ip() );
 		$this->assertSame( '127.0.0.1', Requests::make( array( 'ip' => '127.0.0.1', 'subject' => 'rejected:127.0.0.1' ) )->ip() );
+	}
+
+	public function test_admin_area_is_a_path_prefix(): void {
+		$this->assertTrue( Requests::make( array( 'uri' => '/wp-admin/' ) )->is_admin_area() );
+		$this->assertTrue( Requests::make( array( 'uri' => '/wp-admin' ) )->is_admin_area() );
+		$this->assertTrue( Requests::make( array( 'uri' => '/wp-admin/admin-ajax.php' ) )->is_admin_area() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/index.php/wp-admin/' ) )->is_admin_area() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/blog/index.php/wp-admin/' ) )->is_admin_area() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/wp-admin-x/' ) )->is_admin_area() );
+	}
+
+	public function test_admin_area_in_a_subdirectory_install_uses_script_name(): void {
+		$server = array( 'SCRIPT_NAME' => '/blog/wp-admin/edit.php' );
+		$this->assertTrue( Requests::make( array( 'uri' => '/blog/wp-admin/edit.php?author=1', 'server' => $server ) )->is_admin_area() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/blog/wp-admin/edit.php', 'server' => array( 'SCRIPT_NAME' => '/blog/index.php' ) ) )->is_admin_area() );
+		$this->assertFalse( Requests::make( array( 'uri' => '/other/wp-admin/edit.php', 'server' => $server ) )->is_admin_area() );
+	}
+
+	public function test_rest_route_can_come_from_the_post_body(): void {
+		$this->assertSame( '/wp/v2/users', Requests::make( array( 'method' => 'POST', 'post' => array( 'rest_route' => '/wp/v2/users' ) ) )->rest_route() );
+	}
+
+	public function test_header_prefers_the_real_server_variable_for_names_without_a_hyphen(): void {
+		$server = array( 'GEOIP_COUNTRY_CODE' => 'DE', 'HTTP_GEOIP_COUNTRY_CODE' => 'US', 'HTTP_X_FOO' => 'a' );
+		$req    = Requests::make( array( 'server' => $server ) );
+		$this->assertSame( 'DE', $req->header( 'GEOIP_COUNTRY_CODE' ) );
+		$this->assertSame( 'a', $req->header( 'X-Foo' ) );
 	}
 }

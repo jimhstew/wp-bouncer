@@ -174,10 +174,52 @@ final class PluginTest extends IntegrationTestCase {
 		$this->assertSame( 'AU', $this->plugin->geo()->lookup( '1.0.0.9' ) );
 	}
 
-	public function test_geo_header_mode_trusts_the_header_first_then_falls_back_to_the_database(): void {
-		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'CF-IPCountry' ) );
+	public function test_geo_header_mode_trusts_the_header_from_a_listed_proxy(): void {
+		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'CF-IPCountry', 'ip_source' => 'remote_addr', 'trusted_proxies' => array( '198.51.100.0/24' ) ) );
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.5', 'HTTP_CF_IPCOUNTRY' => 'DE' ) );
 
+		$this->assertFalse( $this->plugin->geo_header_gated() );
+		$this->assertSame( 'DE', $this->plugin->geo()->lookup( $this->plugin->client_ip() ) );
+	}
+
+	public function test_geo_header_is_ignored_from_an_unlisted_peer_and_the_database_answers(): void {
+		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'CF-IPCountry', 'trusted_proxies' => array( '192.0.2.0/24' ) ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.5', 'HTTP_CF_IPCOUNTRY' => 'DE' ) );
+		$this->assertFalse( $this->plugin->geo_header_gated(), 'proxies are configured' );
+		$this->assertFalse( $this->plugin->country_paused() );
+		$this->assertNull( $this->plugin->geo()->lookup( '198.51.100.5' ), 'forged header ignored' );
+
+		$this->plugin->geo_database()->insert_batch( array( array( 'from' => \WPBouncer\Support\IpUtils::to_hex16( '198.51.100.0' ), 'to' => \WPBouncer\Support\IpUtils::to_hex16( '198.51.100.255' ), 'country' => 'NL' ) ) );
+		update_option( Plugin::GEO_META_OPTION, array( 'rows' => 1 ) );
+		$this->plugin->reload_settings();
+		$this->assertSame( 'NL', $this->plugin->geo()->lookup( '198.51.100.5' ) );
+	}
+
+	public function test_an_unlisted_peer_with_no_database_fails_closed(): void {
+		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'CF-IPCountry', 'trusted_proxies' => array( '192.0.2.0/24' ), 'rules' => array( 'country' => array( 'enabled' => true, 'block_unknown' => true ) ) ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.5', 'HTTP_CF_IPCOUNTRY' => 'DE' ) );
+
+		$this->assertFalse( $this->plugin->country_paused() );
+		$rules = array_filter( $this->plugin->build_rules(), static fn( $r ) => $r instanceof CountryRule );
+		$rule  = reset( $rules );
+		$this->assertNotNull( $rule->inspect( \WPBouncer\Firewall\Request::from_globals( '198.51.100.5', $_SERVER, array(), array(), '__return_false', '__return_false' ) ) );
+	}
+
+	public function test_country_blocking_pauses_when_the_header_is_gated_and_no_database_is_loaded(): void {
+		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'CF-IPCountry', 'rules' => array( 'country' => array( 'enabled' => true, 'block_unknown' => true ) ) ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.5', 'HTTP_CF_IPCOUNTRY' => 'DE' ) );
+
+		$this->assertTrue( $this->plugin->country_paused() );
+		$rules = array_filter( $this->plugin->build_rules(), static fn( $r ) => $r instanceof CountryRule );
+		$rule  = reset( $rules );
+		$this->assertNull( $rule->inspect( \WPBouncer\Firewall\Request::from_globals( '198.51.100.5', $_SERVER, array(), array(), '__return_false', '__return_false' ) ) );
+	}
+
+	public function test_a_server_variable_geo_source_is_never_gated(): void {
+		$this->set_settings( array( 'geo_source' => 'header', 'geo_header' => 'GEOIP_COUNTRY_CODE' ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.5', 'GEOIP_COUNTRY_CODE' => 'DE', 'HTTP_GEOIP_COUNTRY_CODE' => 'US' ) );
+
+		$this->assertFalse( $this->plugin->geo_header_gated() );
 		$this->assertSame( 'DE', $this->plugin->geo()->lookup( '198.51.100.5' ) );
 	}
 
@@ -469,6 +511,51 @@ final class PluginTest extends IntegrationTestCase {
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
 
 		$this->assertNull( $this->plugin->filter_authenticate( null ) );
+	}
+
+	public function test_failures_at_the_limit_refuse_before_any_lockout_exists(): void {
+		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
+		$this->plugin->store()->set( 'login_fail:203.0.113.9', 5, 900 );
+
+		$this->assertNull( $this->plugin->store()->get( 'login_lock:203.0.113.9' ) );
+		$result = $this->plugin->filter_authenticate( null );
+		$this->assertWPError( $result );
+		$this->assertSame( 'wp_bouncer_locked_out', $result->get_error_code() );
+
+		$this->plugin->store()->set( 'login_fail:203.0.113.9', 4, 900 );
+		$this->assertNull( $this->plugin->filter_authenticate( null ), 'below the limit' );
+	}
+
+	/* ---------------- user enumeration leaks (RT-15) ---------------- */
+
+	public function test_oembed_author_fields_are_dropped_and_the_rest_kept(): void {
+		$this->assertNotFalse( has_filter( 'oembed_response_data', array( $this->plugin, 'filter_oembed_response' ) ) );
+		$data = $this->plugin->filter_oembed_response( array( 'title' => 'T', 'author_name' => 'admin', 'author_url' => 'https://x/author/admin/' ) );
+		$this->assertSame( array( 'title' => 'T' ), $data );
+	}
+
+	public function test_lost_password_unknown_email_error_gets_the_generic_wording(): void {
+		$this->assertNotFalse( has_filter( 'lostpassword_errors', array( $this->plugin, 'filter_lostpassword_errors' ) ) );
+		$errors = $this->plugin->filter_lostpassword_errors( new \WP_Error( 'invalid_email', 'There is no account with that username or email address.' ) );
+		$this->assertSame( array( 'wp_bouncer_lostpassword' ), $errors->get_error_codes() );
+		$this->assertStringNotContainsString( 'no account', $errors->get_error_message() );
+		// Core adds invalidcombo after this filter runs, so it is not touched here.
+		$other = $this->plugin->filter_lostpassword_errors( new \WP_Error( 'empty_username', 'Enter a username.' ) );
+		$this->assertSame( array( 'empty_username' ), $other->get_error_codes() );
+	}
+
+	public function test_rest_user_objects_lose_name_slug_and_link_for_logged_out_visitors(): void {
+		$this->assertNotFalse( has_filter( 'rest_prepare_user', array( $this->plugin, 'filter_rest_user' ) ) );
+		wp_set_current_user( 0 );
+		$out = $this->plugin->filter_rest_user( new \WP_REST_Response( array( 'id' => 3, 'name' => 'Jane', 'slug' => 'jane_admin', 'link' => 'https://x/author/jane_admin/', 'avatar_urls' => array() ) ) );
+		$this->assertSame( array( 'id' => 3, 'avatar_urls' => array() ), $out->get_data() );
+	}
+
+	public function test_rest_user_objects_are_untouched_for_logged_in_users(): void {
+		wp_set_current_user( self::factory()->user->create() );
+		$out = $this->plugin->filter_rest_user( new \WP_REST_Response( array( 'id' => 3, 'slug' => 'jane' ) ) );
+		$this->assertSame( array( 'id' => 3, 'slug' => 'jane' ), $out->get_data() );
+		wp_set_current_user( 0 );
 	}
 
 	/* ---------------- IP trust (RT-03, RT-04, RT-24, Q1) ---------------- */

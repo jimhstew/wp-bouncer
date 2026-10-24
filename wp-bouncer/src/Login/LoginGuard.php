@@ -104,6 +104,20 @@ final class LoginGuard {
 	}
 
 	/**
+	 * Failed logins currently counted for the IP.
+	 *
+	 * @param string $ip Client IP.
+	 */
+	public function failures( string $ip ): int {
+		return (int) $this->store->get( self::failures_key( $ip ) );
+	}
+
+	/** Failures allowed inside the window. */
+	public function max_attempts(): int {
+		return max( 1, (int) ( $this->settings['max_attempts'] ?? 5 ) );
+	}
+
+	/**
 	 * Record a failed login. Locks the IP out once the limit is reached.
 	 *
 	 * @param string               $ip       Client IP.
@@ -123,7 +137,7 @@ final class LoginGuard {
 
 		$window   = max( 1, (int) ( $this->settings['window_minutes'] ?? 15 ) ) * 60;
 		$failures = $this->store->increment( self::failures_key( $ip ), $window );
-		$max      = max( 1, (int) ( $this->settings['max_attempts'] ?? 5 ) );
+		$max      = $this->max_attempts();
 
 		if ( $failures >= $max ) {
 			$this->lock( $ip, $this->failure_reason( $failures, $username ), $context );

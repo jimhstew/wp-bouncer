@@ -248,6 +248,14 @@ final class AdminController {
 		if ( ! empty( $country['enabled'] ) && empty( $meta['rows'] ) && 'header' !== $s->get( 'geo_source' ) ) {
 			$this->notice( 'error', __( 'Country blocking is on but no geo database is loaded, so it can\'t identify any country. Import one under Tools.', 'wp-bouncer' ) );
 		}
+		if ( ! empty( $country['enabled'] ) && $this->plugin->country_paused() ) {
+			$this->notice(
+				'warning',
+				__( 'Country blocking is paused: it reads the country from a request header, but no trusted proxy is listed, so the header could be forged. Add your proxy under Trusted proxies, or import a geo database under Tools.', 'wp-bouncer' ),
+				self::url( 'general' ) . '#wpb-proxies',
+				__( 'General → Trusted proxies', 'wp-bouncer' )
+			);
+		}
 		$uploads = get_option( UploadsGuard::STATE_OPTION );
 		if ( UploadsGuard::is_broken() && $this->plugin->uploads_guard()->wants_htaccess() ) {
 			$this->notice( 'error', __( 'WP Bouncer removed its block from wp-content/uploads/.htaccess: with it in place, your server answered uploaded files (images too) with an error, probably because it doesn\'t allow access rules in .htaccess. Uploads are not protected. See Rules → No PHP in uploads.', 'wp-bouncer' ) );
@@ -973,8 +981,7 @@ final class AdminController {
 			if ( ! wp_http_validate_url( $url ) ) {
 				$this->back( 'tools', 'geo_bad_url', array(), true );
 			}
-			require_once ABSPATH . 'wp-admin/includes/file.php';
-			$tmp = download_url( $url, 120 );
+			$tmp = $this->download_geo_file( $url );
 			if ( is_wp_error( $tmp ) ) {
 				$this->back( 'tools', 'geo_download_failed', array( 'detail' => $tmp->get_error_message() ), true );
 			}
@@ -1002,6 +1009,51 @@ final class AdminController {
 		// The Tools screen sees the running import and carries on with it.
 		wp_safe_redirect( self::url( 'tools' ) );
 		exit;
+	}
+
+	/**
+	 * Download a geo CSV to a temporary file, with a size cap.
+	 *
+	 * Streams to disk through the safe HTTP API. A response that reached the
+	 * cap is treated as truncated and refused. The temporary file is deleted
+	 * on every failure.
+	 *
+	 * @param string $url Validated http(s) URL.
+	 * @return string|\WP_Error Temporary file path, or the error.
+	 */
+	private function download_geo_file( string $url ) {
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		$limit = 200 * MB_IN_BYTES;
+		$tmp   = wp_tempnam( $url );
+		if ( ! $tmp ) {
+			return new \WP_Error( 'wpb_geo_tmp', __( 'Could not create a temporary file.', 'wp-bouncer' ) );
+		}
+		$response = wp_safe_remote_get(
+			$url,
+			array(
+				'stream'              => true,
+				'filename'            => $tmp,
+				'limit_response_size' => $limit,
+				'timeout'             => 120,
+			)
+		);
+		if ( is_wp_error( $response ) ) {
+			wp_delete_file( $tmp );
+			return $response;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $response );
+		if ( 200 !== $code ) {
+			wp_delete_file( $tmp );
+			/* translators: %d: HTTP status code. */
+			return new \WP_Error( 'wpb_geo_http', sprintf( __( 'The server answered with HTTP status %d.', 'wp-bouncer' ), $code ) );
+		}
+		clearstatcache( true, $tmp );
+		// Reaching the limit exactly means the body was cut off, so >= and not >.
+		if ( filesize( $tmp ) >= $limit ) {
+			wp_delete_file( $tmp );
+			return new \WP_Error( 'wpb_geo_too_big', __( 'The download is larger than the 200 MB limit.', 'wp-bouncer' ) );
+		}
+		return $tmp;
 	}
 
 	/**

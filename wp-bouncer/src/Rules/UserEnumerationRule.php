@@ -43,9 +43,7 @@ final class UserEnumerationRule extends AbstractRule {
 		$query = $request->query();
 
 		$is_author_scan = $this->setting( 'block_author_scan', true )
-			&& isset( $query['author'] )
-			&& is_scalar( $query['author'] )
-			&& preg_match( '/^\s*-?\d+/', (string) $query['author'] )
+			&& ( self::is_author_probe( $query ) || self::is_author_probe( $request->post() ) )
 			&& ! $request->is_admin_area();
 
 		$route         = $request->rest_route();
@@ -62,6 +60,34 @@ final class UserEnumerationRule extends AbstractRule {
 			return null;
 		}
 
-		return $this->deny( $is_author_scan ? 'Author ID scan (?author=N)' : 'REST API user listing' );
+		return $this->deny( $is_author_scan ? 'Author scan (?author=N or ?author_name=)' : 'REST API user listing' );
+	}
+
+	/**
+	 * Does the query string ask WordPress to resolve an author?
+	 *
+	 * WordPress reads a leading integer from "author" ("1abc" is author 1) and
+	 * redirects /?author_name=x to the author archive, so both leak usernames.
+	 *
+	 * @param array<mixed> $query Query-string parameters.
+	 */
+	private static function is_author_probe( array $query ): bool {
+		if ( isset( $query['author'] ) ) {
+			$author = $query['author'];
+			if ( is_array( $author ) ) {
+				return array() !== $author;
+			}
+			if ( is_scalar( $author ) && (int) $author > 0 ) {
+				return true;
+			}
+		}
+		if ( isset( $query['author_name'] ) ) {
+			$name = $query['author_name'];
+			if ( is_array( $name ) ) {
+				return array() !== $name;
+			}
+			return is_scalar( $name ) && '' !== trim( (string) $name );
+		}
+		return false;
 	}
 }

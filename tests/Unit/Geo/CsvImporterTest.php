@@ -260,4 +260,18 @@ final class CsvImporterTest extends TestCase {
 			return false;
 		} );
 	}
+
+	public function test_prepare_refuses_a_file_that_unpacks_past_the_cap(): void {
+		$src  = tempnam( sys_get_temp_dir(), 'wpb' );
+		$dest = tempnam( sys_get_temp_dir(), 'wpb' );
+		file_put_contents( $src, gzencode( str_repeat( "\0", 2 * 1048576 ), 9 ) );
+		$this->assertLessThan( 20000, filesize( $src ) );
+		try {
+			$this->expectException( \RuntimeException::class );
+			CsvImporter::prepare( $src, $dest, 200, 1048576 );
+		} finally {
+			unlink( $src );
+			unlink( $dest );
+		}
+	}
 }

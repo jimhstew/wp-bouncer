@@ -96,6 +96,13 @@ final class SettingsTest extends TestCase {
 		$this->assertSame( array( 'good', '/^ok$/i' ), $out['rules']['user_agent']['patterns'] );
 	}
 
+	public function test_ua_patterns_keep_only_the_first_100(): void {
+		$lines = implode( "\n", array_map( static fn( $i ) => "bot{$i}", range( 1, 130 ) ) );
+		$out   = Settings::sanitize( array( 'rules' => array( 'user_agent' => array( 'patterns' => $lines ) ) ) );
+		$this->assertCount( 100, $out['rules']['user_agent']['patterns'] );
+		$this->assertSame( 'bot100', $out['rules']['user_agent']['patterns'][99] );
+	}
+
 	public function test_ua_patterns_keep_commas(): void {
 		$out = Settings::sanitize( array( 'rules' => array( 'user_agent' => array( 'patterns' => 'Foo, Bar' ) ) ) );
 		$this->assertSame( array( 'Foo, Bar' ), $out['rules']['user_agent']['patterns'] );
