@@ -1,7 +1,12 @@
 /**
- * WP Bouncer admin behaviour: country picker filtering and selection, the
- * "Add my IP" button, and driving the geo database import step by step.
- * Plain JS, no dependencies.
+ * WP Bouncer admin behaviour: deep links that open a rule's settings, the Rules
+ * tab's unsaved-change text and expand/collapse buttons, country picker
+ * filtering and selection, the "Add my IP" button, and driving the geo database
+ * import step by step. Plain JS, no dependencies.
+ *
+ * Everything on the Rules tab works without this file: the settings sit in
+ * native <details> panels and every input is submitted whether the panel is
+ * open or not. This only adds comfort.
  */
 ( function () {
 	'use strict';
@@ -10,6 +15,155 @@
 
 	function $all( selector, root ) {
 		return Array.prototype.slice.call( ( root || document ).querySelectorAll( selector ) );
+	}
+
+	var i18n = cfg.i18n || {};
+
+	/* Deep links ---------------------------------------------------------- */
+
+	// Open the target's collapsed panels, scroll to it and move focus there. The id comes from
+	// the URL, so it is only ever passed to getElementById() (never used as a selector) and
+	// only acted on inside our own screen.
+	var root = document.querySelector( '.wp-bouncer' );
+
+	var reveal = function ( hash ) {
+		var id;
+		try {
+			id = decodeURIComponent( String( hash || '' ).replace( /^#/, '' ) );
+		} catch ( e ) {
+			return;
+		}
+		var el = id ? document.getElementById( id ) : null;
+		if ( ! root || ! el || ! root.contains( el ) ) {
+			return;
+		}
+		var node = el.parentNode;
+		while ( node && node !== root ) {
+			if ( node.tagName === 'DETAILS' ) {
+				node.open = true;
+			}
+			node = node.parentNode;
+		}
+		if ( el.classList.contains( 'wpb-rule' ) ) {
+			var own = el.querySelector( '.wpb-rule-settings' );
+			if ( own ) {
+				own.open = true;
+			}
+		}
+		if ( ! el.hasAttribute( 'tabindex' ) ) {
+			el.setAttribute( 'tabindex', '-1' );
+		}
+		el.scrollIntoView( { block: 'start' } );
+		el.focus( { preventScroll: true } );
+	};
+
+	if ( root ) {
+		window.addEventListener( 'hashchange', function () {
+			reveal( window.location.hash );
+		} );
+		// Clicking the link for the hash we are already on fires no hashchange.
+		root.addEventListener( 'click', function ( e ) {
+			var link = e.target.closest ? e.target.closest( 'a[href^="#"]' ) : null;
+			if ( link && link.getAttribute( 'href' ) === window.location.hash ) {
+				reveal( window.location.hash );
+			}
+		} );
+		// A value the browser refuses (out of range) inside a closed panel can't be focused,
+		// so the submit would seem to do nothing: open the panel first.
+		document.addEventListener( 'invalid', function ( e ) {
+			var field = e.target;
+			if ( ! field.closest || ! field.closest( '.wp-bouncer form' ) ) {
+				return;
+			}
+			var panel = field.closest( 'details' );
+			while ( panel ) {
+				panel.open = true;
+				panel = panel.parentNode && panel.parentNode.closest ? panel.parentNode.closest( 'details' ) : null;
+			}
+		}, true );
+	}
+
+	/* Rules tab ------------------------------------------------------------ */
+
+	var rulesForm = document.querySelector( 'form.wpb-rules-form' );
+	var OPEN_KEY = 'wpbRulesOpen';
+	// The remembered panels are for the page right after a Rules-tab save only: any other
+	// WP Bouncer page forgets them, so they cannot resurface on a later visit.
+	if ( root && ! rulesForm ) {
+		try {
+			window.sessionStorage.removeItem( OPEN_KEY );
+		} catch ( e ) {
+			// Storage can be disabled.
+		}
+	}
+	if ( rulesForm ) {
+		var panels = function () {
+			return $all( '.wpb-rule-settings', rulesForm );
+		};
+
+		// Reopen the panels that were open before the last save.
+		try {
+			var stored = JSON.parse( window.sessionStorage.getItem( OPEN_KEY ) || '[]' );
+			window.sessionStorage.removeItem( OPEN_KEY );
+			if ( Array.isArray( stored ) ) {
+				stored.forEach( function ( id ) {
+					var row = typeof id === 'string' ? document.getElementById( id ) : null;
+					var panel = row && rulesForm.contains( row ) && row.classList.contains( 'wpb-rule' ) ? row.querySelector( '.wpb-rule-settings' ) : null;
+					if ( panel ) {
+						panel.open = true;
+					}
+				} );
+			}
+		} catch ( e ) {
+			// Storage can be disabled. Nothing is lost: the panels just start closed.
+		}
+
+		rulesForm.addEventListener( 'submit', function () {
+			try {
+				var open = panels().filter( function ( p ) { return p.open; } ).map( function ( p ) { return p.parentNode.id; } );
+				window.sessionStorage.setItem( OPEN_KEY, JSON.stringify( open ) );
+			} catch ( e ) {
+				// Ignore: see above.
+			}
+		} );
+
+		// Say which switches changed but are not saved yet. textContent only.
+		var unsaved = rulesForm.querySelector( '.wpb-unsaved' );
+		var announced = false;
+		rulesForm.addEventListener( 'change', function ( e ) {
+			var input = e.target;
+			if ( input.matches && input.matches( '.wpb-switch input' ) ) {
+				var row = input.closest( '.wpb-rule' );
+				var state = row ? row.querySelector( '.wpb-state' ) : null;
+				// No data-saved means the state is not a plain On/Off (removed or unknown): leave the text alone.
+				if ( state && state.hasAttribute( 'data-saved' ) && i18n.on && i18n.off && i18n.notSaved ) {
+					var now = input.checked ? 'on' : 'off';
+					state.textContent = ( input.checked ? i18n.on : i18n.off ) + ( now !== state.getAttribute( 'data-saved' ) ? ' ' + i18n.notSaved : '' );
+				}
+			}
+			if ( unsaved && ! announced ) {
+				announced = true;
+				unsaved.textContent = i18n.unsaved || '';
+			}
+		} );
+
+		// Expand all / Collapse all (rendered hidden: they do nothing without this script).
+		var bar = document.querySelector( '.wpb-expand' );
+		// Without both labels the buttons would be blank: leave them hidden.
+		if ( bar && i18n.expandAll && i18n.collapseAll ) {
+			$all( '[data-wpb-expand]', bar ).forEach( function ( btn ) {
+				var all = btn.getAttribute( 'data-wpb-expand' ) === 'all';
+				btn.textContent = all ? i18n.expandAll : i18n.collapseAll;
+				btn.addEventListener( 'click', function () {
+					panels().forEach( function ( p ) { p.open = all; } );
+				} );
+			} );
+			bar.hidden = false;
+		}
+	}
+
+	if ( root && window.location.hash ) {
+		reveal( window.location.hash );
 	}
 
 	/* Country picker ------------------------------------------------------ */

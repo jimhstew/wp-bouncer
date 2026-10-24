@@ -21,7 +21,7 @@ $wpb_since24 = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
 	<input type="hidden" name="action" value="wp_bouncer_save">
 	<input type="hidden" name="tab" value="traffic">
 	<div class="wpb-rule-head">
-		<label class="wpb-switch"><input type="checkbox" name="wp_bouncer[traffic][enabled]" value="1" <?php checked( $wpb_t['enabled'] ); ?>><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text"><?php esc_html_e( 'Enabled', 'wp-bouncer' ); ?></span></label>
+		<label class="wpb-switch"><input type="checkbox" role="switch" name="wp_bouncer[traffic][enabled]" value="1" <?php checked( $wpb_t['enabled'] ); ?>><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text"><?php esc_html_e( 'Record traffic', 'wp-bouncer' ); ?></span></label>
 		<div>
 			<h2><?php esc_html_e( 'Record traffic', 'wp-bouncer' ); ?></h2>
 			<p class="description"><?php esc_html_e( 'Every request that reaches WordPress: when, from which IP, what kind of client, which URL, the response code and the referring page. Images, CSS and JS served directly by your web server are not included.', 'wp-bouncer' ); ?></p>

@@ -243,6 +243,14 @@ final class Plugin {
 	 * @var AlertNotifier|null
 	 */
 	private ?AlertNotifier $alerts = null;
+
+	/**
+	 * The rule chain for this request (built once), shared by the firewall and the admin overview.
+	 *
+	 * @var RuleInterface[]|null
+	 */
+	private ?array $rules = null;
+
 	/**
 	 * Traffic log.
 	 *
@@ -364,6 +372,7 @@ final class Plugin {
 	/** Re-read settings after the admin saves them. */
 	public function reload_settings(): void {
 		$this->settings         = Settings::load();
+		$this->rules            = null;
 		$this->guard            = null;
 		$this->geo              = null;
 		$this->geo_peer_trusted = null;
@@ -697,6 +706,18 @@ final class Plugin {
 	}
 
 	/**
+	 * The rule chain for this request, built once.
+	 *
+	 * The firewall and the admin overview share it, so "wp_bouncer_rules" runs once per request.
+	 *
+	 * @return RuleInterface[]
+	 */
+	public function registered_rules(): array {
+		$this->rules ??= $this->build_rules();
+		return $this->rules;
+	}
+
+	/**
 	 * Build the rule chain in evaluation order: cheap checks first, regex-heavy ones last.
 	 *
 	 * Extend it with the "wp_bouncer_rules" filter (see docs/adding-a-rule.md).
@@ -750,7 +771,7 @@ final class Plugin {
 		}
 
 		$firewall = new Firewall(
-			$this->build_rules(),
+			$this->registered_rules(),
 			IpUtils::without_broad( (array) $this->settings->get( 'allowlist' ) ),
 			$this->settings->is_monitor_mode(),
 			$this->log_writer(),

@@ -111,17 +111,13 @@ final class DashboardWidget {
 		if ( ! current_user_can( AdminController::CAPABILITY ) ) {
 			return;
 		}
-		$data     = $this->data();
-		$settings = $this->plugin->settings();
-		$rules    = AdminController::rule_labels();
-		$on       = 0;
-		foreach ( array_keys( $rules ) as $id ) {
-			if ( ! empty( $settings->rule( $id )['enabled'] ) ) {
-				++$on;
-			}
-		}
-		$rules_on    = $on;
-		$rules_total = count( $rules );
+		$data = $this->data();
+		// The same counting as the Dashboard tab (RuleStatus), over the built-in rules. RuleOverview is
+		// deliberately not memoised (it must reflect settings saved earlier in the request); this reads
+		// only settings and three options, and the widget renders once per page.
+		$totals      = ( new RuleOverview( $this->plugin ) )->totals();
+		$rules_on    = $totals['on'];
+		$rules_total = $totals['total'];
 		$now         = $this->clock->now();
 		require __DIR__ . '/views/widget.php';
 	}

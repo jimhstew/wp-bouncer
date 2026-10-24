@@ -63,6 +63,13 @@ final class AdminController {
 	private Plugin $plugin;
 
 	/**
+	 * Rule overview (built on first use).
+	 *
+	 * @var RuleOverview|null
+	 */
+	private ?RuleOverview $overview = null;
+
+	/**
 	 * Set up the AdminController.
 	 *
 	 * @param Plugin $plugin Plugin instance.
@@ -107,19 +114,7 @@ final class AdminController {
 	 * @return array<string, array{0: string, 1: string}>
 	 */
 	public static function rule_labels(): array {
-		return array(
-			'ip_blocklist'     => array( __( 'IP blocklist', 'wp-bouncer' ), __( 'Refuse specific IP addresses and CIDR ranges.', 'wp-bouncer' ) ),
-			'user_agent'       => array( __( 'User-Agent filter', 'wp-bouncer' ), __( 'Refuse known attack tools and requests with no User-Agent.', 'wp-bouncer' ) ),
-			'country'          => array( __( 'Country blocking', 'wp-bouncer' ), __( 'Refuse (or only admit) visitors from chosen countries.', 'wp-bouncer' ) ),
-			'xmlrpc'           => array( __( 'XML-RPC blocking', 'wp-bouncer' ), __( 'Close xmlrpc.php, a common brute-force and pingback-abuse target.', 'wp-bouncer' ) ),
-			'login_lockout'    => array( __( 'Login lockout', 'wp-bouncer' ), __( 'Lock out IPs after repeated failed logins.', 'wp-bouncer' ) ),
-			'rate_limit'       => array( __( 'Rate limiting', 'wp-bouncer' ), __( 'Temporarily ban IPs that make too many requests.', 'wp-bouncer' ) ),
-			'waf'              => array( __( 'Web application firewall', 'wp-bouncer' ), __( 'Refuse SQL injection, XSS, path traversal and code injection payloads.', 'wp-bouncer' ) ),
-			'user_enumeration' => array( __( 'User enumeration', 'wp-bouncer' ), __( 'Stop anonymous visitors from harvesting usernames.', 'wp-bouncer' ) ),
-			'sensitive_files'  => array( __( 'Sensitive-file probes', 'wp-bouncer' ), __( 'Ban IPs that look for .env, .git, backups, database dumps and web shells.', 'wp-bouncer' ) ),
-			'not_found'        => array( __( '404 flood', 'wp-bouncer' ), __( 'Ban IPs that hit many "not found" pages, as vulnerability scanners do.', 'wp-bouncer' ) ),
-			'uploads_php'      => array( __( 'No PHP in uploads', 'wp-bouncer' ), __( 'Stop scripts running from the uploads folder, and refuse uploads that are scripts.', 'wp-bouncer' ) ),
-		);
+		return RuleLabels::rules();
 	}
 
 	/**
@@ -226,6 +221,12 @@ final class AdminController {
 				'geoNonce' => wp_create_nonce( 'wp_bouncer_geo_step' ),
 				'toolsUrl' => self::url( 'tools' ),
 				'i18n'     => array(
+					'on'          => __( 'On', 'wp-bouncer' ),
+					'off'         => __( 'Off', 'wp-bouncer' ),
+					'notSaved'    => __( '(not saved)', 'wp-bouncer' ),
+					'unsaved'     => __( 'You have unsaved changes.', 'wp-bouncer' ),
+					'expandAll'   => __( 'Expand all settings', 'wp-bouncer' ),
+					'collapseAll' => __( 'Collapse all settings', 'wp-bouncer' ),
 					/* translators: %d: number of selected countries. */
 					'selected'    => __( '%d selected', 'wp-bouncer' ),
 					/* translators: 1: percent done, 2: ranges loaded so far. */
@@ -253,24 +254,13 @@ final class AdminController {
 		if ( $s->is_monitor_mode() ) {
 			$this->notice( 'warning', __( 'Monitor mode is on: matching requests are logged but NOT blocked.', 'wp-bouncer' ) );
 		}
-		$country = $s->rule( 'country' );
-		$meta    = get_option( Plugin::GEO_META_OPTION, array() );
-		if ( ! empty( $country['enabled'] ) && empty( $meta['rows'] ) && 'header' !== $s->get( 'geo_source' ) ) {
-			$this->notice( 'error', __( 'Country blocking is on but no geo database is loaded, so it can\'t identify any country. Import one under Tools.', 'wp-bouncer' ) );
-		}
-		if ( ! empty( $country['enabled'] ) && $this->plugin->country_paused() ) {
-			$this->notice(
-				'warning',
-				__( 'Country blocking is paused: it reads the country from a request header, but no trusted proxy is listed, so the header could be forged. Add your proxy under Trusted proxies, or import a geo database under Tools.', 'wp-bouncer' ),
-				self::url( 'general' ) . '#wpb-proxies',
-				__( 'General → Trusted proxies', 'wp-bouncer' )
-			);
-		}
-		$uploads = get_option( UploadsGuard::STATE_OPTION );
-		if ( UploadsGuard::is_broken() && $this->plugin->uploads_guard()->wants_htaccess() ) {
-			$this->notice( 'error', __( 'WP Bouncer removed its block from wp-content/uploads/.htaccess: with it in place, your server answered uploaded files (images too) with an error, probably because it doesn\'t allow access rules in .htaccess. Uploads are not protected. See Rules → No PHP in uploads.', 'wp-bouncer' ) );
-		} elseif ( $this->plugin->uploads_guard()->wants_htaccess() && is_array( $uploads ) && empty( $uploads['ok'] ) ) {
-			$this->notice( 'warning', __( 'WP Bouncer could not write its block to wp-content/uploads/.htaccess (the folder may not be writable). See Rules → No PHP in uploads.', 'wp-bouncer' ) );
+		// One source of truth with the Rules and Dashboard tabs: RuleStatus decides, RuleLabels words it.
+		$statuses = $this->overview()->statuses();
+		foreach ( array_merge( $statuses['country']['reasons'], $statuses['uploads_php']['reasons'] ) as $reason ) {
+			$text = RuleLabels::notice( $reason );
+			if ( null !== $text ) {
+				$this->notice( $text['type'], $text['text'], $text['link_url'], $text['link_text'] );
+			}
 		}
 
 		// phpcs:disable WordPress.Security.NonceVerification -- display-only: the value is a code looked up in MessageCodes; no free text is shown and no state changes.
@@ -337,6 +327,30 @@ final class AdminController {
 		);
 	}
 
+	/**
+	 * URL of a rule on the screen where it is configured.
+	 *
+	 * Built-in rules open their settings on the Rules tab (the wpb_rule argument makes the server render
+	 * that panel open). Country blocking is configured on the Countries tab.
+	 *
+	 * @param string $id Rule id.
+	 */
+	public static function rule_url( string $id ): string {
+		if ( 'country' === $id ) {
+			return self::url( 'countries' );
+		}
+		if ( ! RuleCatalog::is_builtin( $id ) ) {
+			return self::url( 'rules' );
+		}
+		return self::url( 'rules', array( 'wpb_rule' => $id ) ) . '#rule-' . $id;
+	}
+
+	/** The grouped rule overview, shared by the notices and the Rules and Dashboard tabs. */
+	private function overview(): RuleOverview {
+		$this->overview ??= new RuleOverview( $this->plugin );
+		return $this->overview;
+	}
+
 	/*
 	 * ------------------------------------------------------------------
 	 * Rendering
@@ -356,6 +370,7 @@ final class AdminController {
 
 		$plugin   = $this->plugin;
 		$settings = $plugin->settings()->to_array();
+		$overview = $this->overview();
 		$view_dir = __DIR__ . '/views/';
 
 		echo '<div class="wrap wp-bouncer">';
@@ -401,8 +416,12 @@ final class AdminController {
 		if ( $error ) {
 			$query['wpb_err'] = 1;
 		}
-		$url      = self::url( $tab, $query );
 		$fragment = sanitize_key( $fragment );
+		// Landing on a rule's row also opens its settings (the result of what was just done is in there).
+		if ( 0 === strpos( $fragment, 'rule-' ) && RuleCatalog::is_builtin( substr( $fragment, 5 ) ) ) {
+			$query['wpb_rule'] = substr( $fragment, 5 );
+		}
+		$url = self::url( $tab, $query );
 		wp_safe_redirect( '' !== $fragment ? $url . '#' . $fragment : $url );
 		exit;
 	}
@@ -820,9 +839,9 @@ final class AdminController {
 		$guard->maybe_sync();
 		$state = get_option( UploadsGuard::STATE_OPTION );
 		if ( empty( $state['ok'] ) ) {
-			$this->back( 'rules', 'uploads_sync_failed', array(), true );
+			$this->back( 'rules', 'uploads_sync_failed', array(), true, 'rule-uploads_php' );
 		}
-		$this->back( 'rules', 'uploads_synced', array( 'state' => $guard->wants_htaccess() ? 'written' : 'removed' ) );
+		$this->back( 'rules', 'uploads_synced', array( 'state' => $guard->wants_htaccess() ? 'written' : 'removed' ), false, 'rule-uploads_php' );
 	}
 
 	/**
@@ -1310,13 +1329,14 @@ final class AdminController {
 	 * @param string $id       Rule id.
 	 * @param bool   $checked  Current state.
 	 * @param bool   $disabled Show the switch but don't let this user change it.
+	 * @param string $title    Rule title: the switch's accessible name, so a screen reader says "IP blocklist, switch, on".
 	 */
-	public static function rule_switch( string $id, bool $checked, bool $disabled = false ): void {
+	public static function rule_switch( string $id, bool $checked, bool $disabled = false, string $title = '' ): void {
 		printf(
-			'<label class="wpb-switch"><input type="checkbox" name="wp_bouncer[rules][%1$s][enabled]" value="1" %2$s %4$s><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text">%3$s</span></label>',
+			'<label class="wpb-switch"><input type="checkbox" role="switch" name="wp_bouncer[rules][%1$s][enabled]" value="1" %2$s %4$s><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text">%3$s</span></label>',
 			esc_attr( $id ),
 			checked( $checked, true, false ),
-			esc_html__( 'Enabled', 'wp-bouncer' ),
+			'' !== $title ? esc_html( $title ) : esc_html__( 'Enabled', 'wp-bouncer' ),
 			disabled( $disabled, true, false )
 		);
 	}

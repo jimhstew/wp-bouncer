@@ -3,8 +3,9 @@
  * Dashboard tab: rule switches and what's been blocked recently.
  *
  * @package WPBouncer
- * @var \WPBouncer\Plugin    $plugin
- * @var array<string, mixed> $settings
+ * @var \WPBouncer\Plugin             $plugin
+ * @var array<string, mixed>          $settings
+ * @var \WPBouncer\Admin\RuleOverview $overview
  */
 
 use WPBouncer\Admin\AdminController;
@@ -59,38 +60,7 @@ $stats    = array(
 </div>
 
 <div class="wpb-grid">
-	<section class="wpb-card">
-		<h2><?php esc_html_e( 'Rules', 'wp-bouncer' ); ?></h2>
-		<p class="description"><?php esc_html_e( 'Each rule can be switched on or off on its own. Configure them on the Rules and Countries tabs.', 'wp-bouncer' ); ?></p>
-		<table class="widefat striped wpb-rule-table">
-			<tbody>
-			<?php foreach ( AdminController::rule_labels() as $rule_id => $label ) : ?>
-				<?php $on = ! empty( $settings['rules'][ $rule_id ]['enabled'] ); ?>
-				<tr>
-					<td>
-						<strong><?php echo esc_html( $label[0] ); ?></strong><br>
-						<span class="description"><?php echo esc_html( $label[1] ); ?></span>
-					</td>
-					<td class="wpb-rule-state">
-						<span class="wpb-badge <?php echo $on ? 'wpb-badge-on' : 'wpb-badge-off'; ?>"><?php echo $on ? esc_html__( 'On', 'wp-bouncer' ) : esc_html__( 'Off', 'wp-bouncer' ); ?></span>
-					</td>
-					<td class="wpb-rule-toggle">
-						<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-							<?php wp_nonce_field( 'wp_bouncer_toggle_rule' ); ?>
-							<input type="hidden" name="action" value="wp_bouncer_toggle_rule">
-							<input type="hidden" name="rule" value="<?php echo esc_attr( $rule_id ); ?>">
-							<?php if ( 'uploads_php' === $rule_id && ! current_user_can( AdminController::FIREWALL_CAPABILITY ) ) : ?>
-								<span class="description"><?php esc_html_e( 'Managed by your network administrator.', 'wp-bouncer' ); ?></span>
-							<?php else : ?>
-							<button type="submit" class="button button-small"><?php echo $on ? esc_html__( 'Turn off', 'wp-bouncer' ) : esc_html__( 'Turn on', 'wp-bouncer' ); ?></button>
-							<?php endif; ?>
-						</form>
-					</td>
-				</tr>
-			<?php endforeach; ?>
-			</tbody>
-		</table>
-	</section>
+	<?php require __DIR__ . '/partials/rule-overview.php'; ?>
 
 	<?php \WPBouncer\Environment\EnvironmentAdmin::shared()->render_dashboard_section(); ?>
 

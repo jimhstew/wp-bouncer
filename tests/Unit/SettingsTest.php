@@ -17,6 +17,34 @@ final class SettingsTest extends TestCase {
 		$this->assertSame( Settings::defaults(), Settings::sanitize( Settings::defaults() ) );
 	}
 
+	public function test_each_rule_is_owned_by_exactly_one_tab(): void {
+		// The Rules tab redesign relies on this: a form saves the rules it owns, and only those.
+		$owned = array();
+		foreach ( Settings::TAB_FIELDS as $tab => $fields ) {
+			foreach ( $fields as $field ) {
+				if ( 0 === strpos( $field, 'rules.' ) ) {
+					$owned[ substr( $field, 6 ) ][] = $tab;
+				}
+			}
+		}
+		$ids = array_keys( Settings::defaults()['rules'] );
+		sort( $ids );
+		ksort( $owned );
+		$this->assertSame( $ids, array_keys( $owned ) );
+		foreach ( $owned as $id => $tabs ) {
+			$this->assertCount( 1, $tabs, $id );
+		}
+		$this->assertSame( array( 'countries' ), $owned['country'] );
+	}
+
+	public function test_a_rule_missing_from_the_posted_form_is_switched_off(): void {
+		// The contract the Rules tab guards with its round-trip test: closed panels must still be submitted.
+		$out = Settings::apply_form( Settings::defaults(), array( 'rules' => array( 'xmlrpc' => array( 'enabled' => '1' ) ) ), 'rules' );
+		$this->assertTrue( $out['rules']['xmlrpc']['enabled'] );
+		$this->assertFalse( $out['rules']['waf']['enabled'] );
+		$this->assertSame( Settings::defaults()['rules']['country'], $out['rules']['country'], 'another tab\'s rule is untouched' );
+	}
+
 	public function test_every_rule_has_an_enabled_switch(): void {
 		foreach ( Settings::defaults()['rules'] as $id => $rule ) {
 			$this->assertArrayHasKey( 'enabled', $rule, $id );

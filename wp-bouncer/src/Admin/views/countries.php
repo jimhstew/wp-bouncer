@@ -31,7 +31,7 @@ foreach ( Countries::all() as $code => $name ) {
 
 	<section class="wpb-card wpb-rule">
 		<div class="wpb-rule-head">
-			<?php AdminController::rule_switch( 'country', ! empty( $rule['enabled'] ) ); ?>
+			<?php AdminController::rule_switch( 'country', ! empty( $rule['enabled'] ), false, __( 'Country blocking', 'wp-bouncer' ) ); ?>
 			<div>
 				<h2><?php esc_html_e( 'Country blocking', 'wp-bouncer' ); ?></h2>
 				<p class="description">

@@ -420,6 +420,9 @@ count_in() { # count_in TEXT FILE -> matching lines in FILE (0 if it doesn't exi
 	if [ -f "$2" ]; then grep -cF -- "$1" "$2"; else echo 0; fi
 }
 mail_count() { count_in '"subject"' "$MAILLOG"; }
+open_panels() { # open_panels -> comma-separated rule rows of the Rules tab in $WORK/admin.html whose Settings panel is open
+	"$PHP" -r 'preg_match_all("/<div class=\"wpb-rule\" id=\"(rule-[a-z_]+)\".*?(?=<div class=\"wpb-rule\" id=|<\/section>)/s", file_get_contents($argv[1]), $m, PREG_SET_ORDER); $o = array(); foreach ($m as $r) { if (preg_match("/<details class=\"wpb-rule-settings\" open>/", $r[0])) { $o[] = $r[1]; } } echo implode(",", $o);' "$WORK/admin.html"
+}
 log_value() { # log_value COLUMN "WHERE ..." -> first matching value from the bouncer log
 	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_log WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
 }
@@ -674,6 +677,88 @@ check "  ...never shows the URI, UA or reason" 0 "$(grep -c 'wpburi\|wpbua\|wpbr
 $WP eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->prefix}bouncer_log WHERE rule LIKE \"%wpbrule%\"" ); WPBouncer\Admin\DashboardWidget::flush();'
 
 fi
+if want "Rules tab"; then
+# WPB-2: the Rules tab in categories. curl runs no JavaScript, so everything here is also the no-JS check:
+# the settings sit in closed <details> panels, and a browser (or curl, using FormFields) submits them anyway.
+admin_login
+RULES_URL="$U/wp-admin/admin.php?page=wp-bouncer&tab=rules"
+FORMFIELDS="$REPO_DIR/tests/Support/FormFields.php"
+RT_BAK="$WORK/settings-before-rules-tab.json"
+RT_LOG_MAX=$(log_value id "1 = 1"); RT_LOG_MAX=${RT_LOG_MAX:-0}
+$WP eval 'file_put_contents("'"$RT_BAK"'", wp_json_encode(get_option("wp_bouncer_settings")));'
+settings_json() { # the stored settings as JSON with sorted keys, so two states compare as text
+	$WP eval '$f = function (array &$a) use (&$f) { ksort($a); foreach ($a as &$v) { if (is_array($v)) { $f($v); } } }; $s = (array) get_option("wp_bouncer_settings"); $f($s); echo wp_json_encode($s);'
+}
+rules_state() { # rules_state defaults|fixture -> every rule at its default, or at tests/fixtures/rules-non-default.php (other settings kept)
+	$WP eval '$s = (array) get_option("wp_bouncer_settings"); $d = WPBouncer\Settings::defaults(); $s["rules"] = $d["rules"]; if ("'"$1"'" === "fixture") { $f = require "'"$FIXTURES"'/rules-non-default.php"; foreach ($f["rules"] as $id => $r) { $s["rules"][$id] = array_merge($s["rules"][$id], $r); } } update_option("wp_bouncer_settings", WPBouncer\Settings::sanitize($s));'
+}
+submit_rules() { # submit_rules [field name to leave out ...] -> status of posting the Rules form as a browser would
+	admin "$RULES_URL" > /dev/null
+	"$PHP" "$FORMFIELDS" "$WORK/admin.html" form.wpb-rules-form "$@" > "$WORK/rules-post.txt"
+	admin "$U/wp-admin/admin-post.php" -H 'Content-Type: application/x-www-form-urlencoded' --data-binary "@$WORK/rules-post.txt"
+}
+changed_paths() { # changed_paths BEFORE_JSON AFTER_JSON -> comma-separated settings paths that differ
+	"$PHP" -r '$f = function ($a, $p = "") use (&$f) { $o = array(); foreach ($a as $k => $v) { if (is_array($v) && $v !== array() && array_keys($v) !== range(0, count($v) - 1)) { $o += $f($v, $p . $k . "."); } else { $o[$p . $k] = $v; } } return $o; }; $a = $f(json_decode($argv[1], true)); $b = $f(json_decode($argv[2], true)); $c = array(); foreach (array_unique(array_merge(array_keys($a), array_keys($b))) as $k) { if (($a[$k] ?? null) !== ($b[$k] ?? null)) { $c[] = $k; } } echo implode(",", $c);' "$1" "$2"
+}
+
+rules_state defaults
+admin "$RULES_URL" > /dev/null
+for id in ip_blocklist country user_agent login_lockout xmlrpc user_enumeration sensitive_files not_found rate_limit waf uploads_php; do
+	check "rule anchor #rule-$id exists once" 1 "$(grep -o "id=\"rule-$id\"" "$WORK/admin.html" | wc -l | tr -d ' ')"
+done
+for slug in block-lists login-accounts scanners-floods payloads-hardening; do
+	check "category anchor #wpb-cat-$slug exists once" 1 "$(grep -o "id=\"wpb-cat-$slug\"" "$WORK/admin.html" | wc -l | tr -d ' ')"
+done
+check "no Other category without third-party rules" 0 "$(grep -c 'id="wpb-cat-other"' "$WORK/admin.html")"
+check "every switch is named after its rule"         1 "$(grep -c 'name="wp_bouncer\[rules\]\[waf\]\[enabled\]"[^>]*><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text">Web application firewall</span>' "$WORK/admin.html")"
+check "  ...and is a switch for screen readers (10: country is a status card)" 10 "$(grep -o 'role="switch" name="wp_bouncer\[rules\]\[[a-z_]*\]\[enabled\]"' "$WORK/admin.html" | wc -l | tr -d ' ')"
+check "no-JS: expand/collapse buttons start hidden" 1 "$(grep -c 'class="wpb-expand" hidden' "$WORK/admin.html")"
+check "no-JS: every Settings panel is a native <details>" 10 "$(grep -o '<details class="wpb-rule-settings"' "$WORK/admin.html" | wc -l | tr -d ' ')"
+check "  ...all closed by default"      "" "$(open_panels)"
+check "  ...no input is disabled"        0 "$(grep -c '<input[^>]* disabled' "$WORK/admin.html")"
+check "country rule is a status card with no input" 0 "$(grep -c 'name="wp_bouncer\[rules\]\[country\]' "$WORK/admin.html")"
+check "  ...linking to the Countries tab" 1 "$( [ "$(grep -c 'Configure on the Countries tab' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "Settings link ?wpb_rule= opens that panel" rule-uploads_php "$(admin "$RULES_URL&wpb_rule=uploads_php" > /dev/null; open_panels)"
+check "  ...an unknown rule opens nothing"        "" "$(admin "$RULES_URL&wpb_rule=nope%22%3E%3Cscript%3E" > /dev/null; open_panels)"
+check "  ...and echoes nothing unescaped"           0 "$(grep -c 'nope"><script>' "$WORK/admin.html")"
+
+# The round trip: render, submit as a browser would, save. Nothing may change, or a closed panel switched a rule off.
+BEFORE=$(settings_json)
+check "Rules form saved unchanged (defaults): redirected" 302 "$(submit_rules)"
+check "  ...changes no setting"       same "$( [ "$(settings_json)" = "$BEFORE" ] && echo same || echo different )"
+rules_state fixture
+BEFORE=$(settings_json)
+check "Rules form saved unchanged (every rule non-default): redirected" 302 "$(submit_rules)"
+check "  ...changes no setting"       same "$( [ "$(settings_json)" = "$BEFORE" ] && echo same || echo different )"
+rules_state defaults
+BEFORE=$(settings_json)
+submit_rules 'wp_bouncer[rules][waf][enabled]' > /dev/null
+check "  ...a switch missing from the POST is switched off (so the check above can fail)" rules.waf.enabled "$(changed_paths "$BEFORE" "$(settings_json)")"
+rules_state fixture
+BEFORE=$(settings_json)
+submit_rules 'wp_bouncer[rules][not_found][max_404]' > /dev/null
+check "one field left out changes only that field" rules.not_found.max_404 "$(changed_paths "$BEFORE" "$(settings_json)")"
+
+# Dashboard: same categories, same switches.
+rules_state defaults
+admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard" > /dev/null
+for name in 'Block lists' 'Login and accounts' 'Scanners and floods' 'Attack payloads and hardening'; do
+	check "dashboard shows category '$name'" 1 "$( [ "$(grep -cF "$name" "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+done
+check "dashboard has a Turn on/off button per rule" 11 "$(grep -c 'name="action" value="wp_bouncer_toggle_rule"' "$WORK/admin.html")"
+xmlrpc_on() { $WP eval 'echo get_option("wp_bouncer_settings")["rules"]["xmlrpc"]["enabled"] ? "on" : "off";'; }
+check "xmlrpc starts on"               on "$(xmlrpc_on)"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_toggle_rule dashboard)&action=wp_bouncer_toggle_rule&rule=xmlrpc" > /dev/null
+check "dashboard button turns it off"  off "$(xmlrpc_on)"
+admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_toggle_rule dashboard)&action=wp_bouncer_toggle_rule&rule=xmlrpc" > /dev/null
+check "  ...and back on"               on "$(xmlrpc_on)"
+
+# Put everything back, including the audit rows and mail the saves above caused.
+$WP eval 'update_option("wp_bouncer_settings", json_decode(file_get_contents("'"$RT_BAK"'"), true));'
+$WP eval 'global $wpdb; $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->prefix}bouncer_log WHERE rule = %s AND id > %d", "settings", '"$RT_LOG_MAX"' ) );'
+rm -f "$MAILLOG" "$RT_BAK" "$WORK/rules-post.txt"
+
+fi
 if want "Geo import through the Tools screen"; then
 # One 500-row batch per step, so even a small file needs several steps.
 mkdir -p "$W/wp-content/mu-plugins"
@@ -824,6 +909,8 @@ check "  ...owner's lines kept"      1 "$(count_in 'Options -Indexes' "$HT")"
 check "  ...not rewritten"           0 "$(status 203.0.113.10 "$MOZ" "$U/" > /dev/null; count_in 'WP Bouncer' "$HT")"
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=rules" > /dev/null
 check "  ...admin is told"           1 "$(count_in 'answered uploaded files (images too) with an error' "$WORK/admin.html")"
+check "  ...with a link to the rule"   1 "$( [ "$(grep -c 'wpb_rule=uploads_php#rule-uploads_php' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and its panel is open"     rule-uploads_php "$(open_panels)"
 check "  ...and logged"              alert "$(log_value action "rule = 'uploads_php' AND reason LIKE 'Removed the uploads%'")"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_sync rules)&action=wp_bouncer_uploads_sync" > /dev/null
 probe > /dev/null
