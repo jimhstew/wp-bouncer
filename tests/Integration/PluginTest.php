@@ -293,6 +293,104 @@ final class PluginTest extends IntegrationTestCase {
 		$this->assertSame( '203.0.113.9', $rows[0]['ip'] );
 	}
 
+	public function test_a_blocked_request_is_stored_with_secrets_redacted(): void {
+		// Monitor mode, so the block page doesn't end the test process; the row is written the same way.
+		$this->set_settings( array( 'mode' => 'monitor' ) );
+		$this->fake_request( array( 'HTTP_USER_AGENT' => 'sqlmap/1.7', 'REQUEST_URI' => '/?key=SECRETKEY&token=SECRETTOKEN&email=jane%40example.org&ok=1' ) );
+
+		ob_start();
+		$this->plugin->run_firewall();
+		ob_get_clean();
+
+		$rows = $this->log_rows();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( '/?key=[removed]&token=[removed]&email=[removed]&ok=1', $rows[0]['uri'] );
+	}
+
+	public function test_a_login_lockout_does_not_store_an_unknown_username(): void {
+		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9', 'REQUEST_URI' => '/wp-login.php?key=SECRETKEY' ) );
+		for ( $i = 0; $i < 5; $i++ ) {
+			do_action( 'wp_login_failed', 'hunter2-typed-as-username' );
+		}
+		$rows = $this->log_rows( array( 'rule' => 'login_lockout' ) );
+		$this->assertNotEmpty( $rows );
+		$this->assertStringNotContainsString( 'hunter2', $rows[0]['reason'] );
+		$this->assertStringContainsString( 'unknown username', $rows[0]['reason'] );
+		$this->assertStringNotContainsString( 'SECRETKEY', $rows[0]['uri'] );
+	}
+
+	public function test_a_login_lockout_keeps_an_existing_username(): void {
+		self::factory()->user->create( array( 'user_login' => 'realuser' ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
+		for ( $i = 0; $i < 5; $i++ ) {
+			do_action( 'wp_login_failed', 'realuser' );
+		}
+		$rows = $this->log_rows( array( 'rule' => 'login_lockout' ) );
+		$this->assertStringContainsString( '"realuser"', $rows[0]['reason'] );
+	}
+
+	public function test_the_purge_runs_from_admin_init_when_it_is_overdue(): void {
+		global $wpdb;
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$old = $this->plugin->log()->record( array( 'rule' => 'waf', 'reason' => 'old' ) );
+		$wpdb->update( $this->plugin->log()->table(), array( 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS ) ), array( 'id' => $old ) );
+		update_option( \WPBouncer\Plugin::LAST_PURGE_OPTION, time() - 3 * DAY_IN_SECONDS, false );
+
+		$this->plugin->maybe_purge();
+
+		$this->assertCount( 0, $this->log_rows( array( 'search' => 'old' ) ) );
+		$this->assertGreaterThan( time() - 60, (int) get_option( \WPBouncer\Plugin::LAST_PURGE_OPTION ) );
+	}
+
+	public function test_a_lockout_stores_the_canonical_login_not_the_typed_one(): void {
+		self::factory()->user->create( array( 'user_login' => 'realuser2' ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
+		for ( $i = 0; $i < 5; $i++ ) {
+			do_action( 'wp_login_failed', 'REALUSER2' );
+		}
+		$rows = $this->log_rows( array( 'rule' => 'login_lockout' ) );
+		$this->assertStringContainsString( '"realuser2"', $rows[0]['reason'] );
+		$this->assertStringNotContainsString( 'REALUSER2', $rows[0]['reason'] );
+	}
+
+	public function test_maybe_purge_does_nothing_when_not_overdue(): void {
+		global $wpdb;
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$old = $this->plugin->log()->record( array( 'rule' => 'waf', 'reason' => 'keepme' ) );
+		$wpdb->update( $this->plugin->log()->table(), array( 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS ) ), array( 'id' => $old ) );
+		$stamp = time() - DAY_IN_SECONDS;
+		update_option( \WPBouncer\Plugin::LAST_PURGE_OPTION, $stamp, true );
+
+		$this->plugin->maybe_purge();
+
+		$this->assertCount( 1, $this->log_rows( array( 'search' => 'keepme' ) ) );
+		$this->assertSame( $stamp, (int) get_option( \WPBouncer\Plugin::LAST_PURGE_OPTION ) );
+	}
+
+	public function test_maybe_purge_needs_manage_options(): void {
+		global $wpdb;
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'editor' ) ) );
+		$old = $this->plugin->log()->record( array( 'rule' => 'waf', 'reason' => 'keepme2' ) );
+		$wpdb->update( $this->plugin->log()->table(), array( 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 400 * DAY_IN_SECONDS ) ), array( 'id' => $old ) );
+		update_option( \WPBouncer\Plugin::LAST_PURGE_OPTION, time() - 9 * DAY_IN_SECONDS, true );
+
+		$this->plugin->maybe_purge();
+
+		$this->assertCount( 1, $this->log_rows( array( 'search' => 'keepme2' ) ) );
+	}
+
+	public function test_the_overdue_fallback_also_purges_the_traffic_log(): void {
+		global $wpdb;
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'administrator' ) ) );
+		$table = $wpdb->prefix . 'bouncer_traffic';
+		$wpdb->insert( $table, array( 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 60 * DAY_IN_SECONDS ), 'ip' => '203.0.113.5', 'method' => 'GET', 'uri' => '/old', 'status' => 200 ) );
+		update_option( \WPBouncer\Plugin::LAST_PURGE_OPTION, time() - 9 * DAY_IN_SECONDS, true );
+
+		$this->plugin->maybe_purge();
+
+		$this->assertSame( 0, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} WHERE uri = '/old'" ) ); // phpcs:ignore WordPress.DB
+	}
+
 	public function test_run_firewall_never_blocks_the_allowlist(): void {
 		$this->set_settings( array( 'allowlist' => array( '203.0.113.9' ) ) );
 		$this->fake_request( array( 'HTTP_USER_AGENT' => 'sqlmap/1.7' ) );

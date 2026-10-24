@@ -451,6 +451,17 @@ check "banned username locks out"    403 "$(login 198.51.100.6 admin_e2e e2e-pas
 check "other IPs can still log in"   302 "$(login 198.51.100.7 admin_e2e e2e-pass-123)"
 
 fi
+if want "Privacy minimisation"; then
+# A mistyped password in the username field must not reach the log, and a secret in a blocked URL is stored redacted.
+for i in 1 2 3 4 5; do login 198.51.100.15 "hunter2-e2e-typo" "wrong$i" > /dev/null; done
+check "lockout row written"          1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE ip = \"198.51.100.15\" AND action = \"lockout\"");')"
+check "unknown username not stored"  0 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE reason LIKE \"%hunter2-e2e-typo%\"");')"
+check "lockout reason is a count"    1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE ip = \"198.51.100.15\" AND reason LIKE \"%unknown username%\"");')"
+check "scanner with a secret in URL" 403 "$(status 203.0.113.61 "sqlmap/1.7" "$U/?key=E2ESECRETKEY&token=E2ESECRETTOKEN&ok=1")"
+check "secret not stored"            0 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE uri LIKE \"%E2ESECRET%\"");')"
+check "URI stored redacted"          "/?key=[removed]&token=[removed]&ok=1" "$($WP eval 'global $wpdb; echo $wpdb->get_var("SELECT uri FROM {$wpdb->prefix}bouncer_log WHERE ip = \"203.0.113.61\" ORDER BY id DESC LIMIT 1");')"
+
+fi
 if want "Emergency switch (WP_BOUNCER_DISABLE)"; then
 # A must-use plugin loads before plugins, the same as a define in wp-config.php.
 mkdir -p "$W/wp-content/mu-plugins"

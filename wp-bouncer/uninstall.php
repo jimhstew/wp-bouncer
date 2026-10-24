@@ -35,6 +35,7 @@ if ( is_array( $wpb_import ) && ! empty( $wpb_import['file'] ) && is_string( $wp
 	wp_delete_file( $wpb_import['file'] );
 }
 delete_option( 'wp_bouncer_geo_import' );
+delete_option( 'wp_bouncer_last_purge' );
 $wpb_uploads = wp_upload_dir( null, false );
 $wpb_dir     = $wpb_uploads['basedir'] . '/wp-bouncer';
 if ( is_dir( $wpb_dir ) ) {

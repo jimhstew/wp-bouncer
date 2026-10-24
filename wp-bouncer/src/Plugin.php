@@ -55,6 +55,9 @@ final class Plugin {
 
 	public const VERSION = '1.1.2';
 
+	/** Internal state (not a setting): Unix time of the last log purge. */
+	public const LAST_PURGE_OPTION = 'wp_bouncer_last_purge';
+
 	/** Option holding metadata about the imported geo database. */
 	public const GEO_META_OPTION = 'wp_bouncer_geo_meta';
 
@@ -181,6 +184,7 @@ final class Plugin {
 		add_action( 'plugins_loaded', array( Installer::class, 'maybe_upgrade' ), 0 );
 		add_action( 'init', array( $this, 'load_textdomain' ) );
 		add_action( Installer::CRON_HOOK, array( $this, 'daily_maintenance' ) );
+		add_action( 'admin_init', array( $this, 'maybe_purge' ) );
 
 		// The emergency switch turns off everything that can refuse a visitor,
 		// including login lockouts, but keeps the admin screens so the settings
@@ -329,7 +333,17 @@ final class Plugin {
 	/** Brute-force tracker. */
 	public function login_guard(): LoginGuard {
 		if ( null === $this->guard ) {
-			$this->guard = new LoginGuard( $this->settings->rule( LoginGuard::RULE_ID ), $this->store(), $this->log() );
+			$this->guard = new LoginGuard(
+				$this->settings->rule( LoginGuard::RULE_ID ),
+				$this->store(),
+				$this->log(),
+				null,
+				static function ( string $name ): ?string {
+					$id   = username_exists( $name );
+					$user = $id ? get_userdata( (int) $id ) : false;
+					return $user ? (string) $user->user_login : null;
+				}
+			);
 		}
 		return $this->guard;
 	}
@@ -530,7 +544,29 @@ final class Plugin {
 
 	/** Purge old log rows (daily cron). */
 	public function daily_maintenance(): void {
+		update_option( self::LAST_PURGE_OPTION, time(), true );
+		$this->purge_logs();
+	}
+
+	/** Purge the block log. */
+	private function purge_logs(): void {
 		$this->log()->purge_older_than( (int) $this->settings->get( 'log_retention_days' ) );
+	}
+
+	/**
+	 * Fallback for sites where WP-Cron doesn't run: purge from an admin
+	 * request when the last purge is more than two days old.
+	 */
+	public function maybe_purge(): void {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		if ( time() - (int) get_option( self::LAST_PURGE_OPTION, 0 ) > 2 * DAY_IN_SECONDS ) {
+			// Claim the slot first so concurrent admin requests don't all purge.
+			update_option( self::LAST_PURGE_OPTION, time(), true );
+			$this->purge_logs();
+			( new TrafficRecorder( $this ) )->purge();
+		}
 	}
 
 	/** Brute-force protection hooks. */

@@ -198,7 +198,9 @@ final class AlertNotifier {
 		}
 		$user   = get_userdata( $user_id );
 		$detail = $user ? sprintf( 'Username: %s, email: %s, user ID %d', $user->user_login, $user->user_email, $user_id ) : 'User ID ' . $user_id;
-		$this->queue( 'admin', $title, $detail, $key );
+		// The email may name the address; the stored Activity Log row never does.
+		$log_detail = $user ? sprintf( 'Username: %s, user ID %d', $user->user_login, $user_id ) : 'User ID ' . $user_id;
+		$this->queue( 'admin', $title, $detail, $key, $log_detail );
 	}
 
 	/*
@@ -322,8 +324,9 @@ final class AlertNotifier {
 	 * @param string $title  What happened.
 	 * @param string $detail More detail.
 	 * @param string $key    De-duplication key.
+	 * @param string $log_detail Detail for the stored log row, when it must differ from the email.
 	 */
-	private function queue( string $type, string $title, string $detail, string $key = '' ): void {
+	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '' ): void {
 		$event = array(
 			'type'   => $type,
 			'title'  => $title,
@@ -331,6 +334,9 @@ final class AlertNotifier {
 		);
 		if ( '' !== $key ) {
 			$event['key'] = $key;
+		}
+		if ( '' !== $log_detail ) {
+			$event['log_detail'] = $log_detail;
 		}
 		$this->queue[] = $event;
 		if ( ! $this->shutdown_hooked ) {
@@ -425,18 +431,19 @@ final class AlertNotifier {
 	/**
 	 * Write an event to the Activity Log.
 	 *
-	 * @param array{type: string, title: string, detail: string} $event   Event.
-	 * @param array<string, string>                              $context Context.
+	 * @param array{type: string, title: string, detail: string, log_detail?: string} $event   Event.
+	 * @param array<string, string>                                                   $context Context.
 	 */
 	private function log( array $event, array $context ): void {
 		$request = $this->plugin->current_request();
+		$detail  = $event['log_detail'] ?? $event['detail'];
 		$this->plugin->log()->record(
 			array(
 				'ip'         => $context['ip'],
 				'country'    => $context['country'],
 				'rule'       => self::LOG_RULE,
 				'action'     => BlockLogInterface::ACTION_ALERT,
-				'reason'     => $event['title'] . ( '' !== $event['detail'] ? ' — ' . $event['detail'] : '' ) . ' — by ' . $context['actor'],
+				'reason'     => $event['title'] . ( '' !== $detail ? ' — ' . $detail : '' ) . ' — by ' . $context['actor'],
 				'method'     => ( defined( 'WP_CLI' ) && WP_CLI ) ? 'CLI' : $request->method(),
 				'uri'        => ( defined( 'WP_CLI' ) && WP_CLI ) ? '' : $request->uri(),
 				'user_agent' => $context['user_agent'],

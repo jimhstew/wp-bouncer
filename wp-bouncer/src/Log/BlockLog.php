@@ -7,6 +7,8 @@
 
 namespace WPBouncer\Log;
 
+use WPBouncer\Support\UrlRedactor;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -66,8 +68,11 @@ final class BlockLog implements BlockLogInterface {
 	public static function normalize( array $entry ): array {
 		$out = array();
 		foreach ( self::LIMITS as $column => $limit ) {
-			$value          = isset( $entry[ $column ] ) && is_scalar( $entry[ $column ] ) ? (string) $entry[ $column ] : '';
-			$value          = (string) preg_replace( '/[\x00-\x1F\x7F]/', '', $value );
+			$value = isset( $entry[ $column ] ) && is_scalar( $entry[ $column ] ) ? (string) $entry[ $column ] : '';
+			$value = (string) preg_replace( '/[\x00-\x1F\x7F]/', '', $value );
+			if ( 'uri' === $column ) {
+				$value = UrlRedactor::redact( $value );
+			}
 			$out[ $column ] = function_exists( 'mb_substr' ) ? mb_substr( $value, 0, $limit ) : substr( $value, 0, $limit );
 		}
 		if ( '' === $out['action'] ) {

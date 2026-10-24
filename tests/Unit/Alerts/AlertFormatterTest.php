@@ -90,6 +90,14 @@ final class AlertFormatterTest extends TestCase {
 		$this->assertSame( 'a b', AlertFormatter::clean( "a\x00\tb" ) );
 	}
 
+	public function test_dedupe_carries_the_log_detail(): void {
+		$out = AlertFormatter::dedupe(
+			array( array( 'type' => 'admin', 'title' => 'T', 'detail' => 'with email', 'key' => 'k', 'log_detail' => 'without' ) )
+		);
+		$this->assertSame( 'without', $out[0]['log_detail'] );
+		$this->assertSame( 'with email', $out[0]['detail'] );
+	}
+
 	public function test_dedupe_by_key_and_content(): void {
 		$events = array(
 			array( 'type' => 'admin', 'title' => 'New administrator account created', 'detail' => 'eve', 'key' => 'admin|7' ),

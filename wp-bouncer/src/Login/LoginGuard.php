@@ -55,6 +55,12 @@ final class LoginGuard {
 	 * @var Clock
 	 */
 	private Clock $clock;
+	/**
+	 * Tells whether a username belongs to a real account. Null means unknown.
+	 *
+	 * @var callable|null
+	 */
+	private $user_exists;
 
 	/**
 	 * Set up the LoginGuard.
@@ -63,12 +69,14 @@ final class LoginGuard {
 	 * @param CounterStoreInterface $store    Where counters and lockouts live.
 	 * @param BlockLogInterface     $log      Where lockout events are recorded.
 	 * @param Clock|null            $clock    Time source.
+	 * @param callable|null         $user_exists Takes a typed name and returns the account's canonical user_login, or null if there is no such account. Null callable means unknown.
 	 */
-	public function __construct( array $settings, CounterStoreInterface $store, BlockLogInterface $log, ?Clock $clock = null ) {
-		$this->settings = $settings;
-		$this->store    = $store;
-		$this->log      = $log;
-		$this->clock    = $clock ?? new Clock();
+	public function __construct( array $settings, CounterStoreInterface $store, BlockLogInterface $log, ?Clock $clock = null, ?callable $user_exists = null ) {
+		$this->settings    = $settings;
+		$this->store       = $store;
+		$this->log         = $log;
+		$this->clock       = $clock ?? new Clock();
+		$this->user_exists = $user_exists;
 	}
 
 	/** Is brute-force protection switched on? */
@@ -118,10 +126,26 @@ final class LoginGuard {
 		$max      = max( 1, (int) ( $this->settings['max_attempts'] ?? 5 ) );
 
 		if ( $failures >= $max ) {
-			$this->lock( $ip, sprintf( '%d failed logins (last username "%s")', $failures, $username ), $context );
+			$this->lock( $ip, $this->failure_reason( $failures, $username ), $context );
 			return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Log reason for a lockout caused by repeated failures. The username is
+	 * kept only for an existing account, because a mistyped one is often a
+	 * password or an email address.
+	 *
+	 * @param int    $failures Failures counted.
+	 * @param string $username Username that was tried.
+	 */
+	private function failure_reason( int $failures, string $username ): string {
+		$login = '' !== $username && null !== $this->user_exists ? ( $this->user_exists )( $username ) : null;
+		if ( is_string( $login ) && '' !== $login ) {
+			return sprintf( '%d failed logins (last username "%s")', $failures, $login );
+		}
+		return sprintf( '%d failed logins (last: unknown username)', $failures );
 	}
 
 	/**

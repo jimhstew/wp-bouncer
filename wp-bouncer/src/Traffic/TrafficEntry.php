@@ -7,6 +7,8 @@
 
 namespace WPBouncer\Traffic;
 
+use WPBouncer\Support\UrlRedactor;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -26,14 +28,8 @@ final class TrafficEntry {
 		'client'     => 16,
 	);
 
-	/** Query parameters whose values are replaced before saving. */
-	private const SECRET_PARAMS = array( 'key', 'pwd', 'pass', 'pass1', 'pass2', 'password', 'token', 'access_token', 'refresh_token', 'id_token', 'auth', 'code', 'secret', 'client_secret', 'api_key', 'apikey', 'signature', 'sig', 'nonce', '_wpnonce', 'session', 'sid', 'otp', 'jwt' );
-
-	/** Also replaced: any parameter whose name contains one of these. */
-	private const SECRET_PARTS = array( 'pass', 'token', 'secret' );
-
 	/** What a secret value is replaced with. */
-	public const REDACTED = '[removed]';
+	public const REDACTED = UrlRedactor::REDACTED;
 
 	/**
 	 * Build a row.
@@ -61,49 +57,12 @@ final class TrafficEntry {
 	}
 
 	/**
-	 * Replace the values of secret query parameters, such as the key in a
-	 * password-reset link or an access token, with "[removed]".
+	 * Kept for callers of the old name; see UrlRedactor::redact().
 	 *
 	 * @param string $url URL or request URI.
 	 */
 	public static function redact_url( string $url ): string {
-		$q = strpos( $url, '?' );
-		if ( false === $q ) {
-			return $url;
-		}
-		$hash  = strpos( $url, '#', $q );
-		$query = false === $hash ? substr( $url, $q + 1 ) : substr( $url, $q + 1, $hash - $q - 1 );
-		$tail  = false === $hash ? '' : substr( $url, $hash );
-		$parts = explode( '&', $query );
-		foreach ( $parts as $i => $part ) {
-			$eq = strpos( $part, '=' );
-			if ( false === $eq ) {
-				continue;
-			}
-			$name = strtolower( rawurldecode( substr( $part, 0, $eq ) ) );
-			$name = (string) preg_replace( '/\[.*$/', '', $name ); // pass[0] => pass.
-			if ( self::is_secret( $name ) && '' !== substr( $part, $eq + 1 ) ) {
-				$parts[ $i ] = substr( $part, 0, $eq + 1 ) . self::REDACTED;
-			}
-		}
-		return substr( $url, 0, $q + 1 ) . implode( '&', $parts ) . $tail;
-	}
-
-	/**
-	 * Is secret.
-	 *
-	 * @param string $name Lowercased parameter name.
-	 */
-	private static function is_secret( string $name ): bool {
-		if ( in_array( $name, self::SECRET_PARAMS, true ) ) {
-			return true;
-		}
-		foreach ( self::SECRET_PARTS as $part ) {
-			if ( false !== strpos( $name, $part ) ) {
-				return true;
-			}
-		}
-		return false;
+		return UrlRedactor::redact( $url );
 	}
 
 	/**

@@ -22,7 +22,7 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 				printf(
 					/* translators: %s: file name or URL. */
 					esc_html__( 'Importing %s. Keep this page open until it finishes.', 'wp-bouncer' ),
-					'<code>' . esc_html( (string) $running['source'] ) . '</code>'
+					'<code>' . esc_html( \WPBouncer\Support\UrlRedactor::label( (string) $running['source'] ) ) . '</code>'
 				);
 				?>
 			</p>
@@ -61,7 +61,7 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 				/* translators: 1: number of ranges, 2: source, 3: date. */
 				esc_html__( '%1$s IP ranges loaded from %2$s on %3$s.', 'wp-bouncer' ),
 				'<strong>' . esc_html( number_format_i18n( (int) $meta['rows'] ) ) . '</strong>',
-				'<code>' . esc_html( (string) $meta['source'] ) . '</code>',
+				'<code>' . esc_html( \WPBouncer\Support\UrlRedactor::label( (string) $meta['source'] ) ) . '</code>',
 				esc_html( wp_date( get_option( 'date_format' ), (int) $meta['imported'] ) )
 			);
 			?>

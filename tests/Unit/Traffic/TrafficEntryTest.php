@@ -68,7 +68,7 @@ final class TrafficEntryTest extends TestCase {
 		return array(
 			'password reset key' => array( '/wp-login.php?action=rp&key=AbC123secret&login=jane', '/wp-login.php?action=rp&key=[removed]&login=jane' ),
 			'access token'       => array( '/wp-json/x?access_token=eyJhb.xyz&page=2', '/wp-json/x?access_token=[removed]&page=2' ),
-			'password field'     => array( '/login?user=a&user_password=hunter2', '/login?user=a&user_password=[removed]' ),
+			'password field'     => array( '/login?user=a&user_password=hunter2', '/login?user=[removed]&user_password=[removed]' ),
 			'nonce'              => array( '/wp-admin/post.php?post=5&action=trash&_wpnonce=abc123', '/wp-admin/post.php?post=5&action=trash&_wpnonce=[removed]' ),
 			'case and arrays'    => array( '/x?PASS[0]=a&Token=b', '/x?PASS[0]=[removed]&Token=[removed]' ),
 			'encoded name'       => array( '/x?pass%77ord=a', '/x?pass%77ord=[removed]' ),

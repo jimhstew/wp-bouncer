@@ -846,7 +846,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'tab=tools', $r->location );
 		$state = $this->plugin->geo_import()->status();
 		$this->assertNotNull( $state );
-		$this->assertSame( 'https://93.184.216.34/geo.csv', $state['source'] );
+		$this->assertSame( '93.184.216.34/…/geo.csv', $state['source'] );
 
 		$this->post( 'wp_bouncer_geo_step' );
 		$r = $this->call( 'handle_geo_step' );

@@ -120,6 +120,11 @@ final class GeoImportTest extends IntegrationTestCase {
 		$this->assertNull( $this->import->status() );
 	}
 
+	public function test_a_url_source_is_stored_as_a_label_without_credentials(): void {
+		$this->import->start( $this->fixture(), 'https://bob:hunter2@geo.example.org/x/db.csv?license_key=SECRET' );
+		$this->assertSame( 'geo.example.org/…/db.csv', $this->import->status()['source'] );
+	}
+
 	public function test_a_missing_source_file_is_refused(): void {
 		$this->expectException( \RuntimeException::class );
 

@@ -8,6 +8,7 @@
 namespace WPBouncer\Geo;
 
 use WPBouncer\Plugin;
+use WPBouncer\Support\UrlRedactor;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -106,7 +107,7 @@ final class GeoImport {
 				'offset'   => 0,
 				'imported' => 0,
 				'skipped'  => 0,
-				'source'   => $label,
+				'source'   => UrlRedactor::label( $label ),
 				'started'  => time(),
 			),
 			false

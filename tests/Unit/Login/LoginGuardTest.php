@@ -67,6 +67,40 @@ final class LoginGuardTest extends TestCase {
 		$this->assertStringContainsString( '3 failed logins', $this->log->entries[0]['reason'] );
 	}
 
+	public function test_unknown_username_is_not_logged(): void {
+		$guard = new LoginGuard( $this->settings(), $this->store, $this->log, $this->clock, static fn ( string $n ): ?string => null );
+		$guard->record_failure( self::IP, 'MyP@ssw0rd!' );
+		$guard->record_failure( self::IP, 'MyP@ssw0rd!' );
+		$guard->record_failure( self::IP, 'MyP@ssw0rd!' );
+		$reason = $this->log->entries[0]['reason'];
+		$this->assertStringNotContainsString( 'P@ssw0rd', $reason );
+		$this->assertStringContainsString( 'unknown username', $reason );
+		$this->assertStringNotContainsString( 'characters', $reason );
+	}
+
+	public function test_username_without_a_callable_is_treated_as_unknown(): void {
+		$guard = $this->guard();
+		for ( $i = 0; $i < 3; $i++ ) {
+			$guard->record_failure( self::IP, 'alice@example.org' );
+		}
+		$this->assertStringNotContainsString( 'alice', $this->log->entries[0]['reason'] );
+	}
+
+	public function test_existing_username_is_logged(): void {
+		$guard = new LoginGuard( $this->settings(), $this->store, $this->log, $this->clock, static fn ( string $n ): ?string => 'alice' === strtolower( $n ) ? 'alice' : null );
+		for ( $i = 0; $i < 3; $i++ ) {
+			$guard->record_failure( self::IP, 'ALICE' );
+		}
+		$this->assertStringNotContainsString( 'ALICE', $this->log->entries[0]['reason'], 'canonical login only' );
+		$this->assertStringContainsString( '"alice"', $this->log->entries[0]['reason'] );
+	}
+
+	public function test_banned_username_is_logged(): void {
+		$guard = $this->guard();
+		$guard->record_failure( self::IP, 'admin' );
+		$this->assertStringContainsString( '"admin"', $this->log->entries[0]['reason'] );
+	}
+
 	public function test_lockout_expires(): void {
 		$guard = $this->guard();
 		for ( $i = 0; $i < 3; $i++ ) {

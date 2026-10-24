@@ -37,6 +37,11 @@ final class BlockLogTest extends TestCase {
 		$this->assertSame( 'blocked', $row['action'], 'default action' );
 	}
 
+	public function test_normalize_redacts_secrets_in_the_uri(): void {
+		$row = BlockLog::normalize( array( 'uri' => '/?key=abc&token=def&ok=1&email=a%40b.example' ) );
+		$this->assertSame( '/?key=[removed]&token=[removed]&ok=1&email=[removed]', $row['uri'] );
+	}
+
 	/** @dataProvider csv_cells */
 	public function test_csv_safe_neutralises_formulas( string $in, string $out ): void {
 		$this->assertSame( $out, AdminController::csv_safe( $in ) );

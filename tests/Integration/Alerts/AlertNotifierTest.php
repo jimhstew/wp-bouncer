@@ -75,6 +75,16 @@ final class AlertNotifierTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'Username: newadmin, email: newadmin@example.org, user ID ' . $id, $mail[0]['body'] );
 	}
 
+	public function test_the_activity_log_row_has_no_email_address(): void {
+		self::factory()->user->create( array( 'role' => 'administrator', 'user_login' => 'newadmin2', 'user_email' => 'newadmin2@example.org' ) );
+		$this->flush();
+
+		$rows = $this->alert_rows();
+		$this->assertNotEmpty( $rows );
+		$this->assertStringContainsString( 'newadmin2', $rows[0]['reason'] );
+		$this->assertStringNotContainsString( 'newadmin2@example.org', $rows[0]['reason'] );
+	}
+
 	public function test_promoting_a_user_sends_one_email(): void {
 		$user = $this->quiet_user( 'editor' );
 
