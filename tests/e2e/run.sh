@@ -462,6 +462,10 @@ upload() { # upload FILE -> status of the Tools import form posted with FILE
 from_url() { # from_url URL -> status of the Tools import form posted with URL
 	admin "$TOOLS_POST" -d "_wpnonce=$(nonce_for wp_bouncer_geo_import)&action=wp_bouncer_geo_import&geo_url=$1"
 }
+redirect_err() { # ok, or the redirect (with the plugin's message) when the last response reports an error
+	local loc; loc=$(grep -i '^location:' "$WORK/admin.headers" | tr -d '\r')
+	case "$loc" in *wpb_err*) echo "$loc" | cut -c1-300 ;; *) echo ok ;; esac
+}
 at_least() { [ "$2" -ge "$1" ] 2>/dev/null && echo ok || echo "$2"; }
 TOOLS_POST="$U/wp-admin/admin-post.php?action=wp_bouncer_geo_import"
 
@@ -486,7 +490,11 @@ check "working file removed"         0   "$(find "$W/wp-content/uploads/wp-bounc
 check "work folder has .htaccess"    1   "$(grep -c 'Require all denied' "$W/wp-content/uploads/wp-bouncer/.htaccess")"
 check "lookup uses new data"         NL  "$($WP eval 'echo WPBouncer\Plugin::instance()->geo_database()->lookup("5.4.7.9");')"
 
+# The previous import left 3000 rows, so empty the table first: otherwise "all ranges" would pass without this import.
+$WP eval 'WPBouncer\Plugin::instance()->geo_database()->truncate();'
 check "import by URL starts"         302 "$(from_url "$FILES_URL/geo.csv.gz")"
+check "  ...without an error"        ok  "$(redirect_err)"
+check "  ...and an import is running" 1   "$(import_running)"
 check "  ...and finishes"            ok  "$(at_least 6 "$(run_steps)")"
 check "  ...with all ranges"         3000 "$(geo_rows)"
 from_url "$FILES_URL/missing.csv.gz" > /dev/null
@@ -752,7 +760,15 @@ check "setup notice shown"              1 "$(grep -c 'wpb-ip-setup' "$WORK/admin
 check "  ...not dismissible"            0 "$(grep 'wpb-ip-setup' "$WORK/admin.html" | grep -c 'is-dismissible')"
 check "  ...offers to trust the peer"   1 "$(grep -c 'Trust 127.0.0.1 as my proxy' "$WORK/admin.html")"
 check "  ...or to use the connection"   1 "$(grep -c 'I have no proxy' "$WORK/admin.html")"
-check "no PHP errors in the notice"     0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
+# PHP's own error format ("Warning: message in /path/file.php on line N", with <b> tags when html_errors is on),
+# not any text that happens to contain "Notice:" or "Warning:". Matching lines are shown when the check fails.
+php_errors_in() { # php_errors_in FILE -> number of PHP errors printed in FILE
+	local re='(Fatal error|Warning|Notice|Deprecated)(</b>)?: .* in .* on line [0-9]+' n
+	n=$(grep -cE "$re" "$1")
+	[ "$n" != 0 ] && grep -E -m5 "$re" "$1" | cut -c1-300 >&2
+	echo "$n"
+}
+check "no PHP errors in the notice"     0 "$(php_errors_in "$WORK/admin.html")"
 check "fix needs a valid nonce"         403 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=deadbeef00&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip")"
 check "  ...nothing changed"            "x_real_ip|" "$(stored_ip)"
 # No handler is registered for logged-out visitors. WordPress 5.9+ answers an unhandled admin-post action
