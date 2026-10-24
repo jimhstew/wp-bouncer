@@ -46,6 +46,9 @@ final class AdminController {
 	public const SLUG       = 'wp-bouncer';
 	public const CAPABILITY = 'manage_options';
 
+	/** Capability for server-wide actions (network admins on multisite). */
+	public const FIREWALL_CAPABILITY = FirewallCapability::NAME;
+
 	/**
 	 * Plugin instance.
 	 *
@@ -364,9 +367,10 @@ final class AdminController {
 	 * Check capability and nonce, or die.
 	 *
 	 * @param string $action Nonce action.
+	 * @param string $cap    Capability required (wpb_manage_firewall for server-wide actions).
 	 */
-	private function guard( string $action ): void {
-		if ( ! current_user_can( self::CAPABILITY ) ) {
+	private function guard( string $action, string $cap = self::CAPABILITY ): void {
+		if ( ! current_user_can( $cap ) ) {
 			wp_die( esc_html__( 'You do not have permission to do that.', 'wp-bouncer' ), 403 );
 		}
 		check_admin_referer( $action );
@@ -402,6 +406,10 @@ final class AdminController {
 	 * @param array<string, mixed> $values Sanitised settings.
 	 */
 	private function save( array $values ): void {
+		if ( ! current_user_can( self::FIREWALL_CAPABILITY ) ) {
+			// Sub-site admins on multisite can't change the .htaccess setting or add regex patterns.
+			$values = Settings::preserve_privileged( $this->plugin->settings()->to_array(), $values );
+		}
 		update_option( Settings::OPTION, $values, true );
 		$this->plugin->reload_settings();
 	}
@@ -606,6 +614,10 @@ final class AdminController {
 		if ( ! isset( $values['rules'][ $id ] ) ) {
 			$this->back( 'dashboard', 'unknown_rule', array(), true );
 		}
+		// The uploads rule drives the network-wide uploads/.htaccess: network admins only on multisite.
+		if ( 'uploads_php' === $id && ! current_user_can( self::FIREWALL_CAPABILITY ) ) {
+			$this->back( 'dashboard', 'managed_by_network', array(), true );
+		}
 		$values['rules'][ $id ]['enabled'] = empty( $values['rules'][ $id ]['enabled'] );
 		$message                           = array(
 			'rule'  => $id,
@@ -699,14 +711,14 @@ final class AdminController {
 
 	/** Check whether the server runs PHP from the uploads folder. */
 	public function handle_uploads_probe(): void {
-		$this->guard( 'wp_bouncer_uploads_probe' );
+		$this->guard( 'wp_bouncer_uploads_probe', self::FIREWALL_CAPABILITY );
 		$result = $this->plugin->uploads_guard()->probe();
 		$this->back( 'rules', 'probe_result', array( 'result' => $result['result'] ), in_array( $result['result'], array( 'unprotected', 'broken' ), true ), 'rule-uploads_php' );
 	}
 
 	/** Write (or remove) the uploads/.htaccess block now. */
 	public function handle_uploads_sync(): void {
-		$this->guard( 'wp_bouncer_uploads_sync' );
+		$this->guard( 'wp_bouncer_uploads_sync', self::FIREWALL_CAPABILITY );
 		$guard = $this->plugin->uploads_guard();
 		delete_option( UploadsGuard::STATE_OPTION );
 		$guard->maybe_sync();
@@ -977,13 +989,25 @@ final class AdminController {
 			$path   = (string) $file['tmp_name'];
 			$source = $name;
 		} elseif ( ! empty( $_POST['geo_url'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
+			// Making the server fetch a URL is server-wide: network admins only on multisite.
+			if ( ! current_user_can( self::FIREWALL_CAPABILITY ) ) {
+				wp_die( esc_html__( 'You do not have permission to do that.', 'wp-bouncer' ), 403 );
+			}
 			$url = esc_url_raw( wp_unslash( $_POST['geo_url'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
 			if ( ! wp_http_validate_url( $url ) ) {
 				$this->back( 'tools', 'geo_bad_url', array(), true );
 			}
+			list( $hosts, $allow_http ) = $this->geo_url_rules();
+			if ( ! GeoUrlPolicy::allowed( $url, $hosts, $allow_http ) ) {
+				$this->back( 'tools', 'geo_download_failed', array( 'detail' => __( 'That host is not on the list of allowed download hosts.', 'wp-bouncer' ) ), true );
+			}
 			$tmp = $this->download_geo_file( $url );
 			if ( is_wp_error( $tmp ) ) {
-				$this->back( 'tools', 'geo_download_failed', array( 'detail' => $tmp->get_error_message() ), true );
+				// The detail can name internal addresses: keep it in the debug log, show a generic message.
+				if ( defined( 'WP_DEBUG_LOG' ) && WP_DEBUG_LOG ) {
+					error_log( 'WP Bouncer geo download failed: ' . $tmp->get_error_message() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- only with WP_DEBUG_LOG on.
+				}
+				$this->back( 'tools', 'geo_download_failed', array( 'detail' => __( 'The file could not be downloaded.', 'wp-bouncer' ) ), true );
 			}
 			$path    = $tmp;
 			$cleanup = true;
@@ -1012,13 +1036,34 @@ final class AdminController {
 	}
 
 	/**
+	 * The geo import URL policy: allowed hosts, and whether http is accepted.
+	 *
+	 * @return array{0: string[], 1: bool}
+	 */
+	private function geo_url_rules(): array {
+		/**
+		 * Filters the hosts the geo importer may download from (https only).
+		 *
+		 * @param string[] $hosts Allowed host names.
+		 */
+		$hosts = (array) apply_filters( 'wp_bouncer_geo_import_hosts', GeoUrlPolicy::DEFAULT_HOSTS );
+		/**
+		 * Filters whether http URLs are accepted too. Off by default; for local test servers only.
+		 *
+		 * @param bool $allow Default false.
+		 */
+		return array( array_map( 'strval', $hosts ), (bool) apply_filters( 'wp_bouncer_geo_import_allow_http', false ) );
+	}
+
+	/**
 	 * Download a geo CSV to a temporary file, with a size cap.
 	 *
-	 * Streams to disk through the safe HTTP API. A response that reached the
-	 * cap is treated as truncated and refused. The temporary file is deleted
+	 * Streams to disk through the safe HTTP API. Redirects are followed by hand
+	 * (at most 3), each checked against the host policy. A response that reached
+	 * the cap is treated as truncated and refused. The temporary file is deleted
 	 * on every failure.
 	 *
-	 * @param string $url Validated http(s) URL.
+	 * @param string $url Validated, allow-listed URL.
 	 * @return string|\WP_Error Temporary file path, or the error.
 	 */
 	private function download_geo_file( string $url ) {
@@ -1028,18 +1073,36 @@ final class AdminController {
 		if ( ! $tmp ) {
 			return new \WP_Error( 'wpb_geo_tmp', __( 'Could not create a temporary file.', 'wp-bouncer' ) );
 		}
-		$response = wp_safe_remote_get(
-			$url,
-			array(
-				'stream'              => true,
-				'filename'            => $tmp,
-				'limit_response_size' => $limit,
-				'timeout'             => 120,
-			)
-		);
-		if ( is_wp_error( $response ) ) {
-			wp_delete_file( $tmp );
-			return $response;
+		// Redirects are followed by hand so each hop is checked against the same host policy (RT-12).
+		list( $hosts, $allow_http ) = $this->geo_url_rules();
+		$current                    = $url;
+		for ( $hop = 0; ; $hop++ ) {
+			$response = wp_safe_remote_get(
+				$current,
+				array(
+					'stream'              => true,
+					'filename'            => $tmp,
+					'limit_response_size' => $limit,
+					'timeout'             => 120,
+					'redirection'         => 0,
+				)
+			);
+			if ( is_wp_error( $response ) ) {
+				wp_delete_file( $tmp );
+				return $response;
+			}
+			$status   = (int) wp_remote_retrieve_response_code( $response );
+			$location = wp_remote_retrieve_header( $response, 'location' );
+			if ( $status < 300 || $status > 399 || '' === $location ) {
+				break;
+			}
+			// More than one Location header comes back as an array: refuse it rather than guess.
+			$next = 3 > $hop && is_string( $location ) ? GeoUrlPolicy::redirect_target( $current, $location, $hosts, $allow_http ) : null;
+			if ( null === $next || ! wp_http_validate_url( $next ) ) {
+				wp_delete_file( $tmp );
+				return new \WP_Error( 'wpb_geo_redirect', __( 'The download redirected somewhere that is not allowed.', 'wp-bouncer' ) );
+			}
+			$current = $next;
 		}
 		$code = (int) wp_remote_retrieve_response_code( $response );
 		if ( 200 !== $code ) {
@@ -1130,15 +1193,17 @@ final class AdminController {
 	/**
 	 * Output an on/off switch for a rule's "enabled" flag.
 	 *
-	 * @param string $id      Rule id.
-	 * @param bool   $checked Current state.
+	 * @param string $id       Rule id.
+	 * @param bool   $checked  Current state.
+	 * @param bool   $disabled Show the switch but don't let this user change it.
 	 */
-	public static function rule_switch( string $id, bool $checked ): void {
+	public static function rule_switch( string $id, bool $checked, bool $disabled = false ): void {
 		printf(
-			'<label class="wpb-switch"><input type="checkbox" name="wp_bouncer[rules][%1$s][enabled]" value="1" %2$s><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text">%3$s</span></label>',
+			'<label class="wpb-switch"><input type="checkbox" name="wp_bouncer[rules][%1$s][enabled]" value="1" %2$s %4$s><span class="wpb-slider" aria-hidden="true"></span><span class="screen-reader-text">%3$s</span></label>',
 			esc_attr( $id ),
 			checked( $checked, true, false ),
-			esc_html__( 'Enabled', 'wp-bouncer' )
+			esc_html__( 'Enabled', 'wp-bouncer' ),
+			disabled( $disabled, true, false )
 		);
 	}
 

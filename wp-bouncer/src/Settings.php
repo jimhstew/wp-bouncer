@@ -572,4 +572,35 @@ final class Settings {
 		}
 		return array_slice( array_values( array_unique( $out ) ), 0, UserAgentRule::MAX_PATTERNS );
 	}
+
+	/**
+	 * Keep the server-wide parts of the settings from changing when the user
+	 * lacks wpb_manage_firewall: the uploads rule's on/off and .htaccess switches are taken from
+	 * $old, and regex User-Agent patterns that are not already in $old are
+	 * dropped (removing existing ones stays allowed).
+	 *
+	 * @param array<string, mixed> $old Stored settings.
+	 * @param array<string, mixed> $updated Settings about to be stored.
+	 * @return array<string, mixed>
+	 */
+	public static function preserve_privileged( array $old, array $updated ): array {
+		// The whole uploads rule is pinned: wants_htaccess() is "enabled and htaccess", so turning the rule off would also remove the block.
+		foreach ( array( 'enabled', 'htaccess' ) as $key ) {
+			if ( isset( $old['rules']['uploads_php'][ $key ] ) && isset( $updated['rules']['uploads_php'] ) ) {
+				$updated['rules']['uploads_php'][ $key ] = $old['rules']['uploads_php'][ $key ];
+			}
+		}
+		if ( isset( $updated['rules']['user_agent']['patterns'] ) && is_array( $updated['rules']['user_agent']['patterns'] ) ) {
+			$known = (array) ( $old['rules']['user_agent']['patterns'] ?? array() );
+			$keep  = array();
+			foreach ( $updated['rules']['user_agent']['patterns'] as $pattern ) {
+				if ( UserAgentRule::is_regex( (string) $pattern ) && ! in_array( $pattern, $known, true ) ) {
+					continue;
+				}
+				$keep[] = $pattern;
+			}
+			$updated['rules']['user_agent']['patterns'] = $keep;
+		}
+		return $updated;
+	}
 }

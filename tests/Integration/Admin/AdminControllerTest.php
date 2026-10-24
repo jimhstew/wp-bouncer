@@ -36,6 +36,14 @@ final class AdminControllerTest extends IntegrationTestCase {
 		parent::set_up();
 		$this->admin = new AdminController( $this->plugin );
 		$this->fake_request();
+		// The default list is the real download hosts; tests fetch from a fixed address.
+		add_filter(
+			'wp_bouncer_geo_import_hosts',
+			static function ( $hosts ) {
+				$hosts[] = '93.184.216.34';
+				return $hosts;
+			}
+		);
 	}
 
 	/* ---------------- helpers ---------------- */
@@ -43,6 +51,16 @@ final class AdminControllerTest extends IntegrationTestCase {
 	private function login( string $role = 'administrator' ): int {
 		$id = self::factory()->user->create( array( 'role' => $role ) );
 		wp_set_current_user( $id );
+		return $id;
+	}
+
+	/** An administrator who also holds wpb_manage_firewall (a super admin on multisite). */
+	private function login_network(): int {
+		$id = $this->login();
+		if ( is_multisite() ) {
+			grant_super_admin( $id );
+			wp_set_current_user( $id );
+		}
 		return $id;
 	}
 
@@ -704,7 +722,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 				return array( 'headers' => array(), 'body' => 'Forbidden', 'response' => array( 'code' => 403, 'message' => '' ), 'cookies' => array(), 'filename' => null );
 			}
 		);
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_uploads_probe' );
 
 		$r = $this->call( 'handle_uploads_probe' );
@@ -721,7 +739,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 				return array( 'headers' => array(), 'body' => 'wpb-php-ran', 'response' => array( 'code' => 200, 'message' => '' ), 'cookies' => array(), 'filename' => null );
 			}
 		);
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_uploads_probe' );
 
 		$r = $this->call( 'handle_uploads_probe' );
@@ -731,7 +749,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_uploads_sync_writes_the_block_then_removes_it(): void {
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_uploads_sync' );
 		$r = $this->call( 'handle_uploads_sync' );
 		$this->assertTrue( UploadsGuard::block_present() );
@@ -750,7 +768,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 			chmod( $this->uploads_dir, 0755 );
 			$this->markTestSkipped( 'Directory permissions are not enforced here (running as root?).' );
 		}
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_uploads_sync' );
 
 		$r = $this->call( 'handle_uploads_sync' );
@@ -780,7 +798,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 	}
 
 	public function test_geo_import_rejects_invalid_urls(): void {
-		$this->login();
+		$this->login_network();
 		foreach ( array( 'not a url', 'ftp://example.com/geo.csv', 'javascript:alert(1)', 'http://localhost:1/geo.csv' ) as $bad ) {
 			$this->post( 'wp_bouncer_geo_import', array( 'geo_url' => $bad ) );
 			$r = $this->call( 'handle_geo_import' );
@@ -793,13 +811,13 @@ final class AdminControllerTest extends IntegrationTestCase {
 		add_filter( 'pre_http_request', static function () {
 			return new \WP_Error( 'http_request_failed', 'Connection refused' );
 		} );
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_geo_import', array( 'geo_url' => 'https://93.184.216.34/geo.csv.gz' ) );
 
 		$r = $this->call( 'handle_geo_import' );
 
 		$this->assertTrue( $r->is_error() );
-		$this->assertStringContainsString( 'Download failed: Connection refused', $r->message() );
+		$this->assertStringContainsString( 'Download failed: The file could not be downloaded.', $r->message() );
 	}
 
 	public function test_geo_import_by_url_starts_an_import_and_keeps_the_old_data_if_the_file_is_wrong(): void {
@@ -814,7 +832,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 			10,
 			2
 		);
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_geo_import', array( 'geo_url' => 'https://93.184.216.34/geo.csv' ) );
 
 		$r = $this->call( 'handle_geo_import' );
@@ -836,7 +854,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 			10,
 			2
 		);
-		$this->login();
+		$this->login_network();
 		$this->post( 'wp_bouncer_geo_import', array( 'geo_url' => 'https://93.184.216.34/geo.csv' ) );
 
 		$r = $this->call( 'handle_geo_import' );

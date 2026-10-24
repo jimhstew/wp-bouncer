@@ -346,4 +346,61 @@ final class SettingsTest extends TestCase {
 		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['trusted_proxies'] );
 		$this->assertSame( array( '::ffff:10.0.0.0/104' ), $out['allowlist'] );
 	}
+
+	public function test_preserve_privileged_keeps_the_old_htaccess_switch(): void {
+		$old = Settings::defaults();
+		$new = $old;
+		$old['rules']['uploads_php']['htaccess'] = true;
+		$new['rules']['uploads_php']['htaccess'] = false;
+
+		$this->assertTrue( Settings::preserve_privileged( $old, $new )['rules']['uploads_php']['htaccess'] );
+		$old['rules']['uploads_php']['htaccess'] = false;
+		$new['rules']['uploads_php']['htaccess'] = true;
+		$this->assertFalse( Settings::preserve_privileged( $old, $new )['rules']['uploads_php']['htaccess'] );
+	}
+
+	public function test_preserve_privileged_drops_new_regexes_but_keeps_old_ones_and_plain_text(): void {
+		$old                                       = Settings::defaults();
+		$old['rules']['user_agent']['patterns']    = array( 'badbot', '/^old\//i' );
+		$new                                       = $old;
+		$new['rules']['user_agent']['patterns']    = array( 'badbot', '/^old\//i', 'newtext', '/^new\//i' );
+
+		$kept = Settings::preserve_privileged( $old, $new )['rules']['user_agent']['patterns'];
+
+		$this->assertSame( array( 'badbot', '/^old\//i', 'newtext' ), $kept );
+	}
+
+	public function test_preserve_privileged_allows_deleting_a_regex(): void {
+		$old                                    = Settings::defaults();
+		$old['rules']['user_agent']['patterns'] = array( '/^old\//i', 'plain' );
+		$new                                    = $old;
+		$new['rules']['user_agent']['patterns'] = array( 'plain' );
+
+		$this->assertSame( array( 'plain' ), Settings::preserve_privileged( $old, $new )['rules']['user_agent']['patterns'] );
+	}
+
+	public function test_preserve_privileged_leaves_everything_else_alone(): void {
+		$old                = Settings::defaults();
+		$new                = $old;
+		$new['mode']        = 'monitor';
+		$new['allowlist'][] = '203.0.113.5';
+
+		$out = Settings::preserve_privileged( $old, $new );
+
+		$this->assertSame( 'monitor', $out['mode'] );
+		$this->assertContains( '203.0.113.5', $out['allowlist'] );
+	}
+
+	public function test_preserve_privileged_pins_the_uploads_rule_on_off_switch_too(): void {
+		$old = Settings::defaults();
+		$old['rules']['uploads_php']['enabled']  = true;
+		$old['rules']['uploads_php']['htaccess'] = true;
+		$new = $old;
+		$new['rules']['uploads_php']['enabled'] = false;
+
+		$out = Settings::preserve_privileged( $old, $new );
+
+		$this->assertTrue( $out['rules']['uploads_php']['enabled'] );
+		$this->assertTrue( $out['rules']['uploads_php']['htaccess'] );
+	}
 }

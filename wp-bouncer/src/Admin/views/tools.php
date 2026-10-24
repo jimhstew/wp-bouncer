@@ -6,6 +6,8 @@
  * @var \WPBouncer\Plugin $plugin
  */
 
+use WPBouncer\Admin\AdminController;
+
 defined( 'ABSPATH' ) || exit;
 
 $meta        = get_option( \WPBouncer\Plugin::GEO_META_OPTION, array() );
@@ -78,6 +80,7 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 		<?php wp_nonce_field( 'wp_bouncer_geo_import' ); ?>
 		<input type="hidden" name="action" value="wp_bouncer_geo_import">
 		<table class="form-table" role="presentation">
+			<?php if ( current_user_can( AdminController::FIREWALL_CAPABILITY ) ) : ?>
 			<tr>
 				<th scope="row"><label for="wpb-geo-url"><?php esc_html_e( 'Download from URL', 'wp-bouncer' ); ?></label></th>
 				<td>
@@ -85,6 +88,12 @@ $default_url = 'https://download.db-ip.com/free/dbip-country-lite-' . gmdate( 'Y
 					<p class="description"><?php esc_html_e( 'Pre-filled with this month\'s free DB-IP country file. If you also choose a file below, the file is used instead.', 'wp-bouncer' ); ?></p>
 				</td>
 			</tr>
+			<?php else : ?>
+			<tr>
+				<th scope="row"><?php esc_html_e( 'Download from URL', 'wp-bouncer' ); ?></th>
+				<td><p class="description"><?php esc_html_e( 'Managed by your network administrator. You can upload a file instead.', 'wp-bouncer' ); ?></p></td>
+			</tr>
+			<?php endif; ?>
 			<tr>
 				<th scope="row"><label for="wpb-geo-file"><?php esc_html_e( 'Or upload a file', 'wp-bouncer' ); ?></label></th>
 				<td>

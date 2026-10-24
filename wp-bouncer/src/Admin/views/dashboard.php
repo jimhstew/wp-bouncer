@@ -79,7 +79,11 @@ $stats    = array(
 							<?php wp_nonce_field( 'wp_bouncer_toggle_rule' ); ?>
 							<input type="hidden" name="action" value="wp_bouncer_toggle_rule">
 							<input type="hidden" name="rule" value="<?php echo esc_attr( $rule_id ); ?>">
+							<?php if ( 'uploads_php' === $rule_id && ! current_user_can( AdminController::FIREWALL_CAPABILITY ) ) : ?>
+								<span class="description"><?php esc_html_e( 'Managed by your network administrator.', 'wp-bouncer' ); ?></span>
+							<?php else : ?>
 							<button type="submit" class="button button-small"><?php echo $on ? esc_html__( 'Turn off', 'wp-bouncer' ) : esc_html__( 'Turn on', 'wp-bouncer' ); ?></button>
+							<?php endif; ?>
 						</form>
 					</td>
 				</tr>

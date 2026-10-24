@@ -24,8 +24,13 @@ $labels = AdminController::rule_labels();
  */
 $heading = static function ( string $id ) use ( $r, $labels ): void {
 	echo '<div class="wpb-rule-head">';
-	AdminController::rule_switch( $id, ! empty( $r[ $id ]['enabled'] ) );
-	echo '<div><h2>' . esc_html( $labels[ $id ][0] ) . '</h2><p class="description">' . esc_html( $labels[ $id ][1] ) . '</p></div></div>';
+	$locked = 'uploads_php' === $id && ! current_user_can( AdminController::FIREWALL_CAPABILITY );
+	AdminController::rule_switch( $id, ! empty( $r[ $id ]['enabled'] ), $locked );
+	echo '<div><h2>' . esc_html( $labels[ $id ][0] ) . '</h2><p class="description">' . esc_html( $labels[ $id ][1] ) . '</p>';
+	if ( $locked ) {
+		echo '<p class="description">' . esc_html__( 'Managed by your network administrator.', 'wp-bouncer' ) . '</p>';
+	}
+	echo '</div></div>';
 };
 ?>
 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" class="wpb-rules-form">
@@ -98,9 +103,13 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 		$wpb_present = UploadsGuard::block_present();
 		$wpb_wanted  = $plugin->uploads_guard()->wants_htaccess();
 		$wpb_probe   = get_option( UploadsGuard::PROBE_OPTION );
+		$wpb_netcap  = current_user_can( AdminController::FIREWALL_CAPABILITY );
 		?>
 		<p class="description"><?php esc_html_e( 'The commonest way WordPress sites get backdoored: a weak upload form in some plugin lets an attacker put a .php file in wp-content/uploads, then they run it by visiting its address.', 'wp-bouncer' ); ?></p>
-		<label><input type="checkbox" name="wp_bouncer[rules][uploads_php][htaccess]" value="1" <?php checked( $r['uploads_php']['htaccess'] ); ?>> <?php esc_html_e( 'Tell the web server not to run scripts in the uploads folder (writes a marked block to wp-content/uploads/.htaccess; works on Apache and LiteSpeed)', 'wp-bouncer' ); ?></label><br>
+		<label><input type="checkbox" name="wp_bouncer[rules][uploads_php][htaccess]" value="1" <?php checked( $r['uploads_php']['htaccess'] ); ?> <?php disabled( ! $wpb_netcap ); ?>> <?php esc_html_e( 'Tell the web server not to run scripts in the uploads folder (writes a marked block to wp-content/uploads/.htaccess; works on Apache and LiteSpeed)', 'wp-bouncer' ); ?></label>
+		<?php if ( ! $wpb_netcap ) : ?>
+			<span class="description"><?php esc_html_e( 'Managed by your network administrator.', 'wp-bouncer' ); ?></span>
+		<?php endif; ?><br>
 		<label><input type="checkbox" name="wp_bouncer[rules][uploads_php][check_uploads]" value="1" <?php checked( $r['uploads_php']['check_uploads'] ); ?>> <?php esc_html_e( 'Refuse uploads through WordPress that are scripts in disguise (such as photo.php.jpg, .phtml, .htaccess, or an "image" containing PHP code)', 'wp-bouncer' ); ?></label>
 
 		<div class="wpb-uploads-status">
@@ -117,7 +126,7 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 					esc_html_e( 'not used.', 'wp-bouncer' );
 				}
 				?>
-				<?php if ( $wpb_wanted !== $wpb_present ) : ?>
+				<?php if ( $wpb_netcap && $wpb_wanted !== $wpb_present ) : ?>
 					<button type="submit" class="button button-small" form="wpb-uploads-sync-form"><?php echo $wpb_wanted ? esc_html__( 'Write it now', 'wp-bouncer' ) : esc_html__( 'Remove it now', 'wp-bouncer' ); ?></button>
 				<?php endif; ?>
 			</p>
@@ -131,7 +140,9 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 					esc_html_e( 'not run yet.', 'wp-bouncer' );
 				}
 				?>
-				<button type="submit" class="button button-small" form="wpb-uploads-probe-form"><?php esc_html_e( 'Test now', 'wp-bouncer' ); ?></button>
+				<?php if ( $wpb_netcap ) : ?>
+					<button type="submit" class="button button-small" form="wpb-uploads-probe-form"><?php esc_html_e( 'Test now', 'wp-bouncer' ); ?></button>
+				<?php endif; ?>
 			</p>
 			<p class="description"><?php esc_html_e( 'The test puts a tiny script in the uploads folder, asks your server for it, and deletes it.', 'wp-bouncer' ); ?></p>
 			<details>
@@ -154,6 +165,9 @@ $heading = static function ( string $id ) use ( $r, $labels ): void {
 		<label><input type="checkbox" name="wp_bouncer[rules][user_agent][block_empty]" value="1" <?php checked( $r['user_agent']['block_empty'] ); ?>> <?php esc_html_e( 'Block requests that send no User-Agent at all', 'wp-bouncer' ); ?></label>
 		<p><label for="wpb-ua"><?php esc_html_e( 'Blocked User-Agent patterns (one per line). Plain text matches anywhere, ignoring case. Wrap in slashes for a regular expression, e.g. /^curl\//i', 'wp-bouncer' ); ?></label></p>
 		<textarea id="wpb-ua" name="wp_bouncer[rules][user_agent][patterns]" rows="8" class="large-text code"><?php echo esc_textarea( implode( "\n", $r['user_agent']['patterns'] ) ); ?></textarea>
+		<?php if ( ! current_user_can( AdminController::FIREWALL_CAPABILITY ) ) : ?>
+			<p class="description"><?php esc_html_e( 'Regular expressions (wrapped in slashes) can only be added by your network administrator. Existing ones are kept.', 'wp-bouncer' ); ?></p>
+		<?php endif; ?>
 		<?php
 		// Patterns that failed to run (for example by backtracking too much) in the last hour; they match nothing until fixed.
 		foreach ( array_slice( (array) $r['user_agent']['patterns'], 0, UserAgentRule::MAX_PATTERNS ) as $wpb_pattern ) {

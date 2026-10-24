@@ -36,6 +36,7 @@ final class MessageCodes {
 		'saved',
 		'unknown_section',
 		'unknown_rule',
+		'managed_by_network',
 		'rule_toggled',
 		'shared_refusal',
 		'remote_addr_set',
@@ -112,6 +113,8 @@ final class MessageCodes {
 				return $message . $allowed;
 			case 'unknown_section':
 				return __( 'Unknown settings section.', 'wp-bouncer' );
+			case 'managed_by_network':
+				return __( 'That setting is managed by your network administrator.', 'wp-bouncer' );
 			case 'unknown_rule':
 				return __( 'Unknown rule.', 'wp-bouncer' );
 			case 'rule_toggled':

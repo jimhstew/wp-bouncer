@@ -9,6 +9,7 @@ namespace WPBouncer;
 
 use WPBouncer\Admin\AdminController;
 use WPBouncer\Admin\DataNotices;
+use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Firewall\Firewall;
@@ -251,6 +252,7 @@ final class Plugin {
 		$this->alerts()->register();
 		( new TrafficRecorder( $this ) )->register();
 		( new PrivacyTools( $this ) )->register();
+		FirewallCapability::register();
 
 		// Updates are not affected by WP_BOUNCER_DISABLE: updating is one way out of a bad version.
 		if ( ! Updater::is_disabled() ) {

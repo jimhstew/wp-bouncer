@@ -586,6 +586,9 @@ cat > "$W/wp-content/mu-plugins/wpb-e2e.php" <<'PHPEOF'
 add_filter( 'wp_bouncer_geo_step_seconds', '__return_zero' );
 // Let download_url() fetch from the local stand-in for download.db-ip.com.
 add_filter( 'http_request_host_is_external', '__return_true' );
+// The importer only fetches https from allow-listed hosts; let it use the local http stand-in.
+add_filter( 'wp_bouncer_geo_import_allow_http', '__return_true' );
+add_filter( 'wp_bouncer_geo_import_hosts', static function ( $hosts ) { $hosts[] = '127.0.0.1'; return $hosts; } );
 // wp_safe_remote_get() only talks to ports 80, 443 and 8080 by default.
 add_filter( 'http_allowed_safe_ports', static function ( $ports ) { $ports[] = (int) wp_parse_url( home_url(), PHP_URL_PORT ); return $ports; } );
 // A tiny unpack cap while this flag file exists.
