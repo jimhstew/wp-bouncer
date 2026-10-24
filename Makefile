@@ -5,7 +5,7 @@
 #                   workflow attaches these to the GitHub release; installed sites read update.json.
 #   make test       Unit tests (needs PHP and `composer install`)
 #   make integration  WordPress integration tests (needs PHP with mysqli and a MySQL/MariaDB;
-#                   set WPB_TESTS_DB_HOST/USER/PASSWORD/NAME, optionally WP_VERSION=6.4)
+#                   set WPB_TESTS_DB_HOST/USER/PASSWORD/NAME, optionally WP_VERSION=7.0)
 #   make analyse    PHPStan static analysis
 #   make lint       WordPress Coding Standards
 #   make e2e        End-to-end tests against the wp-bouncer/ source folder

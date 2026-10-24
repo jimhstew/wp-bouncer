@@ -901,8 +901,12 @@ echo "==> PHP debug log"
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'
 touch "$W/debug.log"
-check "no PHP warnings or notices" 0 "$(grep -cE "$PHP_PROBLEMS" "$W/debug.log")"
-grep -E -A3 "$PHP_PROBLEMS" "$W/debug.log" | head -20
+# WP-CLI's own deprecation notices (newer PHP than the phar was built for) are
+# test-tool noise, not the site's; anything raised in WordPress or the plugin counts.
+site_problems() { grep -E "$PHP_PROBLEMS" "$W/debug.log" | grep -v 'wp-cli\.phar' || true; }
+check "no PHP warnings or notices" 0 "$(site_problems | grep -c .)"
+# One line per distinct message and location, most frequent first.
+site_problems | sed -E 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -10 | cut -c1-300
 
 echo
 echo "$pass passed, $fail failed"

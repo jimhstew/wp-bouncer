@@ -16,8 +16,8 @@
 # per WordPress release). For the newest WordPress, `composer install` is enough.
 # For an older WordPress, pin wp-phpunit to the same minor version first:
 #
-#   composer require --dev -W wp-phpunit/wp-phpunit:5.9.*
-#   (or: WPB_PIN_WP_PHPUNIT=1 tests/Integration/install-wp.sh 5.9)
+#   composer require --dev -W wp-phpunit/wp-phpunit:7.0.*
+#   (or: WPB_PIN_WP_PHPUNIT=1 tests/Integration/install-wp.sh 7.0)
 #
 # Environment (all optional)
 #   PHP                    php binary (default: php)
@@ -48,7 +48,7 @@ case "$VERSION" in
 	latest)  URL="https://wordpress.org/latest.tar.gz"; EXT=tar.gz ;;
 	nightly) URL="https://wordpress.org/nightly-builds/wordpress-latest.zip"; EXT=zip ;;
 	[0-9]*.[0-9]*)
-		# 5.9 and 6.0 style releases are published as wordpress-5.9.tar.gz.
+		# x.y releases are published as wordpress-x.y.tar.gz (for example 7.0).
 		URL="https://wordpress.org/wordpress-${VERSION}.tar.gz"; EXT=tar.gz ;;
 	*) echo "Unknown version '$VERSION' (use latest, nightly, x.y or x.y.z)" >&2; exit 2 ;;
 esac
