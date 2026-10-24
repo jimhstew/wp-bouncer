@@ -24,11 +24,14 @@ final class AdminScreensTest extends IntegrationTestCase {
 		parent::set_up();
 		$this->admin = new AdminController( $this->plugin );
 		$this->fake_request();
+		// wp-admin/admin.php sets $hook_suffix before a page renders. Older WordPress (5.9) reads it
+		// unchecked when WP_List_Table is built ("Undefined index: hook_suffix").
+		$GLOBALS['hook_suffix'] = 'toplevel_page_wp-bouncer';
 		set_current_screen( 'toplevel_page_wp-bouncer' );
 	}
 
 	public function tear_down() {
-		unset( $GLOBALS['current_screen'] );
+		unset( $GLOBALS['current_screen'], $GLOBALS['hook_suffix'] );
 		parent::tear_down();
 	}
 

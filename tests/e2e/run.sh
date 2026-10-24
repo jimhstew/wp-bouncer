@@ -57,10 +57,9 @@ WP="$PHP -d memory_limit=512M $WORK/wp-cli.phar --path=$W --quiet"
 pass=0
 fail=0
 SERVER_PID=""
-FILES_PID=""
 
 cleanup() {
-	for pid in $SERVER_PID $FILES_PID; do
+	for pid in $SERVER_PID; do
 		pkill -P "$pid" 2>/dev/null   # PHP_CLI_SERVER_WORKERS children outlive the parent otherwise
 		kill "$pid" 2>/dev/null
 		wait "$pid" 2>/dev/null
@@ -281,12 +280,14 @@ for _ in $(seq 1 50); do curl -s -o /dev/null "$U/" && break; sleep 0.1; done
 sleep 0.2
 kill -0 "$SERVER_PID" 2>/dev/null || { echo "web server did not start (port $PORT in use?):"; cat "$WORK/server.log"; exit 1; }
 
-# A second server that stands in for download.db-ip.com in the import-by-URL test.
-FILES="$WORK/geo-files"
+# Files for the import-by-URL and update tests (stands in for download.db-ip.com and GitHub
+# releases). They are served by the site's own server, from a folder in the web root: WordPress
+# before 5.9 has no http_allowed_safe_ports filter, and its safe-request check (wp_safe_remote_get)
+# only accepts ports 80, 443, 8080 and the site's own, so a second server on another port is
+# unreachable there.
+FILES="$W/e2e-files"
 mkdir -p "$FILES"
-FILES_PORT=$((PORT + 1))
-"$PHP" -S "127.0.0.1:$FILES_PORT" -t "$FILES" > "$WORK/files-server.log" 2>&1 &
-FILES_PID=$!
+FILES_URL="$U/e2e-files"
 
 MOZ="Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0"
 GOOGLEBOT="Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
@@ -420,7 +421,6 @@ add_filter( 'wp_bouncer_geo_step_seconds', '__return_zero' );
 // Let download_url() fetch from the local stand-in for download.db-ip.com.
 add_filter( 'http_request_host_is_external', '__return_true' );
 PHPEOF
-echo "add_filter( 'http_allowed_safe_ports', function ( \$p ) { \$p[] = $FILES_PORT; return \$p; } );" >> "$W/wp-content/mu-plugins/wpb-e2e.php"
 # 3000 ranges 5.0.0.0/24 .. 5.11.183.0/24, all NL, gzipped like the DB-IP file.
 "$PHP" -r '$o = ""; for ($i = 0; $i < 3000; $i++) { $b = intdiv($i, 256); $c = $i % 256; $o .= "5.$b.$c.0,5.$b.$c.255,NL\n"; } file_put_contents($argv[1], gzencode($o));' "$FILES/geo.csv.gz"
 printf '<!DOCTYPE html><html><body><h1>404 Not Found</h1></body></html>\n' > "$WORK/not-geo.csv"
@@ -486,10 +486,10 @@ check "working file removed"         0   "$(find "$W/wp-content/uploads/wp-bounc
 check "work folder has .htaccess"    1   "$(grep -c 'Require all denied' "$W/wp-content/uploads/wp-bouncer/.htaccess")"
 check "lookup uses new data"         NL  "$($WP eval 'echo WPBouncer\Plugin::instance()->geo_database()->lookup("5.4.7.9");')"
 
-check "import by URL starts"         302 "$(from_url "http://127.0.0.1:$FILES_PORT/geo.csv.gz")"
+check "import by URL starts"         302 "$(from_url "$FILES_URL/geo.csv.gz")"
 check "  ...and finishes"            ok  "$(at_least 6 "$(run_steps)")"
 check "  ...with all ranges"         3000 "$(geo_rows)"
-from_url "http://127.0.0.1:$FILES_PORT/missing.csv.gz" > /dev/null
+from_url "$FILES_URL/missing.csv.gz" > /dev/null
 check "bad URL explained"            1   "$(redirect_has "Download%20failed")"
 check "  ...and old data kept"       3000 "$(geo_rows)"
 
@@ -705,16 +705,23 @@ $WP eval 'WPBouncer\Plugin::instance()->traffic_log()->clear();'
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic" > /dev/null
 check "skip administrators"          0 "$(traffic_count "ip = '198.51.100.50'")"
 set_settings '$s["traffic"]["skip_admins"] = false'
+# "wp cron event run" reschedules a recurring event for now + 1 hour and then unschedules the old slot. When
+# two runs start within the same second the new slot IS the old one, the event vanishes and the next run
+# fails with "Invalid cron event" (seen on fast CI runners). Putting the event in the past first keeps the slots apart.
+run_purge() {
+	$WP eval 'wp_clear_scheduled_hook( "wp_bouncer_traffic_purge" ); wp_schedule_event( time() - 60, "hourly", "wp_bouncer_traffic_purge" );'
+	$WP cron event run wp_bouncer_traffic_purge > /dev/null
+}
 # Old rows: 8 days, 2 days and 1 hour ago.
 $WP eval 'global $wpdb; foreach ( array( 8 * DAY_IN_SECONDS, 2 * DAY_IN_SECONDS, HOUR_IN_SECONDS ) as $age ) { $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - $age ), "ip" => "192.0.2.1", "uri" => "/age-" . $age ) ); }'
-$WP cron event run wp_bouncer_traffic_purge > /dev/null
+run_purge
 check "7-day retention purges"       "0 1 1" "$(traffic_count "uri = '/age-691200'") $(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
 set_settings '$s["traffic"]["retention_days"] = 1'
-$WP cron event run wp_bouncer_traffic_purge > /dev/null
+run_purge
 check "1-day retention purges"       "0 1" "$(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
 set_settings '$s["traffic"]["retention_days"] = 99'   # stored behind the form's back
 $WP eval 'global $wpdb; $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - 8 * DAY_IN_SECONDS ), "ip" => "192.0.2.1", "uri" => "/age-old" ) );'
-$WP cron event run wp_bouncer_traffic_purge > /dev/null
+run_purge
 check "never kept past 7 days"       0 "$(traffic_count "uri = '/age-old'")"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_save traffic)&action=wp_bouncer_save&tab=traffic&wp_bouncer[traffic][enabled]=1&wp_bouncer[traffic][retention_days]=3&wp_bouncer[traffic][skip_background]=1" > /dev/null
 check "Traffic tab saves settings"   "1 3" "$($WP eval '$t = WPBouncer\Settings::load()->get("traffic"); echo (int) $t["enabled"], " ", $t["retention_days"];')"
@@ -748,7 +755,11 @@ check "  ...or to use the connection"   1 "$(grep -c 'I have no proxy' "$WORK/ad
 check "no PHP errors in the notice"     0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
 check "fix needs a valid nonce"         403 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=deadbeef00&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip")"
 check "  ...nothing changed"            "x_real_ip|" "$(stored_ip)"
-check "fix is not reachable logged out"   400 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip" "$U/wp-admin/admin-post.php")"
+# No handler is registered for logged-out visitors. WordPress 5.9+ answers an unhandled admin-post action
+# with 400; 5.8 and older run no hook and send an empty 200. Either way nothing runs (checked below).
+logged_out_code=$(curl -s -o "$WORK/logged-out.html" -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip" "$U/wp-admin/admin-post.php")
+if [ "$logged_out_code" = 200 ] && [ ! -s "$WORK/logged-out.html" ]; then logged_out_code=400; fi
+check "fix is not reachable logged out"   400 "$logged_out_code"
 check "  ...and changed nothing"        "x_real_ip|" "$(stored_ip)"
 check "Trust-peer button works"         302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip&peer=127.0.0.1")"
 check "  ...proxy added"                "x_real_ip|127.0.0.1" "$(stored_ip)"
@@ -784,10 +795,9 @@ $WP plugin auto-updates disable wp-bouncer > /dev/null 2>&1   # left on by an ea
 cat > "$W/wp-content/mu-plugins/wpb-e2e-update.php" <<PHPEOF
 <?php
 define( 'WP_BOUNCER_ALLOW_UPDATE_SOURCE_FILTERS', true );
-add_filter( 'wp_bouncer_update_manifest_url', function () { return 'http://127.0.0.1:$FILES_PORT/update.json'; } );
-add_filter( 'wp_bouncer_update_package_prefix', function () { return 'http://127.0.0.1:$FILES_PORT/'; } );
+add_filter( 'wp_bouncer_update_manifest_url', function () { return '$FILES_URL/update.json'; } );
+add_filter( 'wp_bouncer_update_package_prefix', function () { return '$FILES_URL/'; } );
 add_filter( 'http_request_host_is_external', '__return_true' );
-add_filter( 'http_allowed_safe_ports', function ( \$p ) { \$p[] = $FILES_PORT; return \$p; } );
 PHPEOF
 
 publish() { # publish VERSION -> a plugin zip with that version and its update.json on the stand-in server
@@ -803,7 +813,7 @@ publish() { # publish VERSION -> a plugin zip with that version and its update.j
 	rm -f "$FILES/v$v/wp-bouncer-$v.zip"
 	(cd "$WORK/release" && zip -qrX "$FILES/v$v/wp-bouncer-$v.zip" wp-bouncer)
 	"$PHP" "$REPO_DIR/scripts/build-manifest.php" --zip "$FILES/v$v/wp-bouncer-$v.zip" --plugin-dir "$rel" \
-		--changelog "$WORK/release/CHANGELOG.md" --package-url "http://127.0.0.1:$FILES_PORT/v$v/wp-bouncer-$v.zip" \
+		--changelog "$WORK/release/CHANGELOG.md" --package-url "$FILES_URL/v$v/wp-bouncer-$v.zip" \
 		--out "$FILES/update.json" --notes-out "$WORK/release/notes.md" > /dev/null
 }
 refresh_updates() { $WP eval 'delete_site_transient( "update_plugins" ); delete_site_transient( WPBouncer\Update\Updater::CACHE ); wp_update_plugins();'; }
@@ -860,7 +870,9 @@ refresh_updates
 # Real auto-updates run from WP-Cron, which is what DOING_CRON tells WordPress.
 # (Outside cron, WordPress deactivates a plugin while updating it and leaves
 # reactivating it to the update screen.)
-$WP eval 'define( "DOING_CRON", true ); wp_maybe_auto_update();'
+# wp_maybe_auto_update() also updates WordPress itself, themes and translations; on an old WordPress
+# under test it would upgrade core to the latest release mid-run, so only plugins are allowed.
+$WP eval 'define( "DOING_CRON", true ); add_filter( "auto_update_core", "__return_false" ); add_filter( "auto_update_theme", "__return_false" ); add_filter( "auto_update_translation", "__return_false" ); wp_maybe_auto_update();'
 check "auto-update installs 9.1.0"   9.1.0 "$(installed_version)"
 check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
 check "  ...still blocking"          403  "$(status 203.0.113.53 "sqlmap/1.7" "$U/")"

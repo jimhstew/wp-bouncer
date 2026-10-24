@@ -9,7 +9,7 @@ Minimum supported: PHP 7.4, WordPress 5.8. Distribution: GitHub releases (not wp
 2. **Privacy (WPB-3b):** approved for 1.2.0. Block-log retention of up to 365 days stays as it is.
 3. **Rule categories:** the four proposed categories are confirmed (Block lists; Login and accounts; Scanners and floods; Attack payloads and hardening). No category-level switches: every rule stays independently switchable.
 4. **Audit scope:** WPB-3 assesses signing release zips (decision as an ADR) and adds a `SECURITY.md` with a disclosure contact.
-5. **Release split:** the widget (WPB-4) may ship alone as 1.2.0 if the Rules UI (WPB-2) is not ready; the UI then ships as 1.3.0.
+5. **Release split:** superseded 2026-10-24: everything planned for 1.2.0 ships together, including WPB-2, WPB-4, WPB-6 and WPB-7.
 6. **Integration suite:** landed (tests/Integration, 407 tests). WPB-2, WPB-4 and WPB-3b must include integration tests.
 
 7. **Security decisions (2026-10-23, from the WPB-3 blue-team review):**
@@ -43,7 +43,7 @@ RICE alone says audit, lint, widget, UI. **Proposed order of work: WPB-1, WPB-3,
 | Release | Contents | Why this number |
 |---|---|---|
 | **1.1.2** (patch) | WPB-1 lint/PHPStan, WPB-3 audit pass 1 and fixes for its findings | No new user-facing feature and no settings or schema change. Lint is behaviour-neutral. Audit fixes are bug and security fixes. If a fix needs a new setting or visible behaviour, move that part to 1.2.0 and ship only the safe part. |
-| **1.2.0** (minor) | WPB-4 widget, WPB-2 Rules UI, WPB-3b privacy hooks if the owner approves | New backwards-compatible features, no breaking change to settings keys, hooks or the `wp_bouncer_rules` filter. If the UI design is not ready when the widget is done, ship the widget as 1.2.0 and the UI as 1.3.0 rather than holding the widget. |
+| **1.2.0** (minor) | WPB-5 minimums (PHP 8.3, WordPress 7.0) first, then the remaining WPB-3 fixes, WPB-4 widget, WPB-2 Rules UI, WPB-3b privacy hooks, WPB-6 version warnings, WPB-7 PHP settings checks | New backwards-compatible features, no breaking change to settings keys, hooks or the `wp_bouncer_rules` filter. Everything ships together so it goes through one full test and audit cycle (owner decision 2026-10-24). |
 | **Hotfix 1.1.x** (out of band) | Any Critical or High audit finding | Do not wait for 1.1.2 or 1.2.0. Triage first, patch, tag. |
 
 Every release: bump `wp-bouncer.php` header and `Plugin::VERSION`, `readme.txt` Stable tag plus its Changelog and Upgrade Notice, and `documentation/CHANGELOG.md` together. Final security-red delta audit on the diff since the last tag before tagging (release workflow step 3).
@@ -220,7 +220,7 @@ A separate effort is adding MySQL/MariaDB e2e runs and a WordPress integration s
 - **Effort:** L
 - **Risk:** Medium to high for a UI change. The main trap: the Rules tab is a single form and `Settings::apply_form()` replaces only the keys the tab owns, so **splitting rules into several forms or panels that post `tab=rules` separately would reset every rule not on the submitted panel** (unticked checkboxes are absent from POST). Also the Dashboard tab toggles rules through a different handler (`handle_toggle_rule`). A mistake here silently disables protections.
 - **Dependencies:** **architect designs first, before any developer work** (design to `documentation/architecture/rules-ui.md`, with security-blue input on settings handling and data-engineer only if storage changes, which it should not). Integration tests required for the save paths once the suite lands. WPB-1 merged first. Delta audit before release.
-- **Release:** 1.2.0 (or 1.3.0 if it slips, see release plan)
+- **Release:** 1.2.0
 
 **Flag for the architect (design before build).** I am not specifying the layout; I am specifying the constraints and the decisions the architect must make and record in an ADR:
 1. Layout choice among: accordion/sections on one page, sub-tabs, or a card grid with an overview. Whatever is chosen must satisfy the criteria below.
@@ -268,6 +268,68 @@ Reasoning: the first group is "static" rules the admin curates; the second is th
 
 ---
 
+## WPB-5: Raise minimum versions to PHP 8.3 and WordPress 7.0
+- **Type:** chore (breaking for old environments)
+- **Priority:** P1 for 1.2.0 (owner decision 2026-10-24)
+- **Effort:** M
+- **Risk:** Medium. Sites below the new minimums stop receiving updates, so 1.1.2 must ship first with every security fix at the old minimums (PHP 7.4, WordPress 5.8).
+- **Dependencies:** 1.1.2 released. Do this first in 1.2.0, before other 1.2.0 work, so new code can use PHP 8.3 features.
+- **Release:** 1.2.0
+
+**User story.** As the maintainer, I want WP Bouncer to require PHP 8.3+ and WordPress 7.0+, so that the plugin only runs on versions that still get security fixes and the test matrix stays small.
+
+**Acceptance criteria**
+- `Requires PHP: 8.3` and `Requires at least: 7.0` in the plugin header and readme.txt; `update.json` (scripts/build-manifest.php) carries the same `requires` and `requires_php`.
+- A site below either minimum is not offered 1.2.0 by the updater; it keeps 1.1.x and the Plugins screen says why. Test this in e2e with a manifest that requires newer versions.
+- Activating on an unsupported environment fails cleanly with a message, never a fatal error (the main plugin file stays parseable by old PHP, or WordPress's own header check blocks it first).
+- phpcs.xml.dist `testVersion` / `minimum_wp_version`, phpstan-php74.neon (replace with a PHP 8.3 config), CI matrix (unit PHP 8.3–8.5; integration and e2e WordPress 7.0, latest, nightly; drop PHP 7.4–8.2 and WordPress 5.8–6.x), composer.json `require.php`.
+- Remove compatibility code that only existed for old versions (for example the pre-6.5 users-sitemap 404 workaround if WordPress 7.0 handles it, `%i` restriction notes) and update CLAUDE.md "Minimum versions".
+- Changelog **Changed** entry and readme Upgrade Notice telling admins on older PHP or WordPress to stay on 1.1.x and upgrade their stack.
+
+## WPB-6: Warn about unsupported PHP and database versions
+- **Type:** feature
+- **Priority:** P2
+- **Effort:** S–M
+- **Risk:** Low. Read-only checks; the risk is stale end-of-life data giving wrong warnings.
+- **Dependencies:** WPB-5 (the plugin's own minimums define the floor).
+- **Release:** 1.2.0 (owner decision 2026-10-24: one release, one test cycle)
+
+**User story.** As a site admin, I want WP Bouncer to tell me when my server runs a PHP, MySQL or MariaDB version that no longer gets security fixes, so that I know to ask my host to upgrade.
+
+**Acceptance criteria**
+- Detects the PHP version (`PHP_VERSION`) and the database server and version (`$wpdb->db_server_info()` / `db_version()`, handling MariaDB's `5.5.5-10.x` style prefix and managed-database version strings).
+- Compares against an end-of-life table kept in one pure-PHP class (for example `Environment\SupportPolicy`) with branch → security-support end date, for PHP, MySQL and MariaDB. Warnings are date-based, so a version starts warning on its end date without a plugin release. Dates are verified against php.net, the MySQL lifecycle policy and mariadb.org at implementation time and on every release (add to the release checklist).
+- Three states: supported; ending within 90 days (notice); past end of life (warning). Unknown versions (for example a newer branch not in the table, or an unparseable string) show no warning.
+- Shown on the plugin Dashboard tab and added to WordPress Site Health (`site_status_tests`) rather than as a site-wide nag; a site-wide admin notice only for past-EOL, dismissible per user for 30 days.
+- Visible only to `manage_options` (network admin on multisite). No external requests: the data ships with the plugin.
+- Unit tests for parsing and every state; integration test for the Site Health entries.
+
+## WPB-7: Check PHP settings with security implications
+- **Type:** feature
+- **Priority:** P2
+- **Effort:** M
+- **Risk:** Low. Read-only; false alarms are the main risk, so each check states why it matters and how to fix it.
+- **Dependencies:** shares the reporting surface with WPB-6 (Dashboard tab and Site Health).
+- **Release:** 1.2.0, with WPB-6
+
+**User story.** As a site admin, I want WP Bouncer to flag PHP settings that weaken my site's security, so that I can fix them or ask my host to.
+
+**Acceptance criteria**
+- Read-only: the plugin never changes PHP or server settings; it reports the current value, why it matters and the recommended value.
+- Initial checks (product-manager and security-blue to confirm the list and severities):
+  - `display_errors` on in production (leaks paths and data) — warning.
+  - `expose_php` on (version in headers) — info.
+  - `allow_url_include` on — critical.
+  - `allow_url_fopen` on — info only (WordPress and many plugins need it).
+  - `session.use_strict_mode`, `session.cookie_httponly`, `session.cookie_secure` (on HTTPS sites), `session.cookie_samesite` — info, since WordPress itself doesn't use PHP sessions but other plugins may.
+  - `open_basedir` unset — info.
+  - `disable_functions` not restricting `exec`, `shell_exec`, `system`, `passthru`, `proc_open`, `popen` — info.
+  - `file_uploads`, `upload_max_filesize`, `post_max_size`, `max_input_vars` — info, shown for context.
+  - Related WordPress settings: `WP_DEBUG_DISPLAY` on, `WP_DEBUG_LOG` writing to the default web-reachable `wp-content/debug.log`, `DISALLOW_FILE_EDIT` off, `FORCE_SSL_ADMIN` off on HTTPS sites — owner to confirm whether these belong here or in a separate "WordPress hardening" check.
+- Each check is a small pure class behind one interface, so checks are unit-testable and a later release can add more; extension filter `wp_bouncer_environment_checks`.
+- Results on the Dashboard tab and in Site Health, grouped by severity; no site-wide notice for info items.
+- Visible only to `manage_options` (network admin on multisite). Values that could be sensitive (paths in `open_basedir`) are shown only to that capability and never logged.
+
 # Later
 
 (Nothing is queued here yet. Candidates that came out of this planning, not yet requested by the owner:)
@@ -300,7 +362,7 @@ No open bugs are recorded. Audit findings will be added here as individual items
 10. **Dashboard tab (WPB-2).** Keep the Dashboard tab's rule table, or replace it with the new overview? Keeping both risks them drifting apart.
 11. **Widget (WPB-4).** Which stats are must-haves? My default is the list above. Should the widget show IPs (visible to admins only; the log already does)? Should it appear on the multisite network dashboard, and is the plugin meant to be network-activated (tables are per-site, so each site's dashboard would show its own data)?
 12. **Widget refresh (WPB-4).** Is a cache of up to 5 minutes acceptable (numbers lag slightly), or do you want live numbers?
-13. **1.2.0 scope.** If the UI redesign is not ready when the widget is, may the widget ship alone as 1.2.0 and the UI follow as 1.3.0?
+13. **1.2.0 scope.** If the UI redesign is not ready when the widget is, may the widget ship alone as 1.2.0 and the UI follow as 1.3.0? *(Answered 2026-10-24: no split; all of it ships as 1.2.0.)*
 14. **Integration suite timing.** Should WPB-2 and WPB-4 wait for it, or may development start and tests follow? I have written the acceptance criteria assuming they do not leave the tester step without integration tests.
 
 ### Owner decisions on the security-fix plan (2026-10-24)
@@ -318,3 +380,9 @@ The owner accepted the architect's recommendations on all seven questions in
 
 Release order: 1.1.2 (S1, S2, S3, WPB-1), then 1.1.3 (S8, S4, S5, S6, S7, S9),
 then 1.2.0 (S10 to S14, then WPB-4, then WPB-2).
+
+### Owner decisions on minimum versions and environment checks (2026-10-24)
+
+- 1.2.0 supports only PHP 8.3+ and WordPress 7.0+ (WPB-5). 1.1.2 keeps PHP 7.4 / WordPress 5.8 so older sites still get the security fixes.
+- Add warnings for unsupported PHP, MySQL and MariaDB versions (WPB-6) and checks for PHP settings with security implications (WPB-7).
+- WPB-6 and WPB-7 move into 1.2.0 so the whole release goes through one test and audit cycle.
