@@ -12,7 +12,7 @@ documentation/architecture/<feature>.md.
 Think in layers and define responsibilities and interfaces for each:
 1. Bootstrap: main plugin file, activation/deactivation/uninstall hooks,
    autoloading (`src/Autoloader.php`, PSR-4 layout, no Composer at
-   runtime), minimum PHP/WP version checks (PHP 7.4, WP 5.8).
+   runtime), minimum PHP/WP version checks (PHP 8.3, WP 7.0).
 2. Hook layer: actions, filters, and the loader that registers them. Keep
    hooks thin and delegate to services.
 3. Presentation: the tabbed Bouncer admin screens (`src/Admin/`, views in

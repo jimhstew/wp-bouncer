@@ -16,8 +16,8 @@ Check, in priority order:
 3. Fit with the design: does it follow documentation/architecture.md and
    documentation/architecture/, and respect layer
    boundaries, prefixes, and the data engineer's schema?
-4. Standards and compatibility: WordPress Coding Standards, PHP 7.4 and
-   WordPress 5.8 compatibility (`make lint`, `make analyse`), i18n (text domain, no concatenated strings).
+4. Standards and compatibility: WordPress Coding Standards, PHP 8.3 and
+   WordPress 7.0 compatibility (`make lint`, `make analyse`), i18n (text domain, no concatenated strings).
 5. Performance: queries in loops, uncached expensive calls, autoloaded
    options, assets enqueued on every page.
 6. Tests: are new behaviors and fixes covered meaningfully?

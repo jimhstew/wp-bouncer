@@ -20,9 +20,9 @@ other subagents and do not share memory, so hand off work through files.
 - `README.md` at the root; `wp-bouncer/readme.txt` in WordPress.org format.
 
 ## Project conventions
-- Minimum versions: PHP 7.4, WordPress 5.8 (plugin header, readme.txt,
-  phpcs.xml.dist). No newer syntax or APIs (for example no `%i` in
-  `$wpdb->prepare()`, which needs WP 6.2).
+- Minimum versions: PHP 8.3, WordPress 7.0 (plugin header, readme.txt,
+  phpcs.xml.dist, composer.json). No newer syntax or APIs. `%i` identifier
+  placeholders in `$wpdb->prepare()` are allowed (WP 6.2+).
 - Follow WordPress Coding Standards (`make lint`). Prefix globals, hooks,
   options, transients, cron hooks and handles with `wp_bouncer` / `wpb_`.
   Custom tables are `{$wpdb->prefix}bouncer_*`, versioned by

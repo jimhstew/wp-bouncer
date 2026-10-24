@@ -14,7 +14,7 @@ Test strategy (what this repo uses; see documentation/testing.md):
   use the hand-written doubles in tests/Support/ (Requests, FrozenClock,
   MemoryStore, MemoryBlockLog, RecordingResponder, FakeGeo). Advance
   FrozenClock instead of calling sleep(). Every attack signature gets a
-  must-block case and a must-pass case. Must pass on PHP 7.4 to 8.4.
+  must-block case and a must-pass case. Must pass on PHP 8.3 to 8.5.
 - End-to-end (`make e2e`, `make check`): tests/e2e/run.sh installs a
   throwaway WordPress on SQLite, serves it with PHP's built-in server, and
   checks real HTTP responses with curl and WP-CLI. Anything that needs
@@ -29,9 +29,9 @@ Test strategy (what this repo uses; see documentation/testing.md):
   phpunit-integration.xml.dist and the WPB_TESTS_DB_* settings. Use it for
   hooks, admin handlers, options and tables; keep e2e for real HTTP.
 - Static analysis (both blocking in CI): `make analyse` (PHPStan level 6,
-  also run with phpstan-php74.neon) and `make lint` (phpcs, 0 findings).
-- CI runs unit, integration and e2e across PHP 7.4 to 8.5, MySQL 8.0/8.4,
-  MariaDB 10.6/11.4 and WordPress 5.8 to nightly.
+  also run with phpstan-php83.neon) and `make lint` (phpcs, 0 findings).
+- CI runs unit, integration and e2e across PHP 8.3 to 8.5, MySQL 8.4,
+  MariaDB 10.11/11.4 and WordPress 7.0 to nightly.
 
 Not set up here: Brain Monkey and Playwright. Propose a new framework to the
 lead before adding it.

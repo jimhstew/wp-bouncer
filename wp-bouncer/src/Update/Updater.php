@@ -207,6 +207,21 @@ final class Updater {
 		if ( null === $manifest ) {
 			return $update;
 		}
+		global $wp_version;
+		if ( ! $manifest->is_compatible( (string) $wp_version, PHP_VERSION ) ) {
+			// Don't offer a release this site can't run. Reporting the installed
+			// version keeps the plugin in the "no update" list (auto-update toggle).
+			return array(
+				'slug'         => self::SLUG,
+				'version'      => Plugin::VERSION,
+				'url'          => self::repository_url(),
+				'package'      => '',
+				'requires'     => $manifest->requires(),
+				'requires_php' => $manifest->requires_php(),
+				'tested'       => $manifest->tested(),
+				'icons'        => array(),
+			);
+		}
 		return array(
 			'slug'         => self::SLUG,
 			'version'      => $manifest->version(),

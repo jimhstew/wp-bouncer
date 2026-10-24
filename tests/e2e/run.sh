@@ -19,7 +19,7 @@
 #   WPB_E2E_DB_USER=root      MySQL user (needs CREATE/DROP on the database).
 #   WPB_E2E_DB_PASSWORD=      MySQL password (default empty).
 #   WPB_E2E_DB_NAME=wpb_e2e   MySQL database name (DROPPED and recreated).
-#   WPB_E2E_WP_VERSION=latest latest | nightly | a version such as 6.4 or 5.8.3.
+#   WPB_E2E_WP_VERSION=latest latest | nightly | a version such as 7.0 or 7.1.3.
 #                         WordPress is unpacked into $WPB_E2E_DIR/wordpress-<db>-<version>, so a
 #                         reused work directory never mixes databases or versions.
 #
@@ -48,7 +48,7 @@ case "$WPV" in
 	latest)  WP_URL="https://wordpress.org/latest.tar.gz" ;;
 	nightly) WP_URL="https://wordpress.org/nightly-builds/wordpress-latest.zip" ;;
 	[0-9]*.[0-9]*) WP_URL="https://wordpress.org/wordpress-${WPV}.tar.gz" ;;
-	*) echo "WPB_E2E_WP_VERSION must be latest, nightly or a version like 6.4"; exit 1 ;;
+	*) echo "WPB_E2E_WP_VERSION must be latest, nightly or a version like 7.0"; exit 1 ;;
 esac
 case "$DB_NAME" in ""|*[!A-Za-z0-9_]*) echo "WPB_E2E_DB_NAME may only contain letters, digits and _"; exit 1 ;; esac
 W="$WORK/wordpress-$DB-$WPV"
@@ -771,10 +771,8 @@ php_errors_in() { # php_errors_in FILE -> number of PHP errors printed in FILE
 check "no PHP errors in the notice"     0 "$(php_errors_in "$WORK/admin.html")"
 check "fix needs a valid nonce"         403 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=deadbeef00&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip")"
 check "  ...nothing changed"            "x_real_ip|" "$(stored_ip)"
-# No handler is registered for logged-out visitors. WordPress 5.9+ answers an unhandled admin-post action
-# with 400; 5.8 and older run no hook and send an empty 200. Either way nothing runs (checked below).
+# No handler is registered for logged-out visitors, so WordPress answers an unhandled admin-post action with 400.
 logged_out_code=$(curl -s -o "$WORK/logged-out.html" -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip" "$U/wp-admin/admin-post.php")
-if [ "$logged_out_code" = 200 ] && [ ! -s "$WORK/logged-out.html" ]; then logged_out_code=400; fi
 check "fix is not reachable logged out"   400 "$logged_out_code"
 check "  ...and changed nothing"        "x_real_ip|" "$(stored_ip)"
 check "Trust-peer button works"         302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(ipsetup_nonce)&action=wp_bouncer_ip_setup&fix=trust_peer&header=x_real_ip&peer=127.0.0.1")"

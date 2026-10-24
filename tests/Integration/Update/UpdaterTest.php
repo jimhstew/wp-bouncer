@@ -48,8 +48,8 @@ final class UpdaterTest extends IntegrationTestCase {
 					'version'      => '9.9.9',
 					'package'      => self::PACKAGE,
 					'sha256'       => hash( 'sha256', $this->zip_bytes ),
-					'requires'     => '5.8',
-					'requires_php' => '7.4',
+					'requires'     => '7.0',
+					'requires_php' => '8.3',
 					'tested'       => '7.1',
 					'released'     => '2026-10-20',
 					'changelog'    => "### Added\n- A **bold** thing with `code`.",
@@ -258,10 +258,37 @@ final class UpdaterTest extends IntegrationTestCase {
 		$this->assertSame( 'wp-bouncer', $update['slug'] );
 		$this->assertSame( '9.9.9', $update['version'] );
 		$this->assertSame( self::PACKAGE, $update['package'] );
-		$this->assertSame( '5.8', $update['requires'] );
-		$this->assertSame( '7.4', $update['requires_php'] );
+		$this->assertSame( '7.0', $update['requires'] );
+		$this->assertSame( '8.3', $update['requires_php'] );
 		$this->assertSame( '7.1', $update['tested'] );
 		$this->assertSame( 'https://github.com/jimhstew/wp-bouncer', $update['url'] );
+	}
+
+	public function test_an_update_needing_a_newer_wordpress_is_not_offered(): void {
+		$this->serve( $this->manifest_json( array( 'requires' => '99.0' ) ) );
+
+		$update = $this->updater->filter_update( false, array(), plugin_basename( WP_BOUNCER_FILE ) );
+
+		$this->assertSame( Plugin::VERSION, $update['version'] );
+		$this->assertSame( '', $update['package'] );
+	}
+
+	public function test_an_update_needing_a_newer_php_is_not_offered(): void {
+		$this->serve( $this->manifest_json( array( 'requires_php' => '99.0' ) ) );
+
+		$update = $this->updater->filter_update( false, array(), plugin_basename( WP_BOUNCER_FILE ) );
+
+		$this->assertSame( Plugin::VERSION, $update['version'] );
+		$this->assertSame( '', $update['package'] );
+	}
+
+	public function test_an_update_the_site_can_run_is_offered(): void {
+		$this->serve( $this->manifest_json() );
+
+		$update = $this->updater->filter_update( false, array(), plugin_basename( WP_BOUNCER_FILE ) );
+
+		$this->assertSame( '9.9.9', $update['version'] );
+		$this->assertSame( self::PACKAGE, $update['package'] );
 	}
 
 	public function test_filter_update_is_wired_to_wordpress_through_the_host_filter(): void {

@@ -16,7 +16,7 @@ Standards:
   plugin's own `src/Autoloader.php` (PSR-4 layout). Composer is for dev
   tools only; the plugin ships no vendor code. Prefix all global functions,
   hooks, options, transients and handles with `wp_bouncer` / `wpb_`.
-- Minimum versions: PHP 7.4 and WordPress 5.8.
+- Minimum versions: PHP 8.3 and WordPress 7.0.
 - Security is not optional:
   - Sanitize input early (`sanitize_text_field`, `absint`, etc.), validate,
     and escape output late (`esc_html`, `esc_attr`, `esc_url`, `wp_kses`).

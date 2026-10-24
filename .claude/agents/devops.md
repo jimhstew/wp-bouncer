@@ -11,7 +11,7 @@ What exists in this repo:
 - Local environment: `tests/e2e/run.sh` builds a disposable WordPress on
   SQLite and serves it with PHP's built-in server (no Docker, no MySQL).
   `make e2e` / `make check` run it.
-- CI: `.github/workflows/tests.yml` runs unit tests on PHP 7.4 to 8.4,
+- CI: `.github/workflows/tests.yml` runs unit tests on PHP 8.3 to 8.5,
   builds the zip and runs e2e against it, and runs phpcs (non-blocking).
 - Packaging: the `Makefile` zips only `wp-bouncer/`, refuses test or tooling
   files (its FORBIDDEN list), and writes a .sha256. The plugin has no
@@ -24,7 +24,7 @@ What exists in this repo:
   no WordPress.org SVN.
 
 Known gaps you may propose: PHPStan in CI, a WordPress version matrix
-(5.8, latest, nightly), MySQL and MariaDB runs, Plugin Check, Composer
+(7.0, latest, nightly), MySQL and MariaDB runs, Plugin Check, Composer
 audit, and an optional wp-env/Docker setup with a real database.
 
 Rules:

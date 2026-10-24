@@ -42,7 +42,7 @@ RICE alone says audit, lint, widget, UI. **Proposed order of work: WPB-1, WPB-3,
 
 | Release | Contents | Why this number |
 |---|---|---|
-| **1.1.2** (patch) | WPB-1 lint/PHPStan, WPB-3 audit pass 1 and fixes for its findings | No new user-facing feature and no settings or schema change. Lint is behaviour-neutral. Audit fixes are bug and security fixes. If a fix needs a new setting or visible behaviour, move that part to 1.2.0 and ship only the safe part. |
+| **1.1.2** (patch) | Not released (owner decision 2026-10-24); its work is on the release branch and ships in 1.2.0 | |
 | **1.2.0** (minor) | WPB-5 minimums (PHP 8.3, WordPress 7.0) first, then the remaining WPB-3 fixes, WPB-4 widget, WPB-2 Rules UI, WPB-3b privacy hooks, WPB-6 version warnings, WPB-7 PHP settings checks | New backwards-compatible features, no breaking change to settings keys, hooks or the `wp_bouncer_rules` filter. Everything ships together so it goes through one full test and audit cycle (owner decision 2026-10-24). |
 | **Hotfix 1.1.x** (out of band) | Any Critical or High audit finding | Do not wait for 1.1.2 or 1.2.0. Triage first, patch, tag. |
 
@@ -272,19 +272,19 @@ Reasoning: the first group is "static" rules the admin curates; the second is th
 - **Type:** chore (breaking for old environments)
 - **Priority:** P1 for 1.2.0 (owner decision 2026-10-24)
 - **Effort:** M
-- **Risk:** Medium. Sites below the new minimums stop receiving updates, so 1.1.2 must ship first with every security fix at the old minimums (PHP 7.4, WordPress 5.8).
-- **Dependencies:** 1.1.2 released. Do this first in 1.2.0, before other 1.2.0 work, so new code can use PHP 8.3 features.
+- **Risk:** Medium. Sites below the new minimums stop receiving updates and stay on 1.1.1 (1.1.2 is not released, owner decision 2026-10-24).
+- **Dependencies:** none. Do this first in 1.2.0, before other 1.2.0 work, so new code can use PHP 8.3 features.
 - **Release:** 1.2.0
 
 **User story.** As the maintainer, I want WP Bouncer to require PHP 8.3+ and WordPress 7.0+, so that the plugin only runs on versions that still get security fixes and the test matrix stays small.
 
 **Acceptance criteria**
 - `Requires PHP: 8.3` and `Requires at least: 7.0` in the plugin header and readme.txt; `update.json` (scripts/build-manifest.php) carries the same `requires` and `requires_php`.
-- A site below either minimum is not offered 1.2.0 by the updater; it keeps 1.1.x and the Plugins screen says why. Test this in e2e with a manifest that requires newer versions.
+- A site below either minimum is not offered 1.2.0 by the updater; it keeps its current version and the Plugins screen says why. Test this in e2e with a manifest that requires newer versions.
 - Activating on an unsupported environment fails cleanly with a message, never a fatal error (the main plugin file stays parseable by old PHP, or WordPress's own header check blocks it first).
 - phpcs.xml.dist `testVersion` / `minimum_wp_version`, phpstan-php74.neon (replace with a PHP 8.3 config), CI matrix (unit PHP 8.3–8.5; integration and e2e WordPress 7.0, latest, nightly; drop PHP 7.4–8.2 and WordPress 5.8–6.x), composer.json `require.php`.
 - Remove compatibility code that only existed for old versions (for example the pre-6.5 users-sitemap 404 workaround if WordPress 7.0 handles it, `%i` restriction notes) and update CLAUDE.md "Minimum versions".
-- Changelog **Changed** entry and readme Upgrade Notice telling admins on older PHP or WordPress to stay on 1.1.x and upgrade their stack.
+- Changelog **Changed** entry and readme Upgrade Notice telling admins on older PHP or WordPress to upgrade their stack first.
 
 ## WPB-6: Warn about unsupported PHP and database versions
 - **Type:** feature
@@ -344,6 +344,9 @@ Reasoning: the first group is "static" rules the admin curates; the second is th
 
 # Triage log
 
+- **2026-10-24: flaky update checks in e2e on WordPress 5.8 / PHP 7.4 (not fixed, by owner decision).** On CI the Updates section of `tests/e2e/run.sh` passed in one run and failed five checks in the next ("tampered zip is refused", "Update now succeeds", "...new version installed", "...no update offered now", "auto-update switched on"). Likely cause, unconfirmed: the mock release files are served by the site's own single-worker PHP built-in server, so WordPress downloading from itself can stall. Moot once WPB-5 drops WordPress 5.8; if it reappears on supported versions, try `PHP_CLI_SERVER_WORKERS>1` or a separate mock server on a standard port.
+- **2026-10-24: 1.1.2 not released (owner decision).** Its fixes ship in 1.2.0. Sites below PHP 8.3 / WordPress 7.0 stay on 1.1.1.
+
 No open bugs are recorded. Audit findings will be added here as individual items with severity, using the order security > data loss > crash > broken feature > cosmetic.
 
 ---
@@ -383,6 +386,7 @@ then 1.2.0 (S10 to S14, then WPB-4, then WPB-2).
 
 ### Owner decisions on minimum versions and environment checks (2026-10-24)
 
-- 1.2.0 supports only PHP 8.3+ and WordPress 7.0+ (WPB-5). 1.1.2 keeps PHP 7.4 / WordPress 5.8 so older sites still get the security fixes.
+- 1.2.0 supports only PHP 8.3+ and WordPress 7.0+ (WPB-5). 1.1.2 is not released; its fixes ship in 1.2.0.
 - Add warnings for unsupported PHP, MySQL and MariaDB versions (WPB-6) and checks for PHP settings with security implications (WPB-7).
 - WPB-6 and WPB-7 move into 1.2.0 so the whole release goes through one test and audit cycle.
+- Skipping 1.1.2 is acceptable: the owner's sites all run current PHP and WordPress, so none are left on 1.1.1.

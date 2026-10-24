@@ -57,7 +57,7 @@ From version 1.1.0 on, the plugin updates itself like any other plugin (see [Upd
 
 Without the upload screen, unzip it on your computer and copy the `wp-bouncer` folder into `wp-content/plugins/` on the server (by FTP, SFTP or your host's file manager). Then activate it under **Plugins**.
 
-Requirements: WordPress 5.8 or newer, PHP 7.4 or newer, and MySQL/MariaDB (or SQLite).
+Requirements: WordPress 7.0 or newer, PHP 8.3 or newer, and MySQL/MariaDB (or SQLite).
 
 ---
 

@@ -23,8 +23,8 @@ final class ReleaseManifestTest extends TestCase {
 					'version'      => '1.2.0',
 					'package'      => self::PREFIX . 'v1.2.0/wp-bouncer-1.2.0.zip',
 					'sha256'       => str_repeat( 'ab', 32 ),
-					'requires'     => '5.8',
-					'requires_php' => '7.4',
+					'requires'     => '7.0',
+					'requires_php' => '8.3',
 					'tested'       => '7.1',
 					'released'     => '2026-10-21',
 					'changelog'    => "### Added\n- Updates.",
@@ -40,10 +40,26 @@ final class ReleaseManifestTest extends TestCase {
 		$this->assertSame( '1.2.0', $m->version() );
 		$this->assertSame( self::PREFIX . 'v1.2.0/wp-bouncer-1.2.0.zip', $m->package() );
 		$this->assertSame( str_repeat( 'ab', 32 ), $m->sha256() );
-		$this->assertSame( '5.8', $m->requires() );
-		$this->assertSame( '7.4', $m->requires_php() );
+		$this->assertSame( '7.0', $m->requires() );
+		$this->assertSame( '8.3', $m->requires_php() );
 		$this->assertSame( '7.1', $m->tested() );
 		$this->assertSame( '2026-10-21', $m->released() );
+	}
+
+	public function test_a_site_below_the_required_wordpress_is_not_compatible(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertFalse( $m->is_compatible( '6.9', '8.4.0' ) );
+	}
+
+	public function test_a_site_below_the_required_php_is_not_compatible(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertFalse( $m->is_compatible( '7.1.3', '8.2.30' ) );
+	}
+
+	public function test_a_site_meeting_both_requirements_is_compatible(): void {
+		$m = ReleaseManifest::from_json( $this->json(), self::PREFIX );
+		$this->assertTrue( $m->is_compatible( '7.0', '8.3.0' ) );
+		$this->assertTrue( $m->is_compatible( '7.1.3', '8.4.1' ) );
 	}
 
 	public function test_sha256_is_normalised_to_lowercase(): void {

@@ -17,8 +17,8 @@ defined( 'ABSPATH' ) || exit;
  *     "version": "1.1.0",
  *     "package": "https://github.com/jimhstew/wp-bouncer/releases/download/v1.1.0/wp-bouncer-1.1.0.zip",
  *     "sha256": "9f2c…",
- *     "requires": "5.8",
- *     "requires_php": "7.4",
+ *     "requires": "7.0",
+ *     "requires_php": "8.3",
  *     "tested": "7.1",
  *     "released": "2026-10-20",
  *     "changelog": "### Added\n- Automatic updates from GitHub releases."
@@ -192,6 +192,16 @@ final class ReleaseManifest {
 	/** Expected SHA-256 of the zip, lowercase hex. */
 	public function sha256(): string {
 		return $this->sha256;
+	}
+
+	/**
+	 * Whether a site on these versions can run this release.
+	 *
+	 * @param string $wp_version  The site's WordPress version.
+	 * @param string $php_version The site's PHP version.
+	 */
+	public function is_compatible( string $wp_version, string $php_version ): bool {
+		return version_compare( $wp_version, $this->requires, '>=' ) && version_compare( $php_version, $this->requires_php, '>=' );
 	}
 
 	/** Minimum WordPress version, or ''. */

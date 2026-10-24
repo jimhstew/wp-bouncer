@@ -26,8 +26,8 @@ For custom tables:
   versions. Avoid engine-specific features (JSON functions, window functions,
   newer syntax) unless the minimum versions support them.
 - Index for real query patterns; avoid unbounded queries and `SELECT *`.
-- Always use `$wpdb->prepare()` for any value in SQL. Do not use `%i`
-  identifier placeholders: they need WP 6.2 and the minimum is 5.8.
+- Always use `$wpdb->prepare()` for any value in SQL. `%i`
+  identifier placeholders are allowed (the minimum is WP 7.0).
 - In this repo: tables are `{$wpdb->prefix}bouncer_*`, created in
   `src/Installer.php`, which bumps `Installer::DB_VERSION` and upgrades in
   `maybe_upgrade()`; `wp-bouncer/uninstall.php` removes everything.
