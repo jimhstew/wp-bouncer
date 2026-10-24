@@ -308,11 +308,15 @@ final class PrivacyToolsTest extends IntegrationTestCase {
 	}
 
 	public function test_a_row_that_cannot_be_processed_is_reported_not_skipped(): void {
-		$old = ini_set( 'pcre.backtrack_limit', '1' );
+		// The JIT ignores pcre.backtrack_limit, so turn it off. The login is unique to this test so no
+		// pattern compiled (with the JIT) by an earlier test is reused from the regex cache.
+		$old_jit = ini_set( 'pcre.jit', '0' );
+		$old     = ini_set( 'pcre.backtrack_limit', '1' );
 		try {
-			$out = PrivacyTools::redact_reason( 'Tried banned username "alice" and a lot more text to scan through', 'alice', 'a@b.c', 1, 'login_lockout' );
+			$out = PrivacyTools::redact_reason( 'Tried banned username "pcrefail" and a lot more text to scan through', 'pcrefail', 'p@b.c', 1, 'login_lockout' );
 		} finally {
 			ini_set( 'pcre.backtrack_limit', (string) $old );
+			ini_set( 'pcre.jit', (string) $old_jit );
 		}
 		$this->assertFalse( $out );
 	}
