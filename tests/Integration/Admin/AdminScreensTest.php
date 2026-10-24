@@ -208,16 +208,54 @@ final class AdminScreensTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'no geo database is loaded', $this->notices() );
 	}
 
-	public function test_notice_messages_from_the_url_are_escaped(): void {
+	public function test_free_text_in_wpb_msg_renders_nothing(): void {
 		$this->login();
-		$_GET['wpb_msg'] = '<script>alert(4)</script>Saved';
+		foreach ( array( '<script>alert(4)</script>Saved', 'Settings saved.', 'Your site is hacked, call 555-0100', 'nope' ) as $text ) {
+			$_GET['wpb_msg'] = $text;
+			$this->assertSame( '', trim( $this->notices() ), $text );
+		}
+	}
+
+	public function test_a_known_code_renders_its_string_and_the_error_flag_sets_the_style(): void {
+		$this->login();
+		$_GET['wpb_msg'] = 'log_cleared';
 
 		$out = $this->notices();
 
-		$this->assertStringNotContainsString( '<script>', $out );
+		$this->assertStringContainsString( 'Activity log cleared.', $out );
 		$this->assertStringContainsString( 'notice-success', $out );
+		$this->assertStringContainsString( 'role="status"', $out );
 		$_GET['wpb_err'] = '1';
-		$this->assertStringContainsString( 'notice-error', $this->notices() );
+		$out = $this->notices();
+		$this->assertStringContainsString( 'notice-error', $out );
+		$this->assertStringContainsString( 'role="alert"', $out );
+	}
+
+	public function test_a_crafted_detail_code_shows_nothing_and_keeps_a_pending_flash(): void {
+		$this->login();
+		\WPBouncer\Admin\MessageCodes::flash( 'pending detail' );
+		$_GET['wpb_msg'] = 'log_cleared';
+		$this->notices();
+		$_GET['wpb_msg'] = 'ip_blocked';
+		$this->notices();
+
+		$this->assertSame( 'pending detail', \WPBouncer\Admin\MessageCodes::take_flash(), 'codes without detail left it' );
+		$_GET['wpb_msg'] = 'test_sent';
+		$this->assertSame( '', trim( $this->notices() ) );
+	}
+
+	public function test_code_arguments_are_validated_before_display(): void {
+		$this->login();
+		$_GET['wpb_msg'] = 'ip_blocked';
+		$_GET['wpb_ip']  = '<b>evil</b>';
+		$this->assertSame( '', trim( $this->notices() ), 'invalid IP: nothing shown' );
+
+		$_GET['wpb_ip'] = '198.51.100.7';
+		$this->assertStringContainsString( '198.51.100.7 added to the IP blocklist.', $this->notices() );
+
+		$_GET['wpb_msg'] = 'geo_done';
+		$_GET['wpb_n']   = '1234abc';
+		$this->assertStringContainsString( '1,234 ranges loaded', $this->notices() );
 	}
 
 	/* ---------------- assets ---------------- */

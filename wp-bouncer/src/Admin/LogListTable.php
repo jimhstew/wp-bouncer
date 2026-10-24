@@ -171,18 +171,7 @@ final class LogListTable extends \WP_List_Table {
 			'filter' => sprintf( '<a href="%s">%s</a>', esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ), esc_html__( 'Show all', 'wp-bouncer' ) ),
 			'block'  => sprintf(
 				'<a href="%s">%s</a>',
-				esc_url(
-					wp_nonce_url(
-						add_query_arg(
-							array(
-								'action' => 'wp_bouncer_block_ip',
-								'ip'     => rawurlencode( $ip ),
-							),
-							admin_url( 'admin-post.php' )
-						),
-						'wp_bouncer_block_ip'
-					)
-				),
+				esc_url( AdminController::block_ip_url( $ip ) ),
 				esc_html__( 'Block IP', 'wp-bouncer' )
 			),
 		);

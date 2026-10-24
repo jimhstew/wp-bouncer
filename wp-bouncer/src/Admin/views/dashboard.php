@@ -122,16 +122,7 @@ $stats    = array(
 			<table class="widefat striped">
 				<?php foreach ( $top_ips as $ip => $n ) : ?>
 					<?php
-					$wpb_block_url = wp_nonce_url(
-						add_query_arg(
-							array(
-								'action' => 'wp_bouncer_block_ip',
-								'ip'     => rawurlencode( $ip ),
-							),
-							admin_url( 'admin-post.php' )
-						),
-						'wp_bouncer_block_ip'
-					);
+					$wpb_block_url = AdminController::block_ip_url( $ip );
 					?>
 					<tr>
 						<td><a href="<?php echo esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ); ?>"><code><?php echo esc_html( $ip ); ?></code></a></td>

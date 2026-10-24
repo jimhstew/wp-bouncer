@@ -7,6 +7,8 @@
 
 namespace WPBouncer\Tests\Integration;
 
+use WPBouncer\Admin\MessageCodes;
+
 /** A redirect that would have happened. */
 final class Redirected extends \RuntimeException {
 
@@ -22,11 +24,28 @@ final class Redirected extends \RuntimeException {
 		$this->location = $location;
 	}
 
-	/** Decoded wpb_msg query argument, '' if none. */
+	/** The message code in the redirect, '' if none. */
+	public function code(): string {
+		return MessageCodes::from_query( $this->query() )[0];
+	}
+
+	/**
+	 * The message text the admin would see for this redirect ('' if none).
+	 *
+	 * Consumes the server-side flash detail, so call it once per redirect and keep the result.
+	 */
 	public function message(): string {
-		$query = (string) wp_parse_url( $this->location, PHP_URL_QUERY );
-		parse_str( $query, $args );
-		return isset( $args['wpb_msg'] ) ? rawurldecode( (string) $args['wpb_msg'] ) : '';
+		list( $code, $args ) = MessageCodes::from_query( $this->query() );
+		if ( MessageCodes::uses_detail( $code ) ) {
+			$args['detail'] = MessageCodes::take_flash();
+		}
+		return (string) MessageCodes::text( $code, $args );
+	}
+
+	/** @return array<string, mixed> */
+	private function query(): array {
+		parse_str( (string) wp_parse_url( $this->location, PHP_URL_QUERY ), $args );
+		return $args;
 	}
 
 	/** Did the redirect carry the error flag? */

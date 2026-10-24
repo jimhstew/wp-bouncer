@@ -405,6 +405,46 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'tab=dashboard', $r->location );
 	}
 
+	public function test_toggle_on_adds_the_admins_ip_to_the_allowlist_when_it_would_lock_them_out(): void {
+		$this->login();
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.55' ) );
+		$this->set_settings( array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => false, 'ips' => array( '198.51.100.55' ) ) ) ) );
+		$this->post( 'wp_bouncer_toggle_rule', array( 'rule' => 'ip_blocklist' ) );
+
+		$r = $this->call( 'handle_toggle_rule' );
+
+		$s = $this->stored();
+		$this->assertTrue( $s['rules']['ip_blocklist']['enabled'] );
+		$this->assertContains( '198.51.100.55', $s['allowlist'] );
+		$this->assertStringContainsString( 'would have blocked you', $r->message() );
+	}
+
+	public function test_toggle_on_is_refused_when_the_admin_address_is_shared(): void {
+		$country = $this->germany_only();
+		$country['rules']['country']['enabled'] = false;
+		$this->set_settings( array_replace_recursive( $country, array( 'ip_source' => 'x_real_ip', 'trusted_proxies' => array() ) ) );
+		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
+		$this->login();
+		$before = $this->stored();
+		$this->post( 'wp_bouncer_toggle_rule', array( 'rule' => 'country' ) );
+
+		$r = $this->call( 'handle_toggle_rule' );
+
+		$this->assertTrue( $r->is_error() );
+		$this->assertSame( 'shared_refusal', $r->code() );
+		$this->assertSame( $before, $this->stored(), 'nothing saved' );
+	}
+
+	public function test_toggle_on_a_harmless_rule_leaves_the_allowlist_alone(): void {
+		$this->login();
+		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.58' ) );
+		$this->post( 'wp_bouncer_toggle_rule', array( 'rule' => 'ip_blocklist' ) );
+
+		$this->call( 'handle_toggle_rule' );
+
+		$this->assertSame( array(), $this->stored()['allowlist'] );
+	}
+
 	public function test_toggle_rule_with_an_unknown_rule_is_an_error(): void {
 		$this->login();
 		$this->post( 'wp_bouncer_toggle_rule', array( 'rule' => 'no_such_rule' ) );
@@ -426,57 +466,136 @@ final class AdminControllerTest extends IntegrationTestCase {
 
 	/* ---------------- block IP ---------------- */
 
+	/**
+	 * Prepare the Block IP GET link as the browser would send it.
+	 *
+	 * @param string      $ip       Value of the ip argument.
+	 * @param string|null $nonce_ip Address the nonce was made for (default: the same).
+	 * @param array       $extra    More query arguments.
+	 */
+	private function get_block( string $ip, ?string $nonce_ip = null, array $extra = array() ): void {
+		$get = array_merge(
+			array(
+				'ip'       => $ip,
+				'_wpnonce' => wp_create_nonce( 'wp_bouncer_block_ip|' . ( $nonce_ip ?? $ip ) ),
+			),
+			$extra
+		);
+		$_GET     = $get;
+		$_POST    = array();
+		$_REQUEST = $get;
+	}
+
 	public function test_block_ip_adds_to_the_blocklist_and_enables_the_rule(): void {
 		$this->set_settings( array( 'rules' => array( 'ip_blocklist' => array( 'enabled' => false ) ) ) );
 		$this->login();
-		$this->post( 'wp_bouncer_block_ip', array( 'ip' => '198.51.100.99' ) );
+		$this->get_block( '198.51.100.99' );
 
 		$r = $this->call( 'handle_block_ip' );
 
 		$rule = $this->stored()['rules']['ip_blocklist'];
 		$this->assertTrue( $rule['enabled'] );
 		$this->assertContains( '198.51.100.99', $rule['ips'] );
+		$this->assertSame( 'ip_blocked', $r->code() );
 		$this->assertStringContainsString( 'added to the IP blocklist', $r->message() );
 		$this->assertStringContainsString( 'tab=log', $r->location );
 	}
 
-	public function test_block_ip_accepts_a_range_and_returns_to_the_traffic_tab(): void {
+	public function test_block_ip_returns_to_the_traffic_tab(): void {
 		$this->login();
-		$this->post( 'wp_bouncer_block_ip', array( 'ip' => '192.0.2.0/24', 'back' => 'traffic' ) );
+		$this->get_block( '192.0.2.7', null, array( 'back' => 'traffic' ) );
 
 		$r = $this->call( 'handle_block_ip' );
 
-		$this->assertContains( '192.0.2.0/24', $this->stored()['rules']['ip_blocklist']['ips'] );
+		$this->assertContains( '192.0.2.7', $this->stored()['rules']['ip_blocklist']['ips'] );
 		$this->assertStringContainsString( 'tab=traffic', $r->location );
+	}
+
+	public function test_block_ip_nonce_for_one_address_is_refused_for_another(): void {
+		$this->login();
+		$this->get_block( '198.51.100.2', '198.51.100.1' );
+
+		try {
+			$this->call( 'handle_block_ip' );
+			$this->fail( 'expected a 403' );
+		} catch ( \WPDieException $e ) {
+			$this->assertSame( 403, $e->getCode() );
+		}
+		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_block_ip_refuses_a_range_even_with_a_matching_nonce(): void {
+		$this->login();
+		$this->get_block( '192.0.2.0/24' );
+
+		$r = $this->call( 'handle_block_ip' );
+
+		$this->assertTrue( $r->is_error() );
+		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_block_ip_ignores_post_values(): void {
+		$this->login();
+		$_GET     = array();
+		$_POST    = array( 'ip' => '198.51.100.9', '_wpnonce' => wp_create_nonce( 'wp_bouncer_block_ip|198.51.100.9' ) );
+		$_REQUEST = $_POST;
+
+		try {
+			$this->call( 'handle_block_ip' );
+			$this->fail( 'expected a 403' );
+		} catch ( \WPDieException $e ) {
+			$this->assertSame( 403, $e->getCode() );
+		}
+	}
+
+	public function test_block_ip_url_carries_a_per_address_nonce(): void {
+		$url = AdminController::block_ip_url( '2001:db8::1', 'traffic' );
+		parse_str( (string) wp_parse_url( html_entity_decode( $url ), PHP_URL_QUERY ), $q );
+
+		$this->assertSame( '2001:db8::1', $q['ip'] );
+		$this->assertSame( 'traffic', $q['back'] );
+		$this->assertSame( 1, wp_verify_nonce( $q['_wpnonce'], 'wp_bouncer_block_ip|2001:db8::1' ) ?: 0 );
+		$this->assertFalse( wp_verify_nonce( $q['_wpnonce'], 'wp_bouncer_block_ip|2001:db8::2' ) );
 	}
 
 	public function test_block_ip_rejects_garbage(): void {
 		$this->login();
-		foreach ( array( 'not-an-ip', '', '999.1.1.1', '198.51.100.1/99', '<script>alert(1)</script>' ) as $bad ) {
-			$this->post( 'wp_bouncer_block_ip', array( 'ip' => $bad ) );
+		foreach ( array( 'not-an-ip', '', '999.1.1.1', '198.51.100.1/99' ) as $bad ) {
+			$this->get_block( $bad );
 			$r = $this->call( 'handle_block_ip' );
 			$this->assertTrue( $r->is_error(), "'{$bad}'" );
 		}
 		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
 	}
 
-	public function test_block_ip_refuses_the_admins_own_address_and_range(): void {
+	public function test_block_ip_with_markup_in_the_address_is_refused(): void {
+		$this->login();
+		$this->get_block( '<script>alert(1)</script>' );
+
+		try {
+			$this->call( 'handle_block_ip' );
+			$this->fail( 'expected a 403' );
+		} catch ( \WPDieException $e ) {
+			$this->addToAssertionCount( 1 );
+		}
+		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
+	}
+
+	public function test_block_ip_refuses_the_admins_own_address(): void {
 		$this->login();
 		$this->fake_request( array( 'REMOTE_ADDR' => '198.51.100.55' ) );
 
-		foreach ( array( '198.51.100.55', '198.51.100.0/24' ) as $own ) {
-			$this->post( 'wp_bouncer_block_ip', array( 'ip' => $own ) );
-			$r = $this->call( 'handle_block_ip' );
-			$this->assertTrue( $r->is_error() );
-			$this->assertSame( 'Refusing to block your own IP address.', $r->message() );
-		}
+		$this->get_block( '198.51.100.55' );
+		$r = $this->call( 'handle_block_ip' );
+		$this->assertTrue( $r->is_error() );
+		$this->assertSame( 'Refusing to block your own IP address.', $r->message() );
 		$this->assertSame( array(), $this->stored()['rules']['ip_blocklist']['ips'] );
 	}
 
 	public function test_block_ip_does_not_duplicate_an_entry(): void {
 		$this->login();
 		for ( $i = 0; $i < 2; $i++ ) {
-			$this->post( 'wp_bouncer_block_ip', array( 'ip' => '198.51.100.99' ) );
+			$this->get_block( '198.51.100.99' );
 			$this->call( 'handle_block_ip' );
 		}
 
@@ -571,8 +690,9 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$r = $this->call( 'handle_test_alert' );
 
 		$this->assertTrue( $r->is_error() );
-		$this->assertStringContainsString( 'The test email was not sent:', $r->message() );
-		$this->assertStringContainsString( 'broken address', $r->message() );
+		$message = $r->message();
+		$this->assertStringContainsString( 'The test email was not sent:', $message );
+		$this->assertStringContainsString( 'broken address', $message );
 	}
 
 	/* ---------------- uploads ---------------- */
@@ -852,7 +972,7 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$this->assertTrue( $out['data']['done'] );
 		$this->assertSame( 100, $out['data']['percent'] );
 		$this->assertSame( 5, $out['data']['imported'] );
-		$this->assertStringContainsString( 'Geo database imported', $out['data']['message'] );
+		$this->assertArrayNotHasKey( 'message', $out['data'] );
 	}
 
 	public function test_ajax_geo_step_without_an_import_returns_a_json_error(): void {
@@ -909,7 +1029,8 @@ final class AdminControllerTest extends IntegrationTestCase {
 		$this->assertSame( "'=cmd|' /C calc'!A0", AdminController::csv_safe( "=cmd|' /C calc'!A0" ) );
 		$this->assertSame( "'+1", AdminController::csv_safe( '+1' ) );
 		$this->assertSame( "'@SUM(1)", AdminController::csv_safe( '@SUM(1)' ) );
-		$this->assertSame( "'-2", AdminController::csv_safe( '-2' ) );
+		$this->assertSame( '-2', AdminController::csv_safe( '-2' ), 'plain numbers are left alone' );
+		$this->assertSame( "'-x", AdminController::csv_safe( '-x' ) );
 		$this->assertSame( 'plain', AdminController::csv_safe( 'plain' ) );
 		$this->assertSame( '', AdminController::csv_safe( '' ) );
 		$this->assertSame( '404', AdminController::csv_safe( 404 ) );

@@ -197,19 +197,7 @@ final class TrafficListTable extends \WP_List_Table {
 			'blocks' => sprintf( '<a href="%s">%s</a>', esc_url( AdminController::url( 'log', array( 's' => $ip ) ) ), esc_html__( 'Its blocks', 'wp-bouncer' ) ),
 			'block'  => sprintf(
 				'<a href="%s">%s</a>',
-				esc_url(
-					wp_nonce_url(
-						add_query_arg(
-							array(
-								'action' => 'wp_bouncer_block_ip',
-								'ip'     => rawurlencode( $ip ),
-								'back'   => 'traffic',
-							),
-							admin_url( 'admin-post.php' )
-						),
-						'wp_bouncer_block_ip'
-					)
-				),
+				esc_url( AdminController::block_ip_url( $ip, 'traffic' ) ),
 				esc_html__( 'Block IP', 'wp-bouncer' )
 			),
 		);

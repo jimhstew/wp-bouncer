@@ -154,7 +154,7 @@
 						.replace( '%%', '%' )
 						.replace( '%2$s', Number( d.imported ).toLocaleString() );
 					if ( d.done ) {
-						window.location.href = cfg.toolsUrl + '&wpb_msg=' + encodeURIComponent( d.message || '' );
+						window.location.href = cfg.toolsUrl + '&wpb_msg=geo_done&wpb_n=' + encodeURIComponent( d.imported || 0 ) + '&wpb_skipped=' + encodeURIComponent( d.skipped || 0 );
 					} else {
 						step();
 					}

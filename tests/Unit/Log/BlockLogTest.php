@@ -46,7 +46,8 @@ final class BlockLogTest extends TestCase {
 		return array(
 			array( '=HYPERLINK("http://evil")', "'=HYPERLINK(\"http://evil\")" ),
 			array( '+1', "'+1" ),
-			array( '-1', "'-1" ),
+			array( '-1', '-1' ),
+			array( '-x', "'-x" ),
 			array( '@SUM(A1)', "'@SUM(A1)" ),
 			array( '/wp-login.php', '/wp-login.php' ),
 			array( '', '' ),
