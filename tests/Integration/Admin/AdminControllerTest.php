@@ -847,7 +847,6 @@ final class AdminControllerTest extends IntegrationTestCase {
 	public function test_log_row_offers_block_network_for_ipv6_only(): void {
 		$table = new \WPBouncer\Admin\LogListTable( $this->plugin->log() );
 		$m     = new \ReflectionMethod( $table, 'column_ip' );
-		$m->setAccessible( true );
 		$v6     = $m->invoke( $table, array( 'ip' => '2001:db8:5:6::abcd' ) );
 		$v4     = $m->invoke( $table, array( 'ip' => '198.51.100.7' ) );
 		$mapped = $m->invoke( $table, array( 'ip' => '::ffff:198.51.100.7' ) );
