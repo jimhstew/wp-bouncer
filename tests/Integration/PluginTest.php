@@ -465,10 +465,17 @@ final class PluginTest extends IntegrationTestCase {
 		$this->assertSame( array_values( $rules ), $rules, 're-indexed' );
 	}
 
-	public function test_a_filter_returning_a_non_array_yields_an_empty_chain(): void {
+	public function test_a_filter_returning_a_non_array_keeps_the_built_in_chain_and_logs_once_a_day(): void {
+		global $wpdb;
+		delete_transient( 'wp_bouncer_bad_rules_logged' );
+		$builtin = $this->plugin->build_rules();
 		add_filter( 'wp_bouncer_rules', '__return_null' );
 
-		$this->assertSame( array(), $this->plugin->build_rules() );
+		$this->assertEquals( $builtin, $this->plugin->build_rules(), 'the chain survives a callback that forgot to return' );
+		$this->plugin->build_rules();
+
+		$rows = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE action = %s AND rule = %s", 'alert', 'plugin' ) ); // phpcs:ignore WordPress.DB
+		$this->assertSame( 1, $rows, 'one alert row for the day' );
 	}
 
 	/* ---------------- firewall run ---------------- */

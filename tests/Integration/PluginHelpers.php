@@ -124,7 +124,8 @@ trait PluginHelpers {
 		$ref->getProperty( 'auth_stack' )->setValue( $this->plugin, array() );
 		$ref->getProperty( 'own_origins_cache' )->setValue( $this->plugin, array() );
 		$ref->getProperty( 'suspended_by' )->setValue( $this->plugin, 0 );
-		foreach ( array( 'request', 'client_ip', 'guard', 'geo', 'geo_peer_trusted', 'auth_refusal' ) as $prop ) {
+		$ref->getProperty( 'early_failures' )->setValue( $this->plugin, 0 );
+		foreach ( array( 'request', 'client_ip', 'guard', 'geo', 'geo_peer_trusted', 'auth_refusal', 'basic_auth_editor' ) as $prop ) {
 			// Private properties are writable through reflection since PHP 8.1.
 			$ref->getProperty( $prop )->setValue( $this->plugin, null );
 		}

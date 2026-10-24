@@ -11,9 +11,29 @@
 define( 'ABSPATH', __DIR__ . '/' );
 $GLOBALS['wp_version'] = $argv[1];
 $hooks                 = array();
+$callbacks             = array();
 
-function add_action( $hook ) {
+define( 'MINUTE_IN_SECONDS', 60 );
+define( 'HOUR_IN_SECONDS', 3600 );
+
+function add_action( $hook, $callback = null ) {
+	$GLOBALS['hooks'][]     = $hook;
+	$GLOBALS['callbacks'][] = array( $hook, $callback );
+}
+function add_filter( $hook ) {
 	$GLOBALS['hooks'][] = $hook;
+}
+function wp_parse_url( $url, $component = -1 ) {
+	return parse_url( $url, $component );
+}
+function get_site_option() {
+	return false;
+}
+function wp_next_scheduled() {
+	return false;
+}
+function wp_schedule_single_event( $time, $hook ) {
+	$GLOBALS['hooks'][] = 'scheduled:' . $hook;
 }
 function register_activation_hook() {
 	$GLOBALS['hooks'][] = 'booted';
@@ -32,12 +52,17 @@ function esc_html( $text ) {
 try {
 	require dirname( __DIR__, 2 ) . '/wp-bouncer/wp-bouncer.php';
 } catch ( \Throwable $e ) { // phpcs:ignore -- the stubs are too thin for a real boot; reaching Plugin is the signal.
-	$GLOBALS["hooks"][] = "boot-attempted";
+	$GLOBALS['hooks'][] = 'boot-attempted';
 }
 
 ob_start();
 if ( function_exists( 'wp_bouncer_requirements_notice' ) ) {
 	wp_bouncer_requirements_notice();
+}
+foreach ( $GLOBALS['callbacks'] as $pair ) {
+	if ( 'admin_notices' === $pair[0] && is_array( $pair[1] ) ) {
+		call_user_func( $pair[1] );
+	}
 }
 echo json_encode(
 	array(

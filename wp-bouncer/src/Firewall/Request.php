@@ -497,7 +497,8 @@ final class Request {
 	 * automatically across sites, so no nonce is needed). Or a logged-in user with
 	 * a nonce (X-WP-Nonce header or _wpnonce parameter), so a cross-site request
 	 * riding on a cookie is scanned like anyone else's; on REST paths the nonce
-	 * must verify as a "wp_rest" nonce. False when no resolver was given.
+	 * must verify as a "wp_rest" nonce, and elsewhere the request must not come from another site
+	 * (Sec-Fetch-Site / Origin / Referer, see FetchContext). False when no resolver was given.
 	 */
 	public function can_edit_posts(): bool {
 		if ( null === $this->editor ) {
@@ -525,7 +526,8 @@ final class Request {
 		if ( '' !== $this->rest_route() && null !== $this->nonce_checker ) {
 			return (bool) call_user_func( $this->nonce_checker, $nonce );
 		}
-		return true;
+		// Off the REST API a nonce is only a presence check, so another site must not be what started the request.
+		return ! $this->is_foreign_credentials_request();
 	}
 
 	/**

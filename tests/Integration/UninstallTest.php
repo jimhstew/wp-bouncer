@@ -164,9 +164,11 @@ final class UninstallTest extends IntegrationTestCase {
 	public function test_it_clears_every_cron_hook(): void {
 		$this->populate();
 		$this->assertNotFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
+		wp_schedule_single_event( time() + 60, 'wp_bouncer_old_wp_email' );
 
 		$this->uninstall();
 
+		$this->assertFalse( wp_next_scheduled( 'wp_bouncer_old_wp_email' ) );
 		$this->assertFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
 		$this->assertFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ) );

@@ -45,6 +45,9 @@ final class DataNotices {
 		if ( RedactionMigration::pending() ) {
 			echo '<div class="notice notice-info"><p>' . esc_html__( 'WP Bouncer is removing secrets from old log entries after the update. It continues in the background and in each admin page load, and this notice goes away when it is done.', 'wp-bouncer' ) . '</p></div>';
 		}
+		if ( false !== get_option( Installer::FAILED_OPTION ) ) {
+			echo '<div class="notice notice-error"><p>' . esc_html__( 'WP Bouncer could not create or update its database tables, so some features may not work. It tries again every ten minutes. Check that the database user may create tables.', 'wp-bouncer' ) . '</p></div>';
+		}
 		if ( $this->counter_table_failed() ) {
 			echo '<div class="notice notice-warning"><p>' . esc_html__( 'WP Bouncer could not use its login counter table, so login lockouts are using a less exact fallback. Deactivate and reactivate WP Bouncer to recreate the table.', 'wp-bouncer' ) . '</p></div>';
 		}

@@ -7,8 +7,6 @@
 
 namespace WPBouncer\Login;
 
-use WPBouncer\Storage\CounterStoreInterface;
-
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -24,9 +22,10 @@ defined( 'ABSPATH' ) || exit;
  * requests); on any other path credentials mean nothing. Cheap checks come first and
  * hashing last: the request must not be refused (another site, a blocked country), the
  * user must exist, must be able to edit posts, must be allowed application passwords, and
- * the client must not be locked out. On those paths core counts a wrong password as a
- * login failure (so the lockout closes after a few tries and this stops hashing), and a
- * wrong password is also remembered for five minutes so repeats cost nothing.
+ * the client must not be locked out. A wrong password is reported through the on_failure
+ * callback (the plugin counts it as a login failure on the client's counter subject), so the
+ * lockout closes after a few tries and this stops hashing; core's own count for the same
+ * request is skipped by the plugin. Nothing is stored per password.
  * At most 20 stored passwords are compared. Early exits do one dummy fast-hash check, so
  * timing doesn't tell an attacker which test failed.
  */
@@ -34,9 +33,6 @@ final class BasicAuthEditor {
 
 	/** The most stored passwords of one user that are compared. */
 	public const MAX_PASSWORDS = 20;
-
-	/** How long a wrong password is remembered (seconds). */
-	public const NEGATIVE_TTL = 300;
 
 	/**
 	 * Server variables.
@@ -67,11 +63,11 @@ final class BasicAuthEditor {
 	private $locked_out;
 
 	/**
-	 * Where wrong passwords are remembered.
+	 * Called with the user name when a password was checked and didn't match.
 	 *
-	 * @var CounterStoreInterface|null
+	 * @var callable|null
 	 */
-	private ?CounterStoreInterface $store;
+	private $on_failure;
 
 	/**
 	 * Result of the check.
@@ -83,18 +79,18 @@ final class BasicAuthEditor {
 	/**
 	 * Constructor.
 	 *
-	 * @param array<string, mixed>       $server         Server variables (slashes removed).
-	 * @param callable                   $is_api_request Returns true on REST and XML-RPC requests.
-	 * @param callable                   $is_refused     Returns true when the request is refused anyway.
-	 * @param callable                   $locked_out     Returns true when the client is locked out of logging in.
-	 * @param CounterStoreInterface|null $store          Remembers wrong passwords (null: no memory).
+	 * @param array<string, mixed> $server         Server variables (slashes removed).
+	 * @param callable             $is_api_request Returns true on REST and XML-RPC requests.
+	 * @param callable             $is_refused     Returns true when the request is refused anyway.
+	 * @param callable             $locked_out     Returns true when the client is locked out of logging in.
+	 * @param callable|null        $on_failure     Called with the user name after a wrong password (null: nothing).
 	 */
-	public function __construct( array $server, callable $is_api_request, callable $is_refused, callable $locked_out, ?CounterStoreInterface $store = null ) {
+	public function __construct( array $server, callable $is_api_request, callable $is_refused, callable $locked_out, ?callable $on_failure = null ) {
 		$this->server         = $server;
 		$this->is_api_request = $is_api_request;
 		$this->is_refused     = $is_refused;
 		$this->locked_out     = $locked_out;
-		$this->store          = $store;
+		$this->on_failure     = $on_failure;
 	}
 
 	/**
@@ -175,11 +171,7 @@ final class BasicAuthEditor {
 		// As core does: only letters and digits count, so the spaces in the displayed form are ignored.
 		$password = (string) preg_replace( '/[^a-z\d]/i', '', $credentials[1] );
 		if ( '' === $password ) {
-			return $this->stop();
-		}
-		$memory = 'basic_neg:' . hash_hmac( 'sha256', $user->ID . '|' . $password, wp_salt( 'auth' ) );
-		if ( null !== $this->store && null !== $this->store->get( $memory ) ) {
-			return $this->stop();
+			return $this->fail( $credentials[0] );
 		}
 
 		$stored = array_slice( \WP_Application_Passwords::get_user_application_passwords( $user->ID ), 0, self::MAX_PASSWORDS );
@@ -200,8 +192,18 @@ final class BasicAuthEditor {
 			);
 			return $this->result;
 		}
-		if ( null !== $this->store ) {
-			$this->store->set( $memory, 1, self::NEGATIVE_TTL );
+		return $this->fail( $credentials[0] );
+	}
+
+	/**
+	 * A password was checked and didn't match: report it, so the plugin counts one login failure.
+	 *
+	 * @param string $username User name as sent.
+	 * @return array{editor: bool, admin: bool}
+	 */
+	private function fail( string $username ): array {
+		if ( null !== $this->on_failure ) {
+			call_user_func( $this->on_failure, $username );
 		}
 		return $this->result;
 	}

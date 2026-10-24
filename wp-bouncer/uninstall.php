@@ -53,6 +53,10 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		delete_option( 'wp_bouncer_migration_3' );
 		delete_option( 'wp_bouncer_migration_3_lock' );
 		delete_option( 'wp_bouncer_counter_failed' );
+		delete_option( 'wp_bouncer_upgrade_lock' );
+		delete_option( 'wp_bouncer_upgrade_failed' );
+		delete_transient( 'wp_bouncer_bad_rules_logged' );
+		delete_site_option( 'wp_bouncer_old_wp_mailed' );
 		if ( is_dir( $wpb_dir ) ) {
 			foreach ( (array) scandir( $wpb_dir ) as $wpb_name ) {
 				if ( is_file( $wpb_dir . '/' . $wpb_name ) ) {
@@ -91,7 +95,7 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		} while ( $wpb_more );
 		// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
 
-		foreach ( array( 'wp_bouncer_daily_maintenance', 'wp_bouncer_uploads_check', 'wp_bouncer_traffic_purge', 'wp_bouncer_migrate_data', 'wp_bouncer_counter_purge' ) as $wpb_hook ) {
+		foreach ( array( 'wp_bouncer_daily_maintenance', 'wp_bouncer_uploads_check', 'wp_bouncer_traffic_purge', 'wp_bouncer_migrate_data', 'wp_bouncer_counter_purge', 'wp_bouncer_old_wp_email' ) as $wpb_hook ) {
 			wp_clear_scheduled_hook( $wpb_hook );
 		}
 	}

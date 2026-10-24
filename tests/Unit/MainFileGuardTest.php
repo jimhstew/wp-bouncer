@@ -28,6 +28,14 @@ final class MainFileGuardTest extends TestCase {
 		$this->assertContains( 'admin_notices', $r['hooks'] );
 		$this->assertNotContains( 'booted', $r['hooks'] );
 		$this->assertStringContainsString( 'WP Bouncer is not running', $r['notice'] );
+		$this->assertStringContainsString( 'firewall is OFF', $r['notice'] );
+	}
+
+	public function test_an_old_wordpress_still_registers_the_updater_and_schedules_the_email(): void {
+		$r = $this->run_with( '6.9' );
+		$this->assertContains( 'update_plugins_github.com', $r['hooks'], 'later releases can still reach the site' );
+		$this->assertContains( 'scheduled:wp_bouncer_old_wp_email', $r['hooks'] );
+		$this->assertContains( 'admin_init', $r['hooks'] );
 	}
 
 	public function test_a_release_candidate_of_the_minimum_boots(): void {

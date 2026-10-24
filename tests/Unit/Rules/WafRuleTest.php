@@ -621,6 +621,18 @@ final class WafRuleTest extends TestCase {
 		$this->assertNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', array(), array( 'editor' => true, 'post' => array( '_wpnonce' => 'n' ) ) ) ) );
 	}
 
+	public function test_off_rest_a_nonce_exempts_only_same_site_requests(): void {
+		$body = array( 'content' => '<iframe src="x"></iframe>' );
+		$base = array( 'HTTP_X_WP_NONCE' => 'any-value' );
+		$edit = array( 'editor' => true );
+		$this->assertNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base + array( 'HTTP_SEC_FETCH_SITE' => 'same-origin' ), $edit ) ) );
+		$this->assertNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base + array( 'HTTP_SEC_FETCH_SITE' => 'none' ), $edit ) ) );
+		$this->assertNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base, $edit ) ), 'no fetch headers at all' );
+		$this->assertNotNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base + array( 'HTTP_SEC_FETCH_SITE' => 'cross-site' ), $edit ) ) );
+		$this->assertNotNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base + array( 'HTTP_SEC_FETCH_SITE' => 'same-site' ), $edit ) ) );
+		$this->assertNotNull( $this->rule()->inspect( $this->json_request( $body, 'application/json', $base + array( 'HTTP_ORIGIN' => 'https://evil.example' ), $edit ) ), 'foreign Origin, no Sec-Fetch-Site' );
+	}
+
 	public function test_sniffing_is_skipped_for_empty_bodies_and_plain_gets(): void {
 		$reads = 0;
 		$make  = static function ( string $method, array $server ) use ( &$reads ) {

@@ -9,7 +9,6 @@ namespace WPBouncer\Tests\Integration\Login;
 
 use WPBouncer\Login\BasicAuthEditor;
 use WPBouncer\Tests\Integration\IntegrationTestCase;
-use WPBouncer\Tests\Support\MemoryStore;
 
 /**
  * @covers \WPBouncer\Login\BasicAuthEditor
@@ -53,7 +52,7 @@ final class BasicAuthEditorTest extends IntegrationTestCase {
 	 * @param bool $api     Is it a REST or XML-RPC request?
 	 * @param bool $refused Is it refused anyway?
 	 */
-	private function check( string $login, string $password, bool $locked = false, bool $api = true, bool $refused = false, ?MemoryStore $store = null ): BasicAuthEditor {
+	private function check( string $login, string $password, bool $locked = false, bool $api = true, bool $refused = false, ?callable $on_failure = null ): BasicAuthEditor {
 		return new BasicAuthEditor(
 			array(
 				'PHP_AUTH_USER' => $login,
@@ -62,7 +61,7 @@ final class BasicAuthEditorTest extends IntegrationTestCase {
 			static fn(): bool => $api,
 			static fn(): bool => $refused,
 			static fn(): bool => $locked,
-			$store
+			$on_failure
 		);
 	}
 
@@ -140,21 +139,28 @@ final class BasicAuthEditorTest extends IntegrationTestCase {
 		$this->assertFalse( $this->check( $user->user_login, $plain, false, true, true )->is_editor() );
 	}
 
-	public function test_wrong_passwords_are_remembered_for_five_minutes(): void {
+	public function test_a_wrong_password_is_reported_once_and_nothing_is_stored(): void {
 		list( $user, $plain ) = $this->user_with_password( 'editor' );
-		$store                = new MemoryStore();
-		$reads                = $this->count_hash_reads();
-		$this->assertFalse( $this->check( $user->user_login, 'wrongwrongwrongwrongx', false, true, false, $store )->is_editor() );
-		$this->assertFalse( $this->check( $user->user_login, 'wrongwrongwrongwrongx', false, true, false, $store )->is_editor() );
-		$this->assertSame( 1, $reads['n'], 'the repeat is answered from memory' );
-		$this->assertFalse( $this->check( $user->user_login, 'anotherwrongpassword1', false, true, false, $store )->is_editor() );
-		$this->assertSame( 2, $reads['n'], 'a different wrong password is checked' );
-		// The real password is not affected by the memory of wrong ones.
-		$this->assertTrue( $this->check( $user->user_login, $plain, false, true, false, $store )->is_editor() );
-		// The key does not contain the password.
-		foreach ( $store->keys() as $key ) {
-			$this->assertStringNotContainsString( 'wrongwrong', $key );
-		}
+		$failed               = array();
+		$report               = static function ( string $name ) use ( &$failed ): void {
+			$failed[] = $name;
+		};
+		global $wpdb;
+		$rows = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options}" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$this->assertFalse( $this->check( $user->user_login, 'wrongwrongwrongwrongx', false, true, false, $report )->is_editor() );
+		$this->assertSame( array( $user->user_login ), $failed );
+		$this->assertSame( $rows, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options}" ), 'no option or transient per password' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		// The same checker answers from its result: no second report.
+		$check = $this->check( $user->user_login, 'wrongwrongwrongwrongx', false, true, false, $report );
+		$check->is_editor();
+		$check->is_admin();
+		$this->assertCount( 2, $failed );
+		// A right password, a locked-out client, an unknown user or a subscriber report nothing.
+		$failed = array();
+		$this->check( $user->user_login, $plain, false, true, false, $report )->is_editor();
+		$this->check( $user->user_login, $plain, true, true, false, $report )->is_editor();
+		$this->check( 'nobody-at-all', $plain, false, true, false, $report )->is_editor();
+		$this->assertSame( array(), $failed );
 	}
 
 	public function test_an_errors_hook_can_veto_the_password(): void {

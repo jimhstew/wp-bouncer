@@ -19,6 +19,20 @@ use WPBouncer\Traffic\TrafficRecorder;
  */
 final class InstallerTest extends IntegrationTestCase {
 
+	public function tear_down() {
+		global $wpdb;
+		parent::tear_down();
+		// A DDL statement commits the rows the upgrade wrote, and the rollback in tear-down
+		// would bring them back after the upgrade deleted them. Remove them for good.
+		foreach ( array( Installer::LOCK_OPTION, Installer::FAILED_OPTION ) as $name ) {
+			$wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->options} WHERE option_name = %s", $name ) ); // phpcs:ignore WordPress.DB
+			wp_cache_delete( $name, 'options' );
+		}
+		$wpdb->query( 'COMMIT' );
+		wp_cache_delete( 'alloptions', 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
+	}
+
 	/** Drop the three tables for real (DDL), as on a site that never activated the plugin. */
 	private function drop_tables(): void {
 		global $wpdb;
@@ -150,7 +164,13 @@ final class InstallerTest extends IntegrationTestCase {
 		global $wpdb;
 		$this->drop_tables();
 		Installer::create_tables();
-		$wpdb->insert( $wpdb->prefix . 'bouncer_log', array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.1' ) );
+		$wpdb->insert(
+			$wpdb->prefix . 'bouncer_log',
+			array(
+				'created_at' => '2026-01-01 00:00:00',
+				'ip'         => '198.51.100.1',
+			)
+		);
 
 		Installer::create_tables();
 
@@ -190,7 +210,13 @@ final class InstallerTest extends IntegrationTestCase {
 		// A site on schema version 1: log and geo only, no purge job.
 		Installer::create_tables();
 		$wpdb->query( "DROP TABLE {$wpdb->prefix}bouncer_traffic" ); // phpcs:ignore WordPress.DB
-		$wpdb->insert( $wpdb->prefix . 'bouncer_log', array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7' ) );
+		$wpdb->insert(
+			$wpdb->prefix . 'bouncer_log',
+			array(
+				'created_at' => '2026-01-01 00:00:00',
+				'ip'         => '198.51.100.7',
+			)
+		);
 		update_option( Installer::DB_VERSION_OPTION, '1' );
 		$this->clear_cron();
 		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
@@ -212,6 +238,77 @@ final class InstallerTest extends IntegrationTestCase {
 		Installer::maybe_upgrade();
 
 		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_log' ) );
+		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
+	}
+
+	public function test_a_held_upgrade_lock_makes_maybe_upgrade_skip_dbdelta(): void {
+		global $wpdb;
+		$this->drop_tables();
+		delete_option( Installer::DB_VERSION_OPTION );
+		add_option( Installer::LOCK_OPTION, (string) time(), '', false );
+
+		Installer::maybe_upgrade();
+
+		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_log' ), 'dbDelta did not run' );
+		$this->assertFalse( get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertNotFalse( get_option( Installer::LOCK_OPTION ), 'the holder keeps its lock' );
+		delete_option( Installer::LOCK_OPTION );
+	}
+
+	public function test_a_stale_upgrade_lock_is_taken_over_and_released(): void {
+		global $wpdb;
+		$this->drop_tables();
+		delete_option( Installer::DB_VERSION_OPTION );
+		add_option( Installer::LOCK_OPTION, (string) ( time() - HOUR_IN_SECONDS ), '', false );
+
+		Installer::maybe_upgrade();
+
+		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_log' ) );
+		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertFalse( get_option( Installer::LOCK_OPTION ) );
+	}
+
+	public function test_a_failed_create_leaves_the_version_unchanged_so_the_upgrade_is_retried(): void {
+		global $wpdb;
+		$this->drop_tables();
+		delete_option( Installer::DB_VERSION_OPTION );
+		$break = static function ( $sql ) {
+			return ( 0 === stripos( ltrim( (string) $sql ), 'CREATE TABLE' ) && false !== strpos( (string) $sql, 'bouncer_traffic' ) ) ? 'SELECT * FROM wpb_no_such_table_zz' : $sql;
+		};
+		add_filter( 'query', $break, 99 );
+		$suppress = $wpdb->suppress_errors( true );
+
+		Installer::maybe_upgrade();
+
+		$wpdb->suppress_errors( $suppress );
+		remove_filter( 'query', $break, 99 );
+		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
+		$this->assertFalse( get_option( Installer::DB_VERSION_OPTION ), 'version not recorded' );
+		$this->assertNotFalse( get_option( Installer::LOCK_OPTION ), 'lock kept so requests do not re-run dbDelta' );
+		$this->assertNotFalse( get_option( Installer::FAILED_OPTION ), 'failure recorded for the admin notice' );
+
+		// A second request inside the TTL does not run dbDelta (the broken filter would count it).
+		$runs = 0;
+		$spy  = static function ( $sql ) use ( &$runs ) {
+			if ( 0 === stripos( ltrim( (string) $sql ), 'CREATE TABLE' ) ) {
+				++$runs;
+			}
+			return $sql;
+		};
+		add_filter( 'query', $spy, 1 );
+		Installer::maybe_upgrade();
+		$this->assertSame( 0, $runs, 'no dbDelta within the TTL' );
+		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
+
+		// After the TTL it retries and succeeds.
+		update_option( Installer::LOCK_OPTION, (string) ( time() - HOUR_IN_SECONDS ) );
+		Installer::maybe_upgrade();
+		remove_filter( 'query', $spy, 1 );
+		$this->assertGreaterThan( 0, $runs );
+		$this->assertFalse( get_option( Installer::LOCK_OPTION ), 'lock released on success' );
+		$this->assertFalse( get_option( Installer::FAILED_OPTION ), 'failure cleared' );
+
+		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
 		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
 	}
 
@@ -296,17 +393,62 @@ final class InstallerTest extends IntegrationTestCase {
 		$login   = 'wpb_s10_user';
 		$user_id = self::factory()->user->create( array( 'user_login' => $login ) );
 		$rows    = array(
-			array( 'uri' => '/?key=SECRET1&ok=1', 'reason' => '', 'rule' => 'waf' ),
-			array( 'uri' => '/clean', 'reason' => '', 'rule' => 'waf' ),
-			array( 'uri' => '/wp-login.php', 'reason' => '5 failed logins (last username "hunter2-typo") – locked out for 60 min', 'rule' => 'login_lockout' ),
-			array( 'uri' => '/wp-login.php', 'reason' => '5 failed logins (last username "' . $login . '") – locked out for 60 min', 'rule' => 'login_lockout' ),
-			array( 'uri' => '/wp-login.php', 'reason' => 'Tried banned username "admin"', 'rule' => 'login_lockout' ),
+			array(
+				'uri'    => '/?key=SECRET1&ok=1',
+				'reason' => '',
+				'rule'   => 'waf',
+			),
+			array(
+				'uri'    => '/clean',
+				'reason' => '',
+				'rule'   => 'waf',
+			),
+			array(
+				'uri'    => '/wp-login.php',
+				'reason' => '5 failed logins (last username "hunter2-typo") – locked out for 60 min',
+				'rule'   => 'login_lockout',
+			),
+			array(
+				'uri'    => '/wp-login.php',
+				'reason' => '5 failed logins (last username "' . $login . '") – locked out for 60 min',
+				'rule'   => 'login_lockout',
+			),
+			array(
+				'uri'    => '/wp-login.php',
+				'reason' => 'Tried banned username "admin"',
+				'rule'   => 'login_lockout',
+			),
 		);
 		foreach ( $rows as $row ) {
-			$wpdb->insert( $log, array_merge( array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7' ), $row ) );
+			$wpdb->insert(
+				$log,
+				array_merge(
+					array(
+						'created_at' => '2026-01-01 00:00:00',
+						'ip'         => '198.51.100.7',
+					),
+					$row
+				)
+			);
 		}
-		$wpdb->insert( $traffic, array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7', 'uri' => '/?token=SECRET2', 'referrer' => 'https://example.org/?password=SECRET3&a=1' ) );
-		$wpdb->insert( $traffic, array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7', 'uri' => '/ok', 'referrer' => '' ) );
+		$wpdb->insert(
+			$traffic,
+			array(
+				'created_at' => '2026-01-01 00:00:00',
+				'ip'         => '198.51.100.7',
+				'uri'        => '/?token=SECRET2',
+				'referrer'   => 'https://example.org/?password=SECRET3&a=1',
+			)
+		);
+		$wpdb->insert(
+			$traffic,
+			array(
+				'created_at' => '2026-01-01 00:00:00',
+				'ip'         => '198.51.100.7',
+				'uri'        => '/ok',
+				'referrer'   => '',
+			)
+		);
 		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_counters' ) );
 
 		Installer::maybe_upgrade();

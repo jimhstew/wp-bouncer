@@ -32,6 +32,15 @@ final class Installer {
 
 	public const DB_VERSION_OPTION = 'wp_bouncer_db_version';
 
+	/** Option holding the time an upgrade started (a lock against concurrent requests). */
+	public const LOCK_OPTION = 'wp_bouncer_upgrade_lock';
+
+	/** Option holding the time the last upgrade failed; DataNotices warns admins while it is set. */
+	public const FAILED_OPTION = 'wp_bouncer_upgrade_failed';
+
+	/** Seconds after which an upgrade lock counts as abandoned. */
+	private const LOCK_TTL = 10 * MINUTE_IN_SECONDS;
+
 	public const CRON_HOOK = 'wp_bouncer_daily_maintenance';
 
 	/** Hourly purge of expired login counters. */
@@ -119,14 +128,74 @@ final class Installer {
 		Hardening\UploadsGuard::teardown();
 	}
 
-	/** Re-run table creation after a plugin update that changed the schema. */
+	/**
+	 * Re-run table creation after a plugin update that changed the schema.
+	 *
+	 * One request does the work. The others see the lock and carry on; if the
+	 * holder dies, the lock expires after LOCK_TTL and a later request takes over.
+	 */
 	public static function maybe_upgrade(): void {
-		if ( get_option( self::DB_VERSION_OPTION ) !== self::DB_VERSION ) {
-			self::create_tables();
-			// Updates don't run the activation hook, so add jobs that are new in this version.
-			self::schedule();
-			self::migrate_data();
+		if ( get_option( self::DB_VERSION_OPTION ) === self::DB_VERSION || ! self::acquire_lock() ) {
+			return;
 		}
+		$done = false;
+		try {
+			self::create_tables();
+			// A failed CREATE leaves the version alone, so the upgrade is retried (after the lock expires).
+			$done = get_option( self::DB_VERSION_OPTION ) === self::DB_VERSION;
+			if ( $done ) {
+				delete_option( self::FAILED_OPTION );
+				// Updates don't run the activation hook, so add jobs that are new in this version.
+				self::schedule();
+				self::migrate_data();
+			} else {
+				update_option( self::FAILED_OPTION, (string) time(), false );
+			}
+		} finally {
+			// On failure keep the lock: requests within LOCK_TTL skip the upgrade instead of re-running dbDelta each time.
+			if ( $done ) {
+				delete_option( self::LOCK_OPTION );
+			}
+		}
+	}
+
+	/**
+	 * Take the upgrade lock: an option holding a timestamp, created with add_option().
+	 *
+	 * @return bool True when this request holds the lock.
+	 */
+	private static function acquire_lock(): bool {
+		if ( add_option( self::LOCK_OPTION, (string) time(), '', false ) ) {
+			return true;
+		}
+		$taken = (int) get_option( self::LOCK_OPTION );
+		if ( $taken > time() - self::LOCK_TTL ) {
+			return false;
+		}
+		// Stale: its holder is gone. Of the requests that race to replace it, only one add_option() wins.
+		delete_option( self::LOCK_OPTION );
+		return add_option( self::LOCK_OPTION, (string) time(), '', false );
+	}
+
+	/**
+	 * True when all of the plugin's tables exist.
+	 *
+	 * Selects from each table rather than using SHOW TABLES, which does not list TEMPORARY tables.
+	 * Works on MySQL, MariaDB and SQLite.
+	 */
+	private static function tables_exist(): bool {
+		global $wpdb;
+		$previous = $wpdb->suppress_errors( true );
+		$all      = true;
+		foreach ( array( 'log', 'geo', 'traffic', 'counters' ) as $name ) {
+			$result = $wpdb->query( $wpdb->prepare( 'SELECT 1 FROM %i LIMIT 1', $wpdb->prefix . 'bouncer_' . $name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- schema check, never cached.
+			if ( false === $result ) {
+				$all = false;
+				break;
+			}
+		}
+		$wpdb->suppress_errors( $previous );
+		return $all;
 	}
 
 	/** Redact old rows: a short slice now, the rest from a cron event on a big site. */
@@ -221,6 +290,11 @@ final class Installer {
   KEY expires_at (expires_at)
 ) {$charset};"
 		);
+
+		// Record the version only once the tables exist, so a failed CREATE is retried.
+		if ( ! self::tables_exist() ) {
+			return;
+		}
 
 		// Any change of version starts the redaction. On a fresh install the tables are empty, so it ends at once.
 		if ( self::DB_VERSION !== get_option( self::DB_VERSION_OPTION ) ) {

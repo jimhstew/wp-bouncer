@@ -69,6 +69,9 @@ final class Plugin {
 
 	public const VERSION = '1.2.0';
 
+	/** Transient that limits the bad-filter log row to one a day. */
+	private const BAD_RULES_TRANSIENT = 'wp_bouncer_bad_rules_logged';
+
 	/** Internal state (not a setting): Unix time of the last log purge. */
 	public const LAST_PURGE_OPTION = 'wp_bouncer_last_purge';
 
@@ -125,6 +128,15 @@ final class Plugin {
 	 * @var BasicAuthEditor|null
 	 */
 	private ?BasicAuthEditor $basic_auth_editor = null;
+	/**
+	 * Login failures already counted by the early application-password check in this request.
+	 *
+	 * Core's own count for the same attempt (application_password_failed_authentication or
+	 * wp_login_failed) is skipped, once per early count, so an attempt counts exactly once.
+	 *
+	 * @var int
+	 */
+	private int $early_failures = 0;
 	/**
 	 * Country lookup.
 	 *
@@ -668,7 +680,7 @@ final class Plugin {
 				fn(): bool => $this->current_request()->is_api_auth_request(),
 				fn(): bool => $this->refuses_foreign_basic_auth() || null !== $this->rest_country_refusal(),
 				fn(): bool => $this->login_guard()->is_locked_out( $this->client_key() ),
-				$this->store()
+				fn( string $name ) => $this->count_early_app_password_failure( $name )
 			);
 		}
 		return $this->basic_auth_editor;
@@ -746,14 +758,34 @@ final class Plugin {
 		 * @param RuleInterface[] $rules  Rules in evaluation order.
 		 * @param Plugin          $plugin Plugin instance.
 		 */
-		$rules = apply_filters( 'wp_bouncer_rules', $rules, $this );
+		$filtered = apply_filters( 'wp_bouncer_rules', $rules, $this );
+		if ( ! is_array( $filtered ) ) {
+			// A callback that forgot "return" would otherwise switch the whole firewall off.
+			$this->report_bad_rules_filter();
+			$filtered = $rules;
+		}
 
 		return array_values(
 			array_filter(
-				(array) $rules,
+				$filtered,
 				static function ( $rule ) {
 					return $rule instanceof RuleInterface;
 				}
+			)
+		);
+	}
+
+	/** Log (at most once a day) that a "wp_bouncer_rules" callback returned something other than an array. */
+	private function report_bad_rules_filter(): void {
+		if ( false !== get_transient( self::BAD_RULES_TRANSIENT ) ) {
+			return;
+		}
+		set_transient( self::BAD_RULES_TRANSIENT, 1, DAY_IN_SECONDS );
+		$this->log()->record(
+			array(
+				'rule'   => 'plugin',
+				'action' => BlockLogInterface::ACTION_ALERT,
+				'reason' => 'A wp_bouncer_rules filter callback returned a non-array (missing return?). The built-in rules are used.',
 			)
 		);
 	}
@@ -896,7 +928,7 @@ final class Plugin {
 			'wp_login_failed',
 			function ( $username ): void {
 				// A refused attempt (cross-site post, blocked country) was never checked: it is not a failure to count.
-				if ( null !== $this->auth_refusal || $this->client_is_allowlisted() ) {
+				if ( null !== $this->auth_refusal || $this->client_is_allowlisted() || $this->early_failure_already_counted() ) {
 					return;
 				}
 				if ( ! $this->client_can_be_banned() ) {
@@ -1176,12 +1208,37 @@ final class Plugin {
 	}
 
 	/**
+	 * Count a wrong application password found by the early check (plugins_loaded).
+	 *
+	 * The request may be refused by a later rule before core checks the password, so core would
+	 * never count it. Counted on the client's counter subject like any login failure.
+	 *
+	 * @param string $username User name as sent.
+	 */
+	public function count_early_app_password_failure( string $username ): void {
+		if ( ! $this->counts_login_attempts() || $this->client_is_allowlisted() ) {
+			return;
+		}
+		++$this->early_failures;
+		$this->login_guard()->record_failure( $this->client_key(), sanitize_user( $username ), array_merge( $this->log_context(), array( 'ip' => $this->client_ip() ) ) );
+	}
+
+	/** Use up one early count, if there is one: core's count for the same attempt is then skipped. */
+	private function early_failure_already_counted(): bool {
+		if ( $this->early_failures > 0 ) {
+			--$this->early_failures;
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Count a failed application-password check. Via XML-RPC the attempt already holds a
 	 * reservation (counted once); via REST Basic auth nothing has counted it yet.
 	 */
 	public function count_app_password_failure(): void {
 		$guard = $this->login_guard();
-		if ( null !== $this->auth_refusal ) {
+		if ( null !== $this->auth_refusal || $this->early_failure_already_counted() ) {
 			return;
 		}
 		// An XML-RPC attempt holds a reservation made at priority 1; wp_login_failed settles it.
@@ -1225,7 +1282,8 @@ final class Plugin {
 			return false;
 		}
 		// XML-RPC already reserved at authenticate priority 1; REST Basic auth has not.
-		if ( ! $guard->has_reservation() && $guard->reserve( $key ) > 0 ) {
+		// A wrong password the early check already counted this request must not be counted again.
+		if ( 0 === $this->early_failures && ! $guard->has_reservation() && $guard->reserve( $key ) > 0 ) {
 			$this->app_reserved = true;
 			if ( $guard->refusal_seconds( $key ) > 0 ) {
 				return false;

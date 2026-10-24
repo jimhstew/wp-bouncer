@@ -28,7 +28,8 @@ define( 'WP_BOUNCER_MIN_PHP', '8.3' );
 define( 'WP_BOUNCER_MIN_WP', '7.0' );
 
 // Pre-release suffixes ("7.0-RC1") are ignored so a release candidate of the minimum passes.
-if ( version_compare( preg_replace( '/-.*$/', '', PHP_VERSION ), WP_BOUNCER_MIN_PHP, '<' ) || version_compare( preg_replace( '/-.*$/', '', $GLOBALS['wp_version'] ), WP_BOUNCER_MIN_WP, '<' ) ) {
+if ( version_compare( preg_replace( '/-.*$/', '', PHP_VERSION ), WP_BOUNCER_MIN_PHP, '<' ) ) {
+	// Too old to parse the rest of the plugin: only say so. Core will not auto-update into this.
 	/**
 	 * Tell admins why the plugin did not start.
 	 *
@@ -57,5 +58,17 @@ if ( version_compare( preg_replace( '/-.*$/', '', PHP_VERSION ), WP_BOUNCER_MIN_
 
 require_once __DIR__ . '/src/Autoloader.php';
 \WPBouncer\Autoloader::register( __DIR__ . '/src' );
+
+if ( version_compare( preg_replace( '/-.*$/', '', $GLOBALS['wp_version'] ), WP_BOUNCER_MIN_WP, '<' ) ) {
+	// PHP is fine but WordPress is too old (an automatic update from 1.1.x can get here).
+	// No firewall, but keep the updater so a fixed release can arrive, and tell the admin.
+	$wp_bouncer_guard = new \WPBouncer\Update\OldWordPressGuard( __FILE__, $GLOBALS['wp_version'], WP_BOUNCER_MIN_WP );
+	$wp_bouncer_guard->register();
+	unset( $wp_bouncer_guard );
+	return;
+}
+
+// Once WordPress is new enough again, a future recurrence is reported afresh.
+add_action( 'admin_init', 'WPBouncer\\Update\\OldWordPressGuard::reset' );
 
 \WPBouncer\Plugin::boot( __FILE__ );
