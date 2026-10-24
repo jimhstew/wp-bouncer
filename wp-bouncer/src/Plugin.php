@@ -25,6 +25,7 @@ use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Log\BudgetedBlockLog;
 use WPBouncer\Log\WriteBudget;
 use WPBouncer\Login\LoginGuard;
+use WPBouncer\Privacy\PrivacyTools;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
 use WPBouncer\Rules\LoginLockoutRule;
@@ -225,6 +226,7 @@ final class Plugin {
 		$this->uploads_guard()->register();
 		$this->alerts()->register();
 		( new TrafficRecorder( $this ) )->register();
+		( new PrivacyTools( $this ) )->register();
 
 		// Updates are not affected by WP_BOUNCER_DISABLE: updating is one way out of a bad version.
 		if ( ! Updater::is_disabled() ) {

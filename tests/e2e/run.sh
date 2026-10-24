@@ -1055,6 +1055,16 @@ check "WP_BOUNCER_DISABLE_UPDATES"   unsupported "$(offered)"
 rm -f "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php" "$W/wp-content/mu-plugins/wpb-e2e-update.php"
 
 fi
+if want "Privacy tools (export and erase personal data)"; then
+# Runs the registered callbacks on the real database (SQLite or MySQL): no DELETE ... LIMIT, no unsupported SQL.
+priv() { $WP eval "$1"; }
+priv 'global $wpdb; $u = get_user_by("login", "admin_e2e"); $wpdb->delete($wpdb->prefix . "bouncer_traffic", array("user_id" => $u->ID)); for ($i = 0; $i < 3; $i++) { $wpdb->insert($wpdb->prefix . "bouncer_traffic", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "uri" => "/priv" . $i, "user_id" => $u->ID)); } $wpdb->insert($wpdb->prefix . "bouncer_log", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "rule" => "login_lockout", "action" => "lockout", "reason" => "5 failed logins (last username \"admin_e2e\")", "uri" => "/wp-login.php?x=1"));'
+check "exporter returns the rows"    3 "$(priv '$e = apply_filters("wp_privacy_personal_data_exporters", array()); $r = $e["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo count($r["data"]);')"
+check "log eraser redacts the login"  '1 5 failed logins (last username "[erased]") |' "$(priv 'global $wpdb; $r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-log"]["callback"]("e2e@example.test", 1); $row = $wpdb->get_row("SELECT reason, uri FROM {$wpdb->prefix}bouncer_log WHERE ip = \"192.0.2.77\"", ARRAY_A); echo (int) $r["items_retained"], " ", $row["reason"], " |", $row["uri"];')"
+check "traffic eraser deletes rows"  "3 0" "$(priv 'global $wpdb; $r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo $r["items_removed"], " ", (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_traffic WHERE ip = \"192.0.2.77\"");')"
+$WP eval 'global $wpdb; $wpdb->delete($wpdb->prefix . "bouncer_log", array("ip" => "192.0.2.77"));'
+
+fi
 if want "PHP debug log"; then
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'
