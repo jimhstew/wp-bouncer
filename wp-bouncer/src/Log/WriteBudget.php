@@ -19,9 +19,11 @@ defined( 'ABSPATH' ) || exit;
  */
 final class WriteBudget {
 
-	/** Counters and the pending marker live for a day, so a quiet site still reports. */
-	private const TTL         = 86400;
+	/** Counters and the pending marker live for two days, so a quiet site still reports. */
+	private const TTL         = 172800;
 	private const PENDING_KEY = 'log_budget_pending';
+	/** Most over-budget markers set per minute (each is one stored option). */
+	private const MAX_MARKERS = 500;
 	/** Most distinct rule names tracked per minute; the rest count as "other". */
 	private const MAX_RULES = 16;
 
@@ -158,6 +160,23 @@ final class WriteBudget {
 		if ( $this->store->get( self::PENDING_KEY ) !== $minute ) {
 			$this->store->set( self::PENDING_KEY, $minute, self::TTL );
 		}
+	}
+
+	/**
+	 * May another over-budget marker be stored this minute?
+	 *
+	 * Markers stop repeats from one IP being counted (and costing an option
+	 * write) on every request. They are capped per minute; beyond the cap
+	 * this only reads, and events are counted without markers.
+	 */
+	public function allow_marker(): bool {
+		$key  = 'log_budget_marks:' . $this->minute( $this->clock->now() );
+		$used = (int) $this->store->get( $key );
+		if ( $used >= self::MAX_MARKERS ) {
+			return false;
+		}
+		$this->store->increment( $key, self::TTL );
+		return true;
 	}
 
 	/**

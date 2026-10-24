@@ -7,6 +7,8 @@
 
 namespace WPBouncer\Hardening;
 
+use WPBouncer\Firewall\Firewall;
+use WPBouncer\Firewall\Request;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Plugin;
 
@@ -293,6 +295,28 @@ final class UploadsGuard {
 		}
 
 		$request = $this->plugin->current_request();
+		// One log row per IP per minute, checked against the budget before the de-dup key is set.
+		$seen = 'log_seen:' . self::ID . ':' . $request->ip();
+		if ( null === $this->plugin->store()->get( $seen ) && $this->plugin->write_budget()->peek( self::ID, true ) ) {
+			$this->plugin->store()->set( $seen, 1, Firewall::LOG_DEDUPE_SECONDS );
+			$this->log_refused_upload( $request, $name, $reason );
+		}
+		$file['error'] = sprintf(
+			/* translators: %s: reason, such as "script extension .php". */
+			__( 'WP Bouncer refused this file because it could run as code on the server (%s).', 'wp-bouncer' ),
+			$reason
+		);
+		return $file;
+	}
+
+	/**
+	 * Write the log row for a refused upload.
+	 *
+	 * @param Request $request Current request.
+	 * @param string  $name    Uploaded file name.
+	 * @param string  $reason  Why it was refused.
+	 */
+	private function log_refused_upload( Request $request, string $name, string $reason ): void {
 		$this->plugin->log_writer()->record(
 			array(
 				'ip'         => $request->ip(),
@@ -305,12 +329,6 @@ final class UploadsGuard {
 				'user_agent' => $request->user_agent(),
 			)
 		);
-		$file['error'] = sprintf(
-			/* translators: %s: reason, such as "script extension .php". */
-			__( 'WP Bouncer refused this file because it could run as code on the server (%s).', 'wp-bouncer' ),
-			$reason
-		);
-		return $file;
 	}
 
 	/**

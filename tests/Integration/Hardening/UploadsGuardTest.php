@@ -459,6 +459,6 @@ final class UploadsGuardTest extends IntegrationTestCase {
 		$this->assertArrayHasKey( 'error', $evil );
 		$this->assertArrayNotHasKey( 'error', $good );
 		$this->assertFileExists( $good['file'] );
-		$this->assertCount( 2, $this->block_rows() );
+		$this->assertCount( 1, $this->block_rows(), 'two refusals from one IP in a minute share one log row' );
 	}
 }

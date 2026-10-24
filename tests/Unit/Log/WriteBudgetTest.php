@@ -44,11 +44,11 @@ final class WriteBudgetTest extends TestCase {
 		$this->assertNull( $budget->pending_summary(), 'reported once' );
 	}
 
-	public function test_the_summary_is_dropped_after_a_day(): void {
+	public function test_the_summary_is_dropped_after_two_days(): void {
 		$budget = new WriteBudget( $this->store, $this->clock, 1 );
 		$budget->consume( 'a' );
 		$budget->consume( 'a' );
-		$this->clock->advance( 25 * 3600 );
+		$this->clock->advance( 49 * 3600 );
 		$this->assertNull( $budget->pending_summary() );
 	}
 

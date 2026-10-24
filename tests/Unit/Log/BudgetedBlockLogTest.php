@@ -145,6 +145,31 @@ final class BudgetedBlockLogTest extends TestCase {
 		$this->assertCount( $count, $this->inner->entries, 'written once' );
 	}
 
+	public function test_repeats_from_one_ip_over_budget_are_counted_once_per_minute(): void {
+		$fw = $this->firewall();
+		$this->flood( $fw, 100 );
+		$request = Requests::make( array( 'ip' => '10.99.0.1' ) );
+		for ( $i = 0; $i < 50; $i++ ) {
+			$fw->handle( $request, new RecordingResponder(), 'no' );
+		}
+		$this->clock->advance( 60 );
+		$this->log->flush_summary();
+
+		// 80 distinct IPs over budget, plus the repeating IP counted once.
+		$this->assertStringContainsString( '81 further events', end( $this->inner->entries )['reason'] );
+	}
+
+	public function test_over_budget_markers_stop_at_the_cap(): void {
+		$budget = new WriteBudget( $this->store, $this->clock, 1 );
+		$ok     = 0;
+		for ( $i = 0; $i < 600; $i++ ) {
+			$ok += $budget->allow_marker() ? 1 : 0;
+		}
+		$this->assertSame( 500, $ok );
+		$this->clock->advance( 60 );
+		$this->assertTrue( $budget->allow_marker(), 'a new minute starts again' );
+	}
+
 	public function test_monitor_mode_is_budgeted_the_same_way(): void {
 		$this->flood( $this->firewall( true ), 100 );
 		$this->assertCount( self::BUDGET, $this->inner->entries );

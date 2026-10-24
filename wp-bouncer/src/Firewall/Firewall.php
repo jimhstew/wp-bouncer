@@ -171,17 +171,25 @@ final class Firewall {
 			return 0;
 		}
 		// Over budget: no row and no de-dup key, so a flood of distinct IPs writes nothing.
+		// A short marker (capped per minute) stops one IP's repeats being counted again.
 		$action = $this->monitor ? BlockLogInterface::ACTION_MONITORED : BlockLogInterface::ACTION_BLOCKED;
-		if ( $this->budget && ! $this->budget->peek(
-			$verdict->rule(),
-			WriteBudget::is_priority(
+		if ( $this->budget ) {
+			$marker = 'log_dropped:' . $verdict->rule() . ':' . $request->ip();
+			if ( null !== $this->store->get( $marker ) ) {
+				return 0;
+			}
+			$priority = WriteBudget::is_priority(
 				array(
 					'rule'   => $verdict->rule(),
 					'action' => $action,
 				)
-			)
-		) ) {
-			return 0;
+			);
+			if ( ! $this->budget->peek( $verdict->rule(), $priority ) ) {
+				if ( $this->budget->allow_marker() ) {
+					$this->store->set( $marker, 1, self::LOG_DEDUPE_SECONDS );
+				}
+				return 0;
+			}
 		}
 		$this->store->set( $key, 1, self::LOG_DEDUPE_SECONDS );
 
