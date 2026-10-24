@@ -208,11 +208,28 @@ final class AdminScreensTest extends IntegrationTestCase {
 		$this->assertStringContainsString( 'no geo database is loaded', $this->notices() );
 	}
 
+	/**
+	 * What the message code in $_GET adds to the notices, without the
+	 * environment's own warnings (for example an unwritable uploads folder on
+	 * a CI runner), which appear with or without a code.
+	 */
+	private function message_notice(): string {
+		$get = $_GET;
+		foreach ( array_keys( $_GET ) as $key ) {
+			if ( 0 === strpos( (string) $key, 'wpb_' ) ) {
+				unset( $_GET[ $key ] );
+			}
+		}
+		$baseline = $this->notices();
+		$_GET     = $get;
+		return trim( str_replace( $baseline, '', $this->notices() ) );
+	}
+
 	public function test_free_text_in_wpb_msg_renders_nothing(): void {
 		$this->login();
 		foreach ( array( '<script>alert(4)</script>Saved', 'Settings saved.', 'Your site is hacked, call 555-0100', 'nope' ) as $text ) {
 			$_GET['wpb_msg'] = $text;
-			$this->assertSame( '', trim( $this->notices() ), $text );
+			$this->assertSame( '', $this->message_notice(), $text );
 		}
 	}
 
@@ -241,14 +258,14 @@ final class AdminScreensTest extends IntegrationTestCase {
 
 		$this->assertSame( 'pending detail', \WPBouncer\Admin\MessageCodes::take_flash(), 'codes without detail left it' );
 		$_GET['wpb_msg'] = 'test_sent';
-		$this->assertSame( '', trim( $this->notices() ) );
+		$this->assertSame( '', $this->message_notice() );
 	}
 
 	public function test_code_arguments_are_validated_before_display(): void {
 		$this->login();
 		$_GET['wpb_msg'] = 'ip_blocked';
 		$_GET['wpb_ip']  = '<b>evil</b>';
-		$this->assertSame( '', trim( $this->notices() ), 'invalid IP: nothing shown' );
+		$this->assertSame( '', $this->message_notice(), 'invalid IP: nothing shown' );
 
 		$_GET['wpb_ip'] = '198.51.100.7';
 		$this->assertStringContainsString( '198.51.100.7 added to the IP blocklist.', $this->notices() );
