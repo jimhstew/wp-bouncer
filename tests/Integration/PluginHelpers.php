@@ -10,6 +10,7 @@ namespace WPBouncer\Tests\Integration;
 use WPBouncer\Geo\GeoImport;
 use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Installer;
+use WPBouncer\Storage\RedactionMigration;
 use WPBouncer\Plugin;
 use WPBouncer\Settings;
 use WPBouncer\Traffic\TrafficRecorder;
@@ -45,7 +46,7 @@ trait PluginHelpers {
 		$this->plugin        = $plugin;
 		$this->server_backup = $_SERVER;
 
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic' ) as $table ) {
+		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $table ) {
 			$wpdb->query( "DELETE FROM {$wpdb->prefix}{$table}" ); // phpcs:ignore WordPress.DB
 		}
 
@@ -231,12 +232,12 @@ trait PluginHelpers {
 		// The object cache still holds values the rollback just discarded.
 		wp_cache_flush();
 		Installer::create_tables();
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic' ) as $table ) {
+		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $table ) {
 			$wpdb->query( "DELETE FROM {$wpdb->prefix}{$table}" ); // phpcs:ignore WordPress.DB
 		}
 		update_option( Settings::OPTION, Settings::defaults(), true );
 		update_option( Installer::DB_VERSION_OPTION, Installer::DB_VERSION, true );
-		foreach ( array( UploadsGuard::STATE_OPTION, UploadsGuard::PROBE_OPTION, Plugin::GEO_META_OPTION, GeoImport::STATE_OPTION ) as $option ) {
+		foreach ( array( UploadsGuard::STATE_OPTION, UploadsGuard::PROBE_OPTION, Plugin::GEO_META_OPTION, GeoImport::STATE_OPTION, RedactionMigration::STATE_OPTION, RedactionMigration::LOCK_OPTION ) as $option ) {
 			delete_option( $option );
 		}
 		// Transients written by the plugin (counters, bans, alert throttle).

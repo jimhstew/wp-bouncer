@@ -457,6 +457,21 @@ check "locked out after 5 failures"  403 "$(login 198.51.100.5 admin_e2e e2e-pas
 login 198.51.100.6 admin x > /dev/null
 check "banned username locks out"    403 "$(login 198.51.100.6 admin_e2e e2e-pass-123)"
 check "other IPs can still log in"   302 "$(login 198.51.100.7 admin_e2e e2e-pass-123)"
+# RT-08: twelve parallel guesses from one address. Only the first five may reach the password check.
+rm -f "$WORK"/burst-*.html
+BURST_PIDS=""
+for i in $(seq 1 12); do
+	curl -s -o "$WORK/burst-$i.html" -H "X-Real-IP: 198.51.100.8" -A "Mozilla/5.0" -d "log=admin_e2e&pwd=wrong$i&wp-submit=Log+In&testcookie=1" "$U/wp-login.php" &
+	BURST_PIDS="$BURST_PIDS $!"
+done
+wait $BURST_PIDS   # not a bare wait: the web server is also a background job
+BURST_CHECKED=$(grep -l 'username or password you entered is incorrect' "$WORK"/burst-*.html 2>/dev/null | wc -l | tr -d ' ')
+check "parallel burst: at most 5 checked" 1 "$( [ "$BURST_CHECKED" -le 5 ] && echo 1 || echo 0 )"
+check "parallel burst: locked out"    403 "$(login 198.51.100.8 admin_e2e e2e-pass-123)"
+# RT-07: failures from different addresses in one IPv6 /64 add up.
+for i in 1 2 3 4 5; do login "2001:db8:77:1::$i" admin_e2e "wrong$i" > /dev/null; done
+check "IPv6 /64 locked out"           403 "$(login 2001:db8:77:1::ffff admin_e2e e2e-pass-123)"
+check "another /64 is not locked"     200 "$(login 2001:db8:77:2::1 admin_e2e wrong1)"
 
 fi
 if want "Privacy minimisation"; then
@@ -480,7 +495,7 @@ check "xmlrpc.php reachable"         1   "$( [ "$(status 203.0.113.42 "$MOZ" "$U
 rm -f "$W/wp-content/mu-plugins/wpb-e2e-disable.php"
 check "switch removed: locked again" 403 "$(login 198.51.100.6 admin_e2e e2e-pass-123)"
 check "switch removed: scanner out"  403 "$(status 203.0.113.43 "sqlmap/1.7" "$U/")"
-$WP eval '(new WPBouncer\Login\LoginGuard(WPBouncer\Settings::load()->rule("login_lockout"), new WPBouncer\Storage\TransientStore(), WPBouncer\Plugin::instance()->log()))->clear("198.51.100.5");'
+$WP eval 'WPBouncer\Plugin::instance()->login_guard()->clear("198.51.100.5");'
 check "unlocked IP can log in"       302 "$(login 198.51.100.5 admin_e2e e2e-pass-123)"
 
 fi

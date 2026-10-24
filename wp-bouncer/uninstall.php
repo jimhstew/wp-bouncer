@@ -23,6 +23,7 @@ require_once __DIR__ . '/src/Autoloader.php';
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_log" );
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_geo" );
 $wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_traffic" );
+$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}bouncer_counters" );
 
 delete_option( 'wp_bouncer_settings' );
 delete_option( 'wp_bouncer_db_version' );
@@ -36,6 +37,9 @@ if ( is_array( $wpb_import ) && ! empty( $wpb_import['file'] ) && is_string( $wp
 }
 delete_option( 'wp_bouncer_geo_import' );
 delete_option( 'wp_bouncer_last_purge' );
+delete_option( 'wp_bouncer_migration_3' );
+delete_option( 'wp_bouncer_migration_3_lock' );
+delete_option( 'wp_bouncer_counter_failed' );
 $wpb_uploads = wp_upload_dir( null, false );
 $wpb_dir     = $wpb_uploads['basedir'] . '/wp-bouncer';
 if ( is_dir( $wpb_dir ) ) {
@@ -54,3 +58,5 @@ $wpdb->query( "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient
 wp_clear_scheduled_hook( 'wp_bouncer_daily_maintenance' );
 wp_clear_scheduled_hook( 'wp_bouncer_uploads_check' );
 wp_clear_scheduled_hook( 'wp_bouncer_traffic_purge' );
+wp_clear_scheduled_hook( 'wp_bouncer_migrate_data' );
+wp_clear_scheduled_hook( 'wp_bouncer_counter_purge' );

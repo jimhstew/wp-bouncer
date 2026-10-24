@@ -66,12 +66,12 @@ final class UrlRedactorTest extends TestCase {
 	/** @return array<string, array{0: string, 1: string}> */
 	public static function labels(): array {
 		return array(
-			'plain url'      => array( 'https://download.db-ip.com/free/dbip-country-lite-2026-10.csv.gz', 'download.db-ip.com/…/dbip-country-lite-2026-10.csv.gz' ),
-			'user info + key' => array( 'https://bob:hunter2@geo.example.org/a/b/db.csv?license_key=SECRET#frag', 'geo.example.org/…/db.csv' ),
-			'host only'      => array( 'https://geo.example.org/', 'geo.example.org' ),
-			'file name'      => array( 'dbip.csv.gz', 'dbip.csv.gz' ),
-			'file with query' => array( 'dbip.csv?x=1', 'dbip.csv' ),
-			'empty'          => array( '', '' ),
+			'plain url'        => array( 'https://download.db-ip.com/free/dbip-country-lite-2026-10.csv.gz', 'download.db-ip.com/…/dbip-country-lite-2026-10.csv.gz' ),
+			'user info + key'  => array( 'https://bob:hunter2@geo.example.org/a/b/db.csv?license_key=SECRET#frag', 'geo.example.org/…/db.csv' ),
+			'host only'        => array( 'https://geo.example.org/', 'geo.example.org' ),
+			'file name'        => array( 'dbip.csv.gz', 'dbip.csv.gz' ),
+			'file with query'  => array( 'dbip.csv?x=1', 'dbip.csv' ),
+			'empty'            => array( '', '' ),
 			'licence key path' => array( 'https://geo.example.org/dl/ABCD-1234-SECRET', 'geo.example.org/…/[removed]' ),
 		);
 	}

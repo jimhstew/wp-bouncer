@@ -11,6 +11,7 @@ use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Hardening\UploadsPolicy;
 use WPBouncer\Installer;
 use WPBouncer\Settings;
+use WPBouncer\Storage\RedactionMigration;
 use WPBouncer\Traffic\TrafficRecorder;
 
 /**
@@ -22,7 +23,7 @@ final class InstallerTest extends IntegrationTestCase {
 	private function drop_tables(): void {
 		global $wpdb;
 		$this->use_real_ddl();
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic' ) as $t ) {
+		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
 			$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}{$t}" ); // phpcs:ignore WordPress.DB
 		}
 	}
@@ -30,6 +31,8 @@ final class InstallerTest extends IntegrationTestCase {
 	private function clear_cron(): void {
 		wp_clear_scheduled_hook( Installer::CRON_HOOK );
 		wp_clear_scheduled_hook( TrafficRecorder::PURGE_HOOK );
+		wp_clear_scheduled_hook( Installer::COUNTER_PURGE_HOOK );
+		wp_clear_scheduled_hook( RedactionMigration::HOOK );
 	}
 
 	public function test_activate_creates_the_three_tables_with_expected_columns(): void {
@@ -53,6 +56,18 @@ final class InstallerTest extends IntegrationTestCase {
 		);
 	}
 
+	public function test_activate_creates_the_counters_table(): void {
+		global $wpdb;
+		$this->drop_tables();
+		Installer::activate();
+
+		$this->assertSame( array( 'counter_key', 'hits', 'expires_at' ), $this->columns_of( $wpdb->prefix . 'bouncer_counters' ) );
+		$indexes = $this->indexes_of( $wpdb->prefix . 'bouncer_counters' );
+		$this->assertSame( array( 'counter_key' ), $indexes['PRIMARY'] );
+		$this->assertSame( array( 'expires_at' ), $indexes['expires_at'] );
+		$this->assertFalse( RedactionMigration::pending(), 'a fresh install has nothing to redact' );
+	}
+
 	public function test_activate_creates_the_expected_indexes(): void {
 		global $wpdb;
 		$this->drop_tables();
@@ -69,7 +84,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 		$traffic = $this->indexes_of( $wpdb->prefix . 'bouncer_traffic' );
 		$this->assertSame( array( 'id' ), $traffic['PRIMARY'] );
-		foreach ( array( 'created_at', 'ip', 'client', 'status' ) as $col ) {
+		foreach ( array( 'created_at', 'ip', 'client', 'status', 'user_id' ) as $col ) {
 			$this->assertSame( array( $col ), $traffic[ $col ], "traffic index on {$col}" );
 		}
 	}
@@ -128,6 +143,7 @@ final class InstallerTest extends IntegrationTestCase {
 		$this->assertNotFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertSame( 'daily', wp_get_schedule( Installer::CRON_HOOK ) );
 		$this->assertSame( 'hourly', wp_get_schedule( TrafficRecorder::PURGE_HOOK ) );
+		$this->assertSame( 'hourly', wp_get_schedule( Installer::COUNTER_PURGE_HOOK ), 'expired login counters are purged hourly' );
 	}
 
 	public function test_create_tables_twice_is_harmless_and_keeps_rows(): void {
@@ -182,7 +198,7 @@ final class InstallerTest extends IntegrationTestCase {
 		Installer::maybe_upgrade();
 
 		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
-		$this->assertSame( '2', get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertSame( '3', get_option( Installer::DB_VERSION_OPTION ) );
 		$this->assertNotFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ), 'purge job scheduled by the upgrade' );
 		$this->assertSame( 'hourly', wp_get_schedule( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertSame( '1', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" ), 'existing rows kept' ); // phpcs:ignore WordPress.DB
@@ -251,5 +267,95 @@ final class InstallerTest extends IntegrationTestCase {
 
 		$this->assertNotFalse( get_option( Settings::OPTION ) );
 		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_log' ) );
+	}
+
+	public function test_maybe_upgrade_from_version_2_adds_counters_and_redacts_existing_rows(): void {
+		global $wpdb;
+		$this->drop_tables();
+		Installer::create_tables();
+		$wpdb->query( "DROP TABLE {$wpdb->prefix}bouncer_counters" ); // phpcs:ignore WordPress.DB
+		$wpdb->query( "ALTER TABLE {$wpdb->prefix}bouncer_traffic DROP INDEX user_id" ); // phpcs:ignore WordPress.DB
+		delete_option( RedactionMigration::STATE_OPTION );
+		update_option( Installer::DB_VERSION_OPTION, '2' );
+		$this->clear_cron();
+
+		$log     = $wpdb->prefix . 'bouncer_log';
+		$traffic = $wpdb->prefix . 'bouncer_traffic';
+		$login   = 'wpb_s10_user';
+		$user_id = self::factory()->user->create( array( 'user_login' => $login ) );
+		$rows    = array(
+			array( 'uri' => '/?key=SECRET1&ok=1', 'reason' => '', 'rule' => 'waf' ),
+			array( 'uri' => '/clean', 'reason' => '', 'rule' => 'waf' ),
+			array( 'uri' => '/wp-login.php', 'reason' => '5 failed logins (last username "hunter2-typo") – locked out for 60 min', 'rule' => 'login_lockout' ),
+			array( 'uri' => '/wp-login.php', 'reason' => '5 failed logins (last username "' . $login . '") – locked out for 60 min', 'rule' => 'login_lockout' ),
+			array( 'uri' => '/wp-login.php', 'reason' => 'Tried banned username "admin"', 'rule' => 'login_lockout' ),
+		);
+		foreach ( $rows as $row ) {
+			$wpdb->insert( $log, array_merge( array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7' ), $row ) );
+		}
+		$wpdb->insert( $traffic, array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7', 'uri' => '/?token=SECRET2', 'referrer' => 'https://example.org/?password=SECRET3&a=1' ) );
+		$wpdb->insert( $traffic, array( 'created_at' => '2026-01-01 00:00:00', 'ip' => '198.51.100.7', 'uri' => '/ok', 'referrer' => '' ) );
+		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_counters' ) );
+
+		Installer::maybe_upgrade();
+
+		$this->assertSame( '3', get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertArrayHasKey( 'user_id', $this->indexes_of( $wpdb->prefix . 'bouncer_traffic' ), 'dbDelta adds the new index to the old table' );
+		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_counters' ) );
+		$this->assertFalse( RedactionMigration::pending(), 'small tables finish within the upgrade request' );
+		$this->assertFalse( wp_next_scheduled( RedactionMigration::HOOK ) );
+
+		$uris = $wpdb->get_col( "SELECT uri FROM {$log} ORDER BY id" ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '/?key=[removed]&ok=1', $uris[0] );
+		$this->assertSame( '/clean', $uris[1] );
+		$reasons = $wpdb->get_col( "SELECT reason FROM {$log} ORDER BY id" ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '5 failed logins (last: unknown username) – locked out for 60 min', $reasons[2] );
+		$this->assertStringContainsString( '"' . $login . '"', $reasons[3], 'an existing account stays' );
+		$this->assertSame( 'Tried banned username "admin"', $reasons[4] );
+		$t = $wpdb->get_results( "SELECT uri, referrer FROM {$traffic} ORDER BY id", ARRAY_A ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '/?token=[removed]', $t[0]['uri'] );
+		$this->assertSame( 'https://example.org/?password=[removed]&a=1', $t[0]['referrer'] );
+		$this->assertSame( '/ok', $t[1]['uri'] );
+		$this->assertSame( '', $t[1]['referrer'] );
+		wp_delete_user( $user_id );
+
+		// A second run changes nothing.
+		update_option( Installer::DB_VERSION_OPTION, '2' );
+		Installer::maybe_upgrade();
+		$this->assertSame( $uris, $wpdb->get_col( "SELECT uri FROM {$log} ORDER BY id" ) ); // phpcs:ignore WordPress.DB
+	}
+
+	public function test_upgrade_leaves_a_resumable_migration_for_cron_on_a_big_table(): void {
+		global $wpdb;
+		$this->drop_tables();
+		Installer::create_tables();
+		delete_option( RedactionMigration::STATE_OPTION );
+		update_option( Installer::DB_VERSION_OPTION, '2' );
+		$this->clear_cron();
+		$log = $wpdb->prefix . 'bouncer_log';
+		$n   = RedactionMigration::BATCH * 2 + 7;
+		$sql = array();
+		for ( $i = 0; $i < $n; $i++ ) {
+			$sql[] = $wpdb->prepare( '(%s, %s, %s)', '2026-01-01 00:00:00', 'waf', "/p{$i}?token=S{$i}" );
+		}
+		$wpdb->query( "INSERT INTO {$log} (created_at, rule, uri) VALUES " . implode( ',', $sql ) ); // phpcs:ignore WordPress.DB
+
+		$migration = new RedactionMigration( Installer::user_lookup() );
+		RedactionMigration::begin();
+		$this->assertFalse( $migration->run( 0.0 ), 'one batch, then stop' );
+		$state = get_option( RedactionMigration::STATE_OPTION );
+		$this->assertGreaterThan( 0, $state['log'] );
+		$this->assertSame( (string) RedactionMigration::BATCH, (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log} WHERE uri LIKE '%[removed]%'" ) ); // phpcs:ignore WordPress.DB
+		RedactionMigration::schedule();
+		$this->assertNotFalse( wp_next_scheduled( RedactionMigration::HOOK ) );
+
+		$guard = 0;
+		while ( ! $migration->run( 0.0 ) && ++$guard < 20 ) {
+			$this->assertTrue( RedactionMigration::pending() );
+		}
+		$this->assertFalse( RedactionMigration::pending() );
+		$this->assertSame( (string) $n, (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log} WHERE uri LIKE '%[removed]%'" ) ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '0', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log} WHERE uri LIKE '%token=S%'" ) ); // phpcs:ignore WordPress.DB
+		$this->assertFalse( wp_next_scheduled( RedactionMigration::HOOK ) );
 	}
 }

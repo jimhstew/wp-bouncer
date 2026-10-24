@@ -18,15 +18,24 @@ defined( 'ABSPATH' ) || exit;
  *                        Bounds are 32-char hex strings (see GeoDatabase).
  * - {prefix}bouncer_traffic  Requests that reached WordPress, kept up to a week
  *                        (see Traffic\TrafficLog). Version 2 of the schema.
+ * - {prefix}bouncer_counters  Atomic login-attempt counters on sites without a
+ *                        persistent object cache (see Storage\TableCounter). Version 3.
+ *
+ * All tables are per site on multisite ($wpdb->prefix is the site's prefix).
+ *
+ * Version 3 also redacts rows written by older versions (Storage\RedactionMigration).
  */
 final class Installer {
 
 	/** Bump when the schema changes. maybe_upgrade() re-runs dbDelta. */
-	public const DB_VERSION = '2';
+	public const DB_VERSION = '3';
 
 	public const DB_VERSION_OPTION = 'wp_bouncer_db_version';
 
 	public const CRON_HOOK = 'wp_bouncer_daily_maintenance';
+
+	/** Hourly purge of expired login counters. */
+	public const COUNTER_PURGE_HOOK = 'wp_bouncer_counter_purge';
 
 	/** Activation hook. */
 	public static function activate(): void {
@@ -35,12 +44,16 @@ final class Installer {
 			add_option( Settings::OPTION, Settings::defaults(), '', true );
 		}
 		self::schedule();
+		self::migrate_data();
 	}
 
 	/** Schedule the housekeeping jobs that aren't scheduled yet. */
 	public static function schedule(): void {
 		if ( ! wp_next_scheduled( self::CRON_HOOK ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', self::CRON_HOOK );
+		}
+		if ( ! wp_next_scheduled( self::COUNTER_PURGE_HOOK ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', self::COUNTER_PURGE_HOOK );
 		}
 		if ( ! wp_next_scheduled( Traffic\TrafficRecorder::PURGE_HOOK ) ) {
 			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', Traffic\TrafficRecorder::PURGE_HOOK );
@@ -51,6 +64,8 @@ final class Installer {
 	public static function deactivate(): void {
 		wp_clear_scheduled_hook( self::CRON_HOOK );
 		wp_clear_scheduled_hook( Traffic\TrafficRecorder::PURGE_HOOK );
+		wp_clear_scheduled_hook( Storage\RedactionMigration::HOOK );
+		wp_clear_scheduled_hook( self::COUNTER_PURGE_HOOK );
 		// Our block in uploads/.htaccess goes too; it is written again on reactivation.
 		Hardening\UploadsGuard::teardown();
 	}
@@ -61,7 +76,30 @@ final class Installer {
 			self::create_tables();
 			// Updates don't run the activation hook, so add jobs that are new in this version.
 			self::schedule();
+			self::migrate_data();
 		}
+	}
+
+	/** Redact old rows: a short slice now, the rest from a cron event on a big site. */
+	private static function migrate_data(): void {
+		if ( Storage\RedactionMigration::pending() ) {
+			// Schedule first: if this request is cut off, cron still finishes the job.
+			Storage\RedactionMigration::schedule();
+			( new Storage\RedactionMigration( self::user_lookup() ) )->run( 1.5 );
+		}
+	}
+
+	/**
+	 * Looks up an account by typed name for the migration.
+	 *
+	 * @return callable(string): ?string
+	 */
+	public static function user_lookup(): callable {
+		return static function ( string $name ): ?string {
+			$id   = username_exists( $name );
+			$user = $id ? get_userdata( (int) $id ) : false;
+			return $user ? (string) $user->user_login : null;
+		};
 	}
 
 	/** Create or update the tables with dbDelta. */
@@ -73,6 +111,7 @@ final class Installer {
 		$log     = $wpdb->prefix . 'bouncer_log';
 		$geo     = $wpdb->prefix . 'bouncer_geo';
 		$traffic = $wpdb->prefix . 'bouncer_traffic';
+		$counter = $wpdb->prefix . 'bouncer_counters';
 
 		// dbDelta is picky: two spaces after PRIMARY KEY, one column per line.
 		dbDelta(
@@ -119,10 +158,25 @@ final class Installer {
   KEY created_at (created_at),
   KEY ip (ip),
   KEY client (client),
-  KEY status (status)
+  KEY status (status),
+  KEY user_id (user_id)
 ) {$charset};"
 		);
 
+		dbDelta(
+			"CREATE TABLE {$counter} (
+  counter_key char(32) NOT NULL,
+  hits int(11) NOT NULL DEFAULT 0,
+  expires_at bigint(20) NOT NULL DEFAULT 0,
+  PRIMARY KEY  (counter_key),
+  KEY expires_at (expires_at)
+) {$charset};"
+		);
+
+		// Any change of version starts the redaction. On a fresh install the tables are empty, so it ends at once.
+		if ( self::DB_VERSION !== get_option( self::DB_VERSION_OPTION ) ) {
+			Storage\RedactionMigration::begin();
+		}
 		update_option( self::DB_VERSION_OPTION, self::DB_VERSION, true );
 	}
 }

@@ -49,6 +49,9 @@ final class UninstallTest extends IntegrationTestCase {
 		$this->plugin->log()->record( array( 'ip' => '198.51.100.1' ) );
 		$this->plugin->traffic_log()->record( array( 'ip' => '198.51.100.1' ) );
 		$this->plugin->geo_database()->insert_batch( array( array( 'from' => str_repeat( '0', 31 ) . '1', 'to' => str_repeat( '0', 31 ) . '2', 'country' => 'AU' ) ) );
+		( new \WPBouncer\Storage\TableCounter() )->add_or_increment( 'login_n:198.51.100.1', 600 );
+		update_option( \WPBouncer\Storage\RedactionMigration::STATE_OPTION, array( 'log' => 5 ), false );
+		wp_schedule_single_event( time() + 60, \WPBouncer\Storage\RedactionMigration::HOOK );
 		$this->plugin->store()->set( 'ban:1', 1, 600 );
 		$this->plugin->store()->increment( 'count:1', 600 );
 		set_transient( 'unrelated_transient', 'keep me', 600 );
@@ -59,13 +62,13 @@ final class UninstallTest extends IntegrationTestCase {
 		$wpdb->query( 'COMMIT' );
 	}
 
-	public function test_it_drops_all_three_tables(): void {
+	public function test_it_drops_all_four_tables(): void {
 		global $wpdb;
 		$this->populate();
 
 		$this->uninstall();
 
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic' ) as $t ) {
+		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
 			$this->assertFalse( $this->table_exists( $wpdb->prefix . $t ), $t );
 		}
 	}
@@ -114,6 +117,8 @@ final class UninstallTest extends IntegrationTestCase {
 		$this->assertFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
 		$this->assertFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ) );
+		$this->assertFalse( wp_next_scheduled( \WPBouncer\Storage\RedactionMigration::HOOK ) );
+		$this->assertFalse( get_option( \WPBouncer\Storage\RedactionMigration::STATE_OPTION ) );
 	}
 
 	public function test_it_removes_our_htaccess_block_but_not_the_owners_lines(): void {

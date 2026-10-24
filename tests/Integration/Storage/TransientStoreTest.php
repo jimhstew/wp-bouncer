@@ -34,9 +34,9 @@ final class TransientStoreTest extends IntegrationTestCase {
 	 * @param string $key Logical key.
 	 */
 	private function expire_inner( string $key ): void {
-		$name        = $this->transient_name( $key );
-		$data        = get_transient( $name );
-		$data['e']   = time() - 5;
+		$name      = $this->transient_name( $key );
+		$data      = get_transient( $name );
+		$data['e'] = time() - 5;
 		set_transient( $name, $data, HOUR_IN_SECONDS );
 	}
 
@@ -47,13 +47,26 @@ final class TransientStoreTest extends IntegrationTestCase {
 	public function test_set_then_get_round_trips_scalars_and_arrays(): void {
 		$this->store->set( 'int', 5, 60 );
 		$this->store->set( 'str', 'hello', 60 );
-		$this->store->set( 'arr', array( 'a' => 1, 'b' => array( 2 ) ), 60 );
+		$this->store->set(
+			'arr',
+			array(
+				'a' => 1,
+				'b' => array( 2 ),
+			),
+			60
+		);
 		$this->store->set( 'false', false, 60 );
 		$this->store->set( 'zero', 0, 60 );
 
 		$this->assertSame( 5, $this->store->get( 'int' ) );
 		$this->assertSame( 'hello', $this->store->get( 'str' ) );
-		$this->assertSame( array( 'a' => 1, 'b' => array( 2 ) ), $this->store->get( 'arr' ) );
+		$this->assertSame(
+			array(
+				'a' => 1,
+				'b' => array( 2 ),
+			),
+			$this->store->get( 'arr' )
+		);
 		$this->assertFalse( $this->store->get( 'false' ), 'a stored false is not "missing"' );
 		$this->assertSame( 0, $this->store->get( 'zero' ) );
 	}

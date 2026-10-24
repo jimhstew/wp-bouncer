@@ -8,6 +8,7 @@
 namespace WPBouncer;
 
 use WPBouncer\Admin\AdminController;
+use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\SetupNotices;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Firewall\Firewall;
@@ -25,6 +26,10 @@ use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Log\BudgetedBlockLog;
 use WPBouncer\Log\WriteBudget;
 use WPBouncer\Login\LoginGuard;
+use WPBouncer\Storage\AtomicCounterInterface;
+use WPBouncer\Storage\ObjectCacheCounter;
+use WPBouncer\Storage\RedactionMigration;
+use WPBouncer\Storage\TableCounter;
 use WPBouncer\Privacy\PrivacyTools;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
@@ -133,6 +138,13 @@ final class Plugin {
 	 * @var LoginGuard|null
 	 */
 	private ?LoginGuard $guard = null;
+
+	/**
+	 * Did this request reserve a login attempt for a REST application-password check?
+	 *
+	 * @var bool
+	 */
+	private bool $app_reserved = false;
 	/**
 	 * Cached request.
 	 *
@@ -206,6 +218,18 @@ final class Plugin {
 		add_action( 'plugins_loaded', array( Installer::class, 'maybe_upgrade' ), 0 );
 		add_action( 'init', array( $this, 'load_textdomain' ) );
 		add_action( Installer::CRON_HOOK, array( $this, 'daily_maintenance' ) );
+		add_action(
+			Installer::COUNTER_PURGE_HOOK,
+			static function (): void {
+				( new TableCounter() )->purge_expired();
+			}
+		);
+		add_action(
+			RedactionMigration::HOOK,
+			static function (): void {
+				RedactionMigration::cron( Installer::user_lookup() );
+			}
+		);
 		add_action( 'admin_init', array( $this, 'maybe_purge' ) );
 
 		// The emergency switch turns off everything that can refuse a visitor,
@@ -235,6 +259,7 @@ final class Plugin {
 
 		if ( is_admin() ) {
 			( new SetupNotices( $this ) )->register();
+			( new DataNotices() )->register();
 			( new AdminController( $this ) )->register();
 		}
 	}
@@ -429,19 +454,39 @@ final class Plugin {
 		return $this->alerts;
 	}
 
+	/**
+	 * Atomic login-attempt counter: the counters table, unless the site vouches that its
+	 * persistent object cache is atomic and shared by every web server (Redis or Memcached).
+	 * A cache that is per-process or evicts at will would silently lose counts.
+	 */
+	public function attempt_counter(): AtomicCounterInterface {
+		/**
+		 * Filters whether the object cache may hold the login counters.
+		 *
+		 * @param bool $atomic True to use wp_cache_incr(). Only for a shared Redis or Memcached.
+		 */
+		$use_cache = wp_using_ext_object_cache() && (bool) apply_filters( 'wp_bouncer_atomic_object_cache', false );
+		return $use_cache ? new ObjectCacheCounter() : new TableCounter();
+	}
+
 	/** Brute-force tracker. */
 	public function login_guard(): LoginGuard {
 		if ( null === $this->guard ) {
 			$this->guard = new LoginGuard(
-				$this->settings->rule( LoginGuard::RULE_ID ),
+				array_merge(
+					$this->settings->rule( LoginGuard::RULE_ID ),
+					/**
+					 * Filters how many times the per-/64 login limit one IPv6 /48 may use.
+					 *
+					 * @param int $multiplier Default 8.
+					 */
+					array( 'wide_multiplier' => (int) apply_filters( 'wp_bouncer_ipv6_wide_multiplier', 8 ) )
+				),
 				$this->store(),
 				$this->log_writer(),
 				null,
-				static function ( string $name ): ?string {
-					$id   = username_exists( $name );
-					$user = $id ? get_userdata( (int) $id ) : false;
-					return $user ? (string) $user->user_login : null;
-				}
+				Installer::user_lookup(),
+				$this->attempt_counter()
 			);
 		}
 		return $this->guard;
@@ -673,6 +718,8 @@ final class Plugin {
 		update_option( self::LAST_PURGE_OPTION, time(), true );
 		$this->log_writer()->flush_summary();
 		$this->purge_logs();
+		// Safety net: an interrupted upgrade must not leave the data migration unscheduled.
+		RedactionMigration::schedule();
 	}
 
 	/** Purge the block log. */
@@ -712,15 +759,137 @@ final class Plugin {
 			}
 		);
 
+		// Two-factor plugins can end the request from wp_login (the Two Factor plugin does, at priority 10),
+		// after core accepted the password but before the request finishes. Release first of all.
+		add_action(
+			'wp_login',
+			function (): void {
+				$this->login_guard()->release( $this->client_key() );
+			},
+			-1,
+			0
+		);
+		add_action( 'application_password_did_authenticate', array( $this, 'release_app_password_reservation' ), -1, 0 );
+
+		// REST and XML-RPC application passwords (RT F1).
+		add_action( 'application_password_failed_authentication', array( $this, 'count_app_password_failure' ) );
+		add_filter( 'application_password_is_api_request', array( $this, 'refuse_app_password_when_locked' ) );
+		add_filter( 'rest_authentication_errors', array( $this, 'filter_rest_authentication_errors' ), 100 );
+
+		// Priority 1: reserve the attempt before any password is checked (RT-08).
+		add_filter( 'authenticate', array( $this, 'reserve_login_attempt' ), 1, 3 );
+
 		// Priority 999: runs after core's authenticators so we can override their result.
 		add_filter( 'authenticate', array( $this, 'filter_authenticate' ), 999, 1 );
 	}
 
 	/**
+	 * Count a login attempt before core checks the password, so a burst of parallel
+	 * guesses can't all slip under the limit. Returns $user unchanged.
+	 *
+	 * Known gap: a plugin that ends the request inside `authenticate` after the password
+	 * check but before our priority-999 filter (some two-factor plugins) leaves the
+	 * reservation counted as a failure. That errs on the side of locking out sooner, and the
+	 * window expires it. Plugins that end the request from `wp_login` are covered (released at -1).
+	 *
+	 * @param \WP_User|\WP_Error|null $user     Result so far.
+	 * @param mixed                   $username Typed username.
+	 * @param mixed                   $password Typed password.
+	 * @return \WP_User|\WP_Error|null
+	 */
+	public function reserve_login_attempt( $user, $username = '', $password = '' ) {
+		if ( is_string( $username ) && '' !== $username && is_string( $password ) && '' !== $password && $this->counts_login_attempts() ) {
+			$this->login_guard()->reserve( $this->client_key() );
+		}
+		return $user;
+	}
+
+	/**
+	 * Count a failed application-password check. Via XML-RPC the attempt already holds a
+	 * reservation (counted once); via REST Basic auth nothing has counted it yet.
+	 */
+	public function count_app_password_failure(): void {
+		$guard = $this->login_guard();
+		// An XML-RPC attempt holds a reservation made at priority 1; wp_login_failed settles it.
+		if ( ! $this->counts_login_attempts() || ( $guard->has_reservation() && ! $this->app_reserved ) ) {
+			return;
+		}
+		$this->app_reserved = false;
+		$name               = isset( $_SERVER['PHP_AUTH_USER'] ) ? sanitize_user( wp_unslash( (string) $_SERVER['PHP_AUTH_USER'] ) ) : '';
+		if ( $this->client_is_allowlisted() ) {
+			return;
+		}
+		$guard->record_failure( $this->client_key(), $name, array_merge( $this->log_context(), array( 'ip' => $this->client_ip() ) ) );
+	}
+
+	/**
+	 * Reserve the attempt for a REST application-password check, and don't let a locked-out
+	 * client (or one past the limit) try at all: say it isn't an API request, so core skips the check.
+	 *
+	 * @param mixed $is_api_request Core's answer.
+	 * @return mixed
+	 */
+	public function refuse_app_password_when_locked( $is_api_request ) {
+		if ( ! $is_api_request || ! $this->counts_login_attempts() ) {
+			return $is_api_request;
+		}
+		$guard = $this->login_guard();
+		$key   = $this->client_key();
+		if ( $guard->is_locked_out( $key ) ) {
+			return false;
+		}
+		// XML-RPC already reserved at authenticate priority 1; REST Basic auth has not.
+		if ( ! $guard->has_reservation() && $guard->reserve( $key ) > 0 ) {
+			$this->app_reserved = true;
+			if ( $guard->refusal_seconds( $key ) > 0 ) {
+				return false;
+			}
+		}
+		return $is_api_request;
+	}
+
+	/** An application password was accepted: give back the REST reservation. */
+	public function release_app_password_reservation(): void {
+		if ( $this->app_reserved ) {
+			$this->login_guard()->release( $this->client_key() );
+			$this->app_reserved = false;
+		}
+	}
+
+	/**
+	 * REST authentication result: a locked-out client using Basic auth gets a lockout error,
+	 * and with generic errors on, credential errors stop saying which part was wrong.
+	 *
+	 * @param mixed $result Result so far (true, WP_Error or null).
+	 * @return mixed
+	 */
+	public function filter_rest_authentication_errors( $result ) {
+		$guard = $this->login_guard();
+		if ( ! $guard->is_enabled() ) {
+			return $result;
+		}
+		if ( isset( $_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW'] ) && $this->counts_login_attempts() && $guard->refusal_seconds( $this->client_key() ) > 0 ) {
+			return new \WP_Error( 'wp_bouncer_locked_out', __( '<strong>Error:</strong> Too many failed login attempts. Please try again later.', 'wp-bouncer' ), array( 'status' => 403 ) );
+		}
+		if ( $guard->wants_generic_errors() && is_wp_error( $result ) && array_intersect( $result->get_error_codes(), array( 'invalid_username', 'invalid_email', 'incorrect_password', 'application_passwords_disabled_for_user' ) ) ) {
+			return new \WP_Error( 'wp_bouncer_invalid_credentials', __( '<strong>Error:</strong> The username or password you entered is incorrect.', 'wp-bouncer' ), array( 'status' => 401 ) );
+		}
+		return $result;
+	}
+
+	/** Are login attempts from this client counted (enabled, enforcing, not allowlisted, bannable)? */
+	private function counts_login_attempts(): bool {
+		return $this->login_guard()->is_enabled() && ! $this->settings->is_monitor_mode() && ! $this->client_is_allowlisted() && $this->client_can_be_banned();
+	}
+
+	/**
 	 * Refuse authentication from locked-out IPs and make error messages generic.
 	 *
-	 * This covers every login path, including XML-RPC, REST application
-	 * passwords and custom login forms, not just wp-login.php.
+	 * This covers every path that goes through the `authenticate` filter:
+	 * wp-login.php, XML-RPC and custom login forms. REST application
+	 * passwords bypass that filter (core checks them on determine_current_user),
+	 * so they are handled by count_app_password_failure(),
+	 * refuse_app_password_when_locked() and filter_rest_authentication_errors().
 	 *
 	 * @param \WP_User|\WP_Error|null $user Result so far.
 	 * @return \WP_User|\WP_Error|null
@@ -731,12 +900,9 @@ final class Plugin {
 			return $user;
 		}
 
-		if ( ! $this->settings->is_monitor_mode() && ! $this->client_is_allowlisted() && $this->client_can_be_banned() ) {
-			$remaining = $guard->lockout_remaining( $this->client_key() );
-			// Failures already at the limit: refuse now, before the lockout is written (shortens the race window).
-			if ( 0 === $remaining && $guard->failures( $this->client_key() ) >= $guard->max_attempts() ) {
-				$remaining = 60;
-			}
+		if ( $this->counts_login_attempts() ) {
+			// A lockout, or an attempt reserved past the limit (or failures already at it): refuse whatever the password check said.
+			$remaining = $guard->refusal_seconds( $this->client_key() );
 			if ( $remaining > 0 ) {
 				return new \WP_Error(
 					'wp_bouncer_locked_out',
@@ -747,6 +913,10 @@ final class Plugin {
 					)
 				);
 			}
+		}
+
+		if ( $user instanceof \WP_User ) {
+			$guard->release( $this->client_key() );
 		}
 
 		if ( $guard->wants_generic_errors() && is_wp_error( $user ) && array_intersect( $user->get_error_codes(), array( 'invalid_username', 'incorrect_password', 'invalid_email' ) ) ) {

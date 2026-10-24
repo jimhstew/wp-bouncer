@@ -551,15 +551,20 @@ final class PluginTest extends IntegrationTestCase {
 
 	public function test_failures_at_the_limit_refuse_before_any_lockout_exists(): void {
 		$this->fake_request( array( 'REMOTE_ADDR' => '203.0.113.9' ) );
-		$this->plugin->store()->set( 'login_fail:203.0.113.9', 5, 900 );
+		$counter = $this->plugin->attempt_counter();
+		$counter->delete( 'login_n:203.0.113.9' );
+		for ( $i = 0; $i < 5; $i++ ) {
+			$counter->add_or_increment( 'login_n:203.0.113.9', 900 );
+		}
 
 		$this->assertNull( $this->plugin->store()->get( 'login_lock:203.0.113.9' ) );
 		$result = $this->plugin->filter_authenticate( null );
 		$this->assertWPError( $result );
 		$this->assertSame( 'wp_bouncer_locked_out', $result->get_error_code() );
 
-		$this->plugin->store()->set( 'login_fail:203.0.113.9', 4, 900 );
+		$counter->decrement( 'login_n:203.0.113.9' );
 		$this->assertNull( $this->plugin->filter_authenticate( null ), 'below the limit' );
+		$counter->delete( 'login_n:203.0.113.9' );
 	}
 
 	/* ---------------- user enumeration leaks (RT-15) ---------------- */

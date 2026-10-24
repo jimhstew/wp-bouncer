@@ -158,7 +158,14 @@ final class LoginGuardTest extends TestCase {
 	}
 
 	public function test_context_is_attached_to_log(): void {
-		$this->guard()->record_failure( self::IP, 'admin', array( 'uri' => '/wp-login.php', 'country' => 'DE' ) );
+		$this->guard()->record_failure(
+			self::IP,
+			'admin',
+			array(
+				'uri'     => '/wp-login.php',
+				'country' => 'DE',
+			)
+		);
 		$this->assertSame( '/wp-login.php', $this->log->entries[0]['uri'] );
 		$this->assertSame( 'DE', $this->log->entries[0]['country'] );
 		$this->assertSame( self::IP, $this->log->entries[0]['ip'] );
@@ -167,7 +174,13 @@ final class LoginGuardTest extends TestCase {
 	public function test_rule_refuses_login_posts_from_locked_out_ip(): void {
 		$guard = $this->guard();
 		$rule  = new LoginLockoutRule( $this->settings(), $guard );
-		$post  = Requests::make( array( 'uri' => '/wp-login.php', 'method' => 'POST', 'ip' => self::IP ) );
+		$post  = Requests::make(
+			array(
+				'uri'    => '/wp-login.php',
+				'method' => 'POST',
+				'ip'     => self::IP,
+			)
+		);
 
 		$this->assertNull( $rule->inspect( $post ) );
 
@@ -176,11 +189,40 @@ final class LoginGuardTest extends TestCase {
 		$verdict = $rule->inspect( $post );
 		$this->assertNotNull( $verdict );
 		$this->assertSame( 30 * 60, $verdict->retry_after() );
-		$this->assertNotNull( $rule->inspect( Requests::make( array( 'uri' => '/xmlrpc.php', 'method' => 'POST', 'ip' => self::IP ) ) ) );
+		$this->assertNotNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri'    => '/xmlrpc.php',
+						'method' => 'POST',
+						'ip'     => self::IP,
+					)
+				)
+			)
+		);
 
 		// Viewing the form and browsing the site still work.
-		$this->assertNull( $rule->inspect( Requests::make( array( 'uri' => '/wp-login.php', 'ip' => self::IP ) ) ) );
-		$this->assertNull( $rule->inspect( Requests::make( array( 'uri' => '/', 'method' => 'POST', 'ip' => self::IP ) ) ) );
+		$this->assertNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri' => '/wp-login.php',
+						'ip'  => self::IP,
+					)
+				)
+			)
+		);
+		$this->assertNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri'    => '/',
+						'method' => 'POST',
+						'ip'     => self::IP,
+					)
+				)
+			)
+		);
 	}
 
 	public function test_rule_ignores_a_lockout_for_a_client_that_cannot_be_banned(): void {
@@ -188,18 +230,52 @@ final class LoginGuardTest extends TestCase {
 		$rule  = new LoginLockoutRule( $this->settings(), $guard );
 		$guard->record_failure( self::IP, 'admin' );
 
-		$this->assertNotNull( $rule->inspect( Requests::make( array( 'uri' => '/wp-login.php', 'method' => 'POST', 'ip' => self::IP ) ) ) );
-		$this->assertNull( $rule->inspect( Requests::make( array( 'uri' => '/wp-login.php', 'method' => 'POST', 'ip' => self::IP, 'bannable' => false ) ) ) );
+		$this->assertNotNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri'    => '/wp-login.php',
+						'method' => 'POST',
+						'ip'     => self::IP,
+					)
+				)
+			)
+		);
+		$this->assertNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri'      => '/wp-login.php',
+						'method'   => 'POST',
+						'ip'       => self::IP,
+						'bannable' => false,
+					)
+				)
+			)
+		);
 	}
 
 	public function test_login_lockout_still_acts_for_an_unlisted_public_peer(): void {
 		$resolver = new \WPBouncer\Firewall\IpResolver( 'x_real_ip', array( '198.51.100.1' ) );
-		$server   = array( 'REMOTE_ADDR' => '203.0.113.7', 'HTTP_X_REAL_IP' => '203.0.113.99' );
+		$server   = array(
+			'REMOTE_ADDR'    => '203.0.113.7',
+			'HTTP_X_REAL_IP' => '203.0.113.99',
+		);
 		$ip       = $resolver->resolve( $server );
 		$this->assertTrue( \WPBouncer\Support\IpUtils::is_bannable( $ip, $resolver->proxies(), $resolver->suspends_bans( $server ) ) );
 		$guard = $this->guard();
 		$rule  = new LoginLockoutRule( $this->settings(), $guard );
 		$guard->record_failure( $ip, 'admin' );
-		$this->assertNotNull( $rule->inspect( Requests::make( array( 'uri' => '/wp-login.php', 'method' => 'POST', 'ip' => $ip ) ) ) );
+		$this->assertNotNull(
+			$rule->inspect(
+				Requests::make(
+					array(
+						'uri'    => '/wp-login.php',
+						'method' => 'POST',
+						'ip'     => $ip,
+					)
+				)
+			)
+		);
 	}
 }
