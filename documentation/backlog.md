@@ -41,6 +41,7 @@ Method: **RICE** (Reach x Impact x Confidence / Effort), with one override: **se
 | WPB-9 | Rules tab: category blocks in columns, larger headings | P3 | RICE: Reach 8 x Impact 0.25 x Confidence 0.8 / Effort 0.5 = 3.2. Cosmetic, UI-only, so it ranks below all security and functional work. |
 | WPB-10a | Activity Log and Traffic tab: long Request / User-Agent values overlap the next column (bug) | P2 | Severity: cosmetic, top of its class (values are unreadable, though still reachable via the title tooltip). RICE: Reach 6 x Impact 0.5 x Confidence 0.5 / Effort 0.5 = 3.0, with low confidence until reproduced. Ranked above WPB-9 because it hides data rather than just looking plain. |
 | WPB-10b | Resizable columns (drag) on Activity Log and Traffic tab | P3 | RICE: Reach 5 x Impact 0.5 x Confidence 0.8 / Effort 1.5 = 1.3. Owner-requested convenience; the bug fix removes most of the pain first. |
+| WPB-12 | Detect settings changes made while the plugin wasn't loaded | P2 | Security detection gap (WPB8-RT-02). Not yet RICE-scored; target 1.2.2 or 1.3.0. |
 | WPB-11 | Activity Log: threat hotspot map by country | P3 | RICE: Reach 6 x Impact 1 x Confidence 0.5 / Effort 4 = 0.75. Owner-requested, new capability with an asset-licence and accessibility cost (hence the low confidence and L effort). Ranks last: nothing is broken without it, and it needs a new minor release. |
 
 No other open items are scored. "Later" items are unscored candidates.
@@ -50,7 +51,7 @@ No other open items are scored. "Later" items are unscored candidates.
 | Release | Status | Contents | Why this number |
 |---|---|---|---|
 | **1.2.0** (minor) | Released 2026-10-24 (tag v1.2.0, commit 072805e) | See "Done" | New backwards-compatible features, plus the 1.1.2 and 1.1.3 work, which was never released separately. |
-| **1.2.1** (patch) | Planned | WPB-8, WPB-9 | WPB-8 is a security fix to existing behaviour; WPB-9 is a presentation-only change. No new settings keys or breaking change in either. |
+| **1.2.1** (patch) | Ready to tag 2026-10-24 (WPB-8, WPB-9, WPB-10a, WPB-10b) | WPB-8, WPB-9 | WPB-8 is a security fix to existing behaviour; WPB-9 is a presentation-only change. No new settings keys or breaking change in either. |
 | **1.2.1** (patch), addition | Proposed | WPB-10a | CSS-only bug fix (no new JS, settings or storage). Goes with WPB-8 and WPB-9; if 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
 | **1.2.1** (patch), addition | Owner decision 2026-10-24 | WPB-10b | New JS and a new capability would normally be a minor bump; the owner chose to ship it in the patch release. It is backwards compatible, with no settings keys or storage change (browser `localStorage` only). If 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
 | **1.3.0** (minor) | Proposed | WPB-11 | New user-facing capability (map, new JS and bundled map asset, one cache transient, no schema change). Backwards compatible, so a minor bump. |
@@ -79,6 +80,7 @@ Accepted open risk: RT-01 (unsigned updates), because release signing (SB-07 / A
 
 ## WPB-8: Audit settings changes made outside the admin UI (S13 gap)
 - **Type:** bug (security, incomplete control)
+- **Status:** done, awaiting release in 1.2.1.
 - **Priority:** P1. Security work jumps the queue. Not Critical or High: it needs an already-privileged actor, and the logging is a detection control, not a protection. So it goes in the next patch release, not a hotfix.
 - **Effort:** S
 - **Risk:** Low to medium. Option hooks fire on every update of the option, including our own saves, so a naive hook would log twice. Hooks must not slow the firewall path (register them only where settings are written, not at `plugins_loaded` priority 1 on every front-end request if avoidable).
@@ -161,6 +163,7 @@ Split into two deliverables so the fix does not wait for the feature.
 7. Changelog **Fixed** entry. No readme Upgrade Notice.
 
 ### WPB-10b: Drag-to-resize columns on Activity Log and Traffic tab (feature)
+- **Status:** done, awaiting release in 1.2.1.
 - **Type:** feature
 - **Priority:** P3. See the table above.
 - **Effort:** M
@@ -188,6 +191,19 @@ Split into two deliverables so the fix does not wait for the feature.
 - None. WPB-10a was reproduced and its fix confirmed by the owner (Firefox on macOS, 2026-10-24).
 
 (Closed 2026-10-24: persistence is per-browser `localStorage`; ships in 1.2.1; the two tables keep separate widths, stored per column.)
+
+## WPB-12: Detect settings changes made while the plugin wasn't loaded
+- **Type:** feature (security detection, follow-up to WPB-8)
+- **Priority:** P2. Not yet RICE-scored, so it sits outside the table's ranking until it is.
+- **Target:** 1.2.2 or 1.3.0. Not in 1.2.1.
+- **Source:** WPB8-RT-02 (the WPB-8 review). The finding is not in `documentation/security/` in this repository, so its text is not checked here.
+- **Effort:** not yet sized.
+
+**Gap.** WPB-8 audits settings writes only while WP Bouncer is loaded. A change made while the plugin isn't loaded (for example `wp --skip-plugins`), or by editing the database directly, is not logged (see the 1.2.1 Known limits in `documentation/CHANGELOG.md`).
+
+**Proposed approach.** After each audited write, store a fingerprint of the settings. In daily maintenance and on `admin_init`, compare the current settings with the stored fingerprint and log any difference. The fingerprint and the comparison are for the developer to design; no acceptance criteria are set yet.
+
+---
 
 ## WPB-11: Activity Log: threat hotspot map by country
 Owner request (verbatim): "Add a map to the activity log showing the hotspots for where threats are coming from. The dots should highlight the country where the threat is coming from and get more and more bright red the more attacks are seen from that country. The mouseover for the threat dots should give the country name and abbreviation, as well the total number of detected threats."
@@ -233,6 +249,7 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 
 - **Raise PHPStan level** beyond what WPB-1 reached (level 7).
 - **Live count of active bans** (needs an index of bans; see the dashboard widget design).
+- **Screen Options column toggles on the Log and Traffic tabs** (found during WPB-10b). None are shown today (see `documentation/architecture/column-resize.md` §3). Unscored. The WPB-10b resize code already skips hidden columns, so it would work once they exist.
 - **Update-channel signing** (SB-07 / ADR 002, deferred; likely a separate L item).
 - **Per-category quick actions** (for example "monitor this category only") if the owner wants a category-level control.
 - **Network (multisite) dashboard widget and network-wide settings**, if the owner wants multisite super-admin visibility.

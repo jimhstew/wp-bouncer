@@ -140,11 +140,27 @@
 .wpb-savebar .submit { margin: 8px 0; padding: 0; }
 .wpb-unsaved { font-weight: 600; color: #8a5a00; }
 
+/* Column resize (WPB-10b) */
+.wpb-cols-on th[data-wpb-col] { position: relative; }
+/* Room for the handle is reserved only on cells that have one, so it never covers a sort link (AC1). */
+.wpb-has-handle:not(.sortable):not(.sorted) { padding-inline-end: 24px; }
+.wpb-has-handle > a { margin-inline-end: 24px; }
+.wpb-col-handle { position: absolute; inset-block: 0; inset-inline-end: 0; width: 24px; cursor: col-resize; touch-action: none; user-select: none; }
+.wpb-col-handle::after { content: ""; position: absolute; inset-block: 4px; inset-inline-end: 0; width: 2px; background: #c3c4c7; }
+.wpb-col-handle:hover::after, .wpb-col-handle:active::after, .wpb-col-handle:focus::after { background: #2271b1; }
+.wpb-col-handle:focus-visible { outline: 2px solid #2271b1; outline-offset: -2px; }
+body.wpb-col-dragging { cursor: col-resize; user-select: none; }
+.wpb-cols-fixed { table-layout: fixed; }
+.wpb-cols-fixed th { box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wpb-cols-reset[hidden] { display: none; }
+
 @media (forced-colors: active) {
 	.wpb-slider { border: 1px solid CanvasText; }
 	.wpb-switch input:checked + .wpb-slider { background: Highlight; }
 	.wpb-badge, .wpb-rule-flag { border: 1px solid CanvasText; }
 	.wpb-rule-settings > summary { border-color: LinkText; color: LinkText; }
+	.wpb-col-handle::after { background: CanvasText; }
+	.wpb-col-handle:focus-visible { outline-color: Highlight; }
 }
 
 @media (max-width: 782px) {
@@ -152,4 +168,6 @@
 	.wpb-savebar { position: static; }
 	.wpb-country-toolbar { top: 46px; }
 	.wpb-grid { grid-template-columns: 1fr; }
+	.wpb-col-handle, .wpb-cols-reset { display: none; }
+	.wpb-cols-fixed { table-layout: auto; }
 }

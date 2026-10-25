@@ -39,9 +39,9 @@ WordPress continues normally
 
 | Layer | Classes | Talks to WordPress? |
 |---|---|---|
-| Decision core | `Firewall\*` (including `FetchContext`, `IpSetupAdvisor`), `Rules\*`, `Login\LoginGuard`, `Settings`, `SettingsDiff`, `Support\*` (including `CounterSubject`, `UrlRedactor`, `CsvSanitizer`), `Log\WriteBudget`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Geo\GeoUrlPolicy`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry`, `Environment\*` checks and `Environment\SupportPolicy`, `Admin\RuleCatalog` (rule categories), `Admin\RuleStatus` (the one status every screen reads) and `Admin\WidgetStats` (widget numbers) | **No.** Pure PHP, unit-tested |
+| Decision core | `Firewall\*` (including `FetchContext`, `IpSetupAdvisor`), `Rules\*`, `Login\LoginGuard`, `Settings`, `SettingsDiff`, `Audit\SettingsChange` and `Audit\AuditActor` (settings audit, see [settings-audit](architecture/settings-audit.md)), `Support\*` (including `CounterSubject`, `UrlRedactor`, `CsvSanitizer`), `Log\WriteBudget`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Geo\GeoUrlPolicy`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry`, `Environment\*` checks and `Environment\SupportPolicy`, `Admin\RuleCatalog` (rule categories), `Admin\RuleStatus` (the one status every screen reads) and `Admin\WidgetStats` (widget numbers) | **No.** Pure PHP, unit-tested |
 | Storage adapters | `Storage\TransientStore`, `Storage\TableCounter`, `Storage\ObjectCacheCounter`, `Storage\RedactionMigration`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport`, `Traffic\TrafficLog` | Yes (transients, object cache, `$wpdb`) |
-| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Admin\RuleOverview` (gathers the facts and runs `wp_bouncer_rule_info`), `Admin\RuleLabels` (translated text), `Admin\DashboardWidget` (capability and transient cache), `Traffic\TrafficRecorder` (shutdown hook, purge cron), `Log\BudgetedBlockLog` (decorator around `BlockLog`), `Privacy\PrivacyTools` (exporter, erasers, policy text), `Environment\EnvironmentAdmin` and `SiteHealth` | Yes |
+| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Admin\RuleOverview` (gathers the facts and runs `wp_bouncer_rule_info`), `Admin\RuleLabels` (translated text), `Admin\DashboardWidget` (capability and transient cache), `Traffic\TrafficRecorder` (shutdown hook, purge cron), `Log\BudgetedBlockLog` (decorator around `BlockLog`), `Privacy\PrivacyTools` (exporter, erasers, policy text), `Audit\SettingsAuditor` (option hooks: audits every `wp_bouncer_settings` write, UI or not), `Environment\EnvironmentAdmin` and `SiteHealth` | Yes |
 
 Collaborators reach the core through four interfaces, each with a test double in `tests/Support/`:
 
@@ -80,6 +80,8 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 **Dashboard widget.** `Admin\WidgetStats` builds the numbers from the log with no WordPress calls. `Admin\DashboardWidget` checks the capability, caches the result in transients (5 minutes, or an hour while the log is flooded) and clears the cache when the log is cleared, settings change, or the daily purge runs.
 
+**Column widths stay in the browser.** On the Activity Log and Traffic tabs only, `assets/columns.js` (handle `wp-bouncer-cols`, enqueued when `tab` is `log` or `traffic`) lets the admin drag or key-resize columns. `Admin\ColumnResize` adds allowlisted `data-wpb-col` attributes to core's header markup. Widths are kept in `localStorage` (`wpb_cols:<table>:<column>`) and are never sent to the server, so there are no options, requests or uninstall steps. See [architecture/column-resize.md](architecture/column-resize.md).
+
 **Settings forms.** Each admin tab owns specific keys (`Settings::TAB_FIELDS`). `Settings::apply_form()` replaces only those keys, so an unticked checkbox on one tab can't change another tab's settings. Everything then passes through `Settings::sanitize()`, which allow-lists every value.
 
 **Self-lockout guard.** Before saving, `AdminController` runs the IP-blocklist, country and User-Agent rules from the *new* settings against the admin's own request. If any of them would block it, the admin's IP is added to the allowlist and the admin is told.
@@ -105,6 +107,7 @@ Collaborators reach the core through four interfaces, each with a test double in
 | Option `wpb_disabled_alerted` (internal) | Time of the last `WP_BOUNCER_DISABLE` reminder (one a day) |
 | Option `wp_bouncer_uploads_htaccess` | Fingerprint of the uploads `.htaccess` block last written, and whether that worked |
 | Option `wp_bouncer_uploads_probe` | Result of the last uploads **Test now** |
+| Browser `localStorage` `wpb_cols:<table>:<column>` | Column widths on the Log and Traffic tabs (integer px). Browser-only, never sent to the server, so not touched by uninstall or the privacy eraser |
 | `wp-content/uploads/.htaccess` | The `# BEGIN WP Bouncer` … `# END WP Bouncer` block. Other lines in the file are never touched |
 
 Deactivating keeps the data but removes the uploads `.htaccess` block. Deleting the plugin runs `uninstall.php`, which removes all of it.

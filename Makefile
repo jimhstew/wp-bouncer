@@ -4,6 +4,7 @@
 #   make manifest   Also write builds/update.json and release-notes.md (needs PHP). The release
 #                   workflow attaches these to the GitHub release; installed sites read update.json.
 #   make test       Unit tests (needs PHP and `composer install`)
+#   make test-js    JS logic tests with node --test (skipped if node is missing)
 #   make integration  WordPress integration tests (needs PHP with mysqli and a MySQL/MariaDB;
 #                   set WPB_TESTS_DB_HOST/USER/PASSWORD/NAME, optionally WP_VERSION=7.0)
 #   make analyse    PHPStan static analysis
@@ -43,7 +44,7 @@ SOURCES  := $(shell find $(SRC) -type f ! -name '.DS_Store')
 # Files that must never ship.
 FORBIDDEN := -e '/tests/' -e 'Test\.php$$' -e '/fixtures/' -e 'phpunit' -e '\.phar$$' -e '/\.' -e 'composer\.'
 
-.PHONY: all build manifest test integration analyse lint e2e check clean version
+.PHONY: all build manifest test test-js integration analyse lint e2e check clean version
 
 all: build
 
@@ -92,6 +93,10 @@ vendor/autoload.php: composer.json
 
 test: vendor/autoload.php
 	$(PHP) vendor/bin/phpunit
+
+# Node's built-in runner: no npm, no package.json. Skipped when node is missing.
+test-js:
+	@if command -v node >/dev/null 2>&1; then node --test tests/js/*.test.js; else echo "node not found, skipping JS tests"; fi
 
 WP_VERSION  ?= latest
 WP_CORE_DIR ?= $(CURDIR)/builds/wp-core/$(WP_VERSION)

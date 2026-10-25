@@ -217,15 +217,15 @@ add_filter( 'wp_bouncer_login_allowed_origins', static function ( $origins ) {
 
 | Action | Signature | When |
 |---|---|---|
-| `wp_bouncer_settings_changed` | `do_action( 'wp_bouncer_settings_changed', string[] $changes, array $old, array $new )` | After a save that changed something. `$changes` are dotted key paths such as `rules.xmlrpc.enabled`; a list setting (allowlist, countries) counts as one path. `$old` and `$new` are the full settings before and after. Fired from `AdminController::save()`, which every settings write goes through. |
+| `wp_bouncer_settings_changed` | `do_action( 'wp_bouncer_settings_changed', string[] $changes, array $old, array $new, string $actor )` | After every real change to the settings, from any source: the admin screen, WP-CLI, cron or code calling `update_option()`. Not fired when nothing changed. `$changes` are dotted key paths such as `rules.xmlrpc.enabled`; a list setting (allowlist, countries) counts as one path. `$old` and `$new` are the full settings before and after, and hold values, so listeners must not log them. `$actor` is who made the change, as written in the Activity Log: `login #ID (context)` (for example `jim #1 (cli)`), or `cli`, `cron`, `rest`, `ajax` or `upgrade` when no user is signed in, or `unknown`. The hook does no capability check, so firing it doesn't mean the actor was allowed to change anything. Fired from `WPBouncer\Audit\SettingsAuditor`, after the row is written and any alert is queued. |
 | `wp_bouncer_log_cleared` | `do_action( 'wp_bouncer_log_cleared' )` | After the Activity Log is emptied from its screen. The Dashboard widget drops its cached numbers. The handler then writes one audit row and sends the `firewall_changes` email when that alert is on. No arguments. |
 
-Example: log every settings change to a site's own audit trail:
+Example: log every settings change, with who made it, to a site's own audit trail. The listener logs only the key paths, never `$old` or `$new`:
 
 ```php
-add_action( 'wp_bouncer_settings_changed', static function ( array $changes, array $old, array $new ) {
-	error_log( 'WP Bouncer settings changed: ' . implode( ', ', $changes ) );
-}, 10, 3 );
+add_action( 'wp_bouncer_settings_changed', static function ( array $changes, array $old, array $new, string $actor ) {
+	error_log( 'WP Bouncer settings changed by ' . $actor . ': ' . implode( ', ', $changes ) );
+}, 10, 4 );
 ```
 
 ### Constants (wp-config.php)

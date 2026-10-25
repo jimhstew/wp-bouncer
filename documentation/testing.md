@@ -95,7 +95,7 @@ WPB_E2E_DB=mysql WPB_E2E_DB_USER=root WPB_E2E_DB_PASSWORD=root WPB_E2E_WP_VERSIO
 
 ## Integration tests
 
-`make integration` runs the PHPUnit suite in `tests/Integration/` inside the WordPress test library, against a real MySQL or MariaDB database. It covers what the unit tests can't: the installer, the block log, the traffic log and its recorder, geo database and import, the uploads guard, alerts, the updater, uninstall, the WordPress hooks in `PluginTest`, and the admin screens and self-lockout guard. Also the Rules tab (`Integration/Admin/RulesTabTest`): its markup and deep links, third-party rows, the Dashboard overview, and the round trip. The round trip renders the form, submits it the way a browser does, and checks that saving changes no setting. It runs with defaults and with `tests/fixtures/rules-non-default.php`, where every rule is set away from its default. Also the Dashboard widget, privacy tools, and the settings audit (`ConfigurationAuditTest`, including the alert when log retention is lowered).
+`make integration` runs the PHPUnit suite in `tests/Integration/` inside the WordPress test library, against a real MySQL or MariaDB database. It covers what the unit tests can't: the installer, the block log, the traffic log and its recorder, geo database and import, the uploads guard, alerts, the updater, uninstall, the WordPress hooks in `PluginTest`, and the admin screens and self-lockout guard. Also the Rules tab (`Integration/Admin/RulesTabTest`): its markup and deep links, third-party rows, the Dashboard overview, and the round trip. The round trip renders the form, submits it the way a browser does, and checks that saving changes no setting. It runs with defaults and with `tests/fixtures/rules-non-default.php`, where every rule is set away from its default. Also the Dashboard widget, privacy tools, and the settings audit (`ConfigurationAuditTest`, including the alert when log retention is lowered; `Audit/SettingsAuditorTest` for settings written outside the admin UI, including a switched-blog write on multisite).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -129,3 +129,22 @@ The e2e suite runs on SQLite by default, and CI runs it on MySQL/MariaDB too (se
 8. **General → Email alerts → Send a test email** arrives through the site's real mail setup.
 9. Upgrade: on a copy of a 1.1.x site, update to this build. Check that the option `wp_bouncer_db_version` is 3, that `wp_bouncer_counters` exists, that the traffic table has its `user_id` index, and that the redaction finishes (the option `wp_bouncer_migration_3` is deleted) within a few minutes of cron running.
 10. Rules tab with JavaScript and assistive technology (hash opening, focus, `invalid` fields, unsaved-change text, keyboard and screen readers, RTL, high contrast): work through [architecture/rules-ui-checklist.md](architecture/rules-ui-checklist.md) before tagging 1.2.0. No automated suite covers these behaviours.
+
+## WPB-10b manual checks
+
+Resizable columns on Activity Log and Traffic. Chrome, Firefox and Safari; no automated browser test covers these. Record the result in the PR.
+
+- Drag a handle: the column widens and narrows live, with no overlap and no horizontal page scroll.
+- Arrow Left/Right on a focused handle changes the width by a small step; Shift+Arrow by a large step.
+- Home sets the minimum width, End the maximum; Esc restores the width from before the drag or key press.
+- Double-click a handle: that column returns to its default width.
+- Reset button: appears once a width is changed, resets that table only, then hides again.
+- Click a header label: the table sorts. Press and release on the handle: it never sorts.
+- Click just beside the handle (edge of the label): sorts, and does not start a drag.
+- Reload: the widths are kept.
+- Resize `Request` on Log, then open Traffic: its `Request` column keeps its own width, and a Log reset leaves Traffic's width alone.
+- At 782px or narrower: no handles, auto table layout, long values still clip.
+- RTL (site language he_IL): handles on the left edge, drag and arrow directions mirrored.
+- Forced colors (Windows contrast theme or Chrome emulation): handle and its focus ring are visible.
+- Hostile storage: in devtools set `localStorage['wpb_cols:log:request']` to `<img src=x onerror=alert(1)>`, `-5`, `1e9`, `{` and `12px;background:url(//x)`, then reload. No dialog, no request, layout is sane.
+- With `Storage.prototype.setItem` throwing, dragging still works for the session and nothing errors.

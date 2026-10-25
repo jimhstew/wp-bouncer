@@ -13,6 +13,7 @@ namespace WPBouncer\Tests\Integration\Alerts;
 
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Log\BlockLog;
+use WPBouncer\Settings;
 use WPBouncer\Tests\Integration\IntegrationTestCase;
 
 /**
@@ -521,5 +522,104 @@ final class AlertNotifierTest extends IntegrationTestCase {
 		$this->notifier->send_test();
 
 		$this->assertSame( $before, has_action( 'wp_mail_failed' ) );
+	}
+
+	/** Queue and flush one risky settings change. */
+	private function settings_alert( int $n ): void {
+		$this->notifier->on_risky_settings_change( array( 'allowlist' ), array( 'allowlist' ), array(), Settings::defaults(), 'jim #1 (cli)' );
+		$this->notifier->flush();
+	}
+
+	public function test_settings_alerts_have_their_own_hourly_cap_and_one_throttle_notice(): void {
+		for ( $i = 0; $i < 25; $i++ ) {
+			$this->settings_alert( $i );
+		}
+		$mail = $this->sent_mail();
+		// 10 alerts, then one "throttled" notice; the other 14 are not emailed.
+		$this->assertCount( 11, $mail );
+		$this->assertStringContainsString( 'Firewall settings changed', $this->subject( $mail, 0 ) );
+		$notices = array_filter( $mail, static fn( $m ) => false !== strpos( (string) $m['subject'], 'throttled' ) );
+		$this->assertCount( 1, $notices );
+	}
+
+	public function test_a_new_admin_alert_still_sends_after_25_settings_changes(): void {
+		for ( $i = 0; $i < 25; $i++ ) {
+			$this->settings_alert( $i );
+		}
+		$this->clear_mail();
+		self::factory()->user->create( array( 'role' => 'administrator' ) );
+		$mail = $this->flush();
+		$this->assertCount( 1, $mail );
+		$this->assertStringContainsString( 'administrator', strtolower( $this->subject( $mail ) ) );
+	}
+
+	public function test_a_settings_alert_names_the_actor_and_its_own_site(): void {
+		$this->settings_alert( 0 );
+		$mail = $this->sent_mail();
+		$this->assertCount( 1, $mail );
+		$this->assertStringContainsString( 'Done by:    jim #1 (cli)', (string) $mail[0]['body'] );
+		$this->assertStringContainsString( home_url( '/' ), (string) $mail[0]['body'] );
+	}
+
+	public function test_a_failed_audit_row_is_said_in_the_alert(): void {
+		$this->notifier->on_risky_settings_change( array( 'allowlist' ), array( 'allowlist' ), array(), Settings::defaults(), 'jim', false );
+		$mail = $this->flush();
+		$this->assertStringContainsString( 'could not be written', (string) $mail[0]['body'] );
+	}
+
+	public function test_a_change_that_turns_alerts_off_is_never_capped(): void {
+		for ( $i = 0; $i < 12; $i++ ) {
+			$this->settings_alert( $i );
+		}
+		$this->clear_mail();
+		$this->notifier->on_risky_settings_change( array( 'alerts.enabled' ), array( 'alerts.enabled' ), array(), Settings::defaults(), 'jim' );
+		$mail = $this->flush();
+		$this->assertCount( 1, $mail );
+		$this->assertStringContainsString( 'Firewall settings changed', $this->subject( $mail ) );
+	}
+
+	public function test_the_throttle_notice_is_per_site_with_only_that_sites_recipients(): void {
+		if ( ! is_multisite() ) {
+			$this->markTestSkipped( 'Multisite only.' );
+		}
+		$site2 = self::factory()->blog->create();
+		for ( $i = 0; $i < 10; $i++ ) {
+			$this->settings_alert( $i );
+		}
+		$this->clear_mail();
+		$alerts = array( 'recipients' => array( 'one@example.com' ) );
+		$this->notifier->on_risky_settings_change( array( 'allowlist' ), array( 'allowlist' ), array( 'alerts' => $alerts ), array( 'alerts' => array( 'enabled' => true, 'firewall_changes' => true, 'recipients' => array( 'one@example.com' ) ) ), 'jim' );
+		switch_to_blog( $site2 );
+		$this->notifier->on_risky_settings_change( array( 'allowlist' ), array( 'allowlist' ), array( 'alerts' => array( 'recipients' => array( 'two@example.com' ) ) ), array( 'alerts' => array( 'enabled' => true, 'firewall_changes' => true, 'recipients' => array( 'two@example.com' ) ) ), 'jim' );
+		restore_current_blog();
+		$mail = $this->flush();
+		$this->assertCount( 2, $mail, 'one throttle notice per site' );
+		foreach ( $mail as $m ) {
+			$this->assertStringContainsString( 'throttled', (string) $m['subject'] );
+		}
+		$this->assertNotSame( $mail[0]['to'], $mail[1]['to'] );
+	}
+
+	public function test_switching_new_admin_alerts_off_still_sends_after_the_settings_cap(): void {
+		for ( $i = 0; $i < 12; $i++ ) {
+			$this->settings_alert( $i );
+		}
+		$this->clear_mail();
+		$this->notifier->on_risky_settings_change( array( 'alerts.new_admin' ), array( 'alerts.new_admin' ), array(), Settings::defaults(), 'jim' );
+		$this->assertCount( 1, $this->flush() );
+	}
+
+	public function test_uncapped_alerts_stop_at_50_per_blog_and_hour(): void {
+		for ( $i = 0; $i < 50; $i++ ) {
+			$this->notifier->on_risky_settings_change( array( 'alerts.enabled' ), array( 'alerts.enabled' ), array(), Settings::defaults(), 'jim' );
+			$this->notifier->flush();
+		}
+		$this->assertCount( 50, $this->sent_mail() );
+		$this->clear_mail();
+		// Beyond the ceiling the normal settings cap applies (already used up by the 50 sends).
+		$this->notifier->on_risky_settings_change( array( 'alerts.enabled' ), array( 'alerts.enabled' ), array(), Settings::defaults(), 'jim' );
+		$mail = $this->flush();
+		$this->assertCount( 1, $mail );
+		$this->assertStringContainsString( 'throttled', $this->subject( $mail ) );
 	}
 }

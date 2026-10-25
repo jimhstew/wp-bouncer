@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 7.0
 Tested up to: 7.1
 Requires PHP: 8.3
-Stable tag: 1.2.0
+Stable tag: 1.2.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -94,6 +94,11 @@ It replaces the firewall, brute-force, country-blocking and rate-limiting parts.
 
 == Changelog ==
 
+= 1.2.1 =
+* Security fix: settings changes made with WP-CLI or from code are now logged and alerted, as changes on the admin screen already were. Settings-change alerts are limited to 10 an hour, except changes that could silence alerts. Turning off any alert now sends an alert.
+* New: drag the edge of a column heading to resize columns on the Activity Log and Traffic tab. Widths are kept in this browser.
+* Rules tab categories are shown in columns on wide screens, and long Request and User-Agent values no longer overlap the next column.
+
 = 1.2.0 =
 * Minimum versions are now PHP 8.3 and WordPress 7.0.
 * Upgrading creates a login-counter table and updates the traffic log's indexes. On a large traffic log this can take a while.
@@ -144,6 +149,9 @@ It replaces the firewall, brute-force, country-blocking and rate-limiting parts.
 * First release.
 
 == Upgrade Notice ==
+
+= 1.2.1 =
+Security fix: settings changes from WP-CLI or code are now logged and alerted. Adds resizable log columns.
 
 = 1.2.0 =
 Needs PHP 8.3 and WordPress 7.0, and runs a database upgrade. Bans and lockouts last at most 24 hours. Logins from other sites are refused unless allowed with a filter. Behind a proxy or CDN, list its addresses under Trusted proxies. Watch the log for WAF JSON blocks.

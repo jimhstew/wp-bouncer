@@ -33,10 +33,17 @@ final class AlertNotifier {
 
 	public const LOG_RULE = 'alerts';
 
-	private const MAX_PER_HOUR            = 20;
-	private const THROTTLE_KEY            = 'wpb_alert_count';
-	private const MAX_CRITICAL_PER_HOUR   = 20;
-	private const THROTTLE_KEY_CRITICAL   = 'wpb_alert_count_critical';
+	private const MAX_PER_HOUR          = 20;
+	private const THROTTLE_KEY          = 'wpb_alert_count';
+	private const MAX_CRITICAL_PER_HOUR = 20;
+	private const THROTTLE_KEY_CRITICAL = 'wpb_alert_count_critical';
+	/** Settings-change alerts have their own hourly cap, so they can't use up the critical budget. */
+	private const MAX_SETTINGS_PER_HOUR   = 10;
+	private const THROTTLE_KEY_SETTINGS   = 'wpb_alert_count_settings';
+	private const THROTTLE_KEY_SET_NOTICE = 'wpb_alert_settings_notice';
+	/** Ceiling on uncapped (alert-silencing) settings alerts per blog and hour; above it the normal settings cap applies. */
+	private const MAX_UNCAPPED_PER_HOUR   = 50;
+	private const THROTTLE_KEY_UNCAPPED   = 'wpb_alert_uncapped';
 	public const DISABLED_REMINDER_OPTION = 'wpb_disabled_alerted';
 
 	/**
@@ -104,10 +111,11 @@ final class AlertNotifier {
 	/**
 	 * Is this kind of alert switched on?
 	 *
-	 * @param string $kind new_admin|plugin_changes|plugin_updates|firewall_changes.
+	 * @param string                    $kind   new_admin|plugin_changes|plugin_updates|firewall_changes.
+	 * @param array<string, mixed>|null $alerts Alert settings to judge by instead of the loaded ones.
 	 */
-	private function wants( string $kind ): bool {
-		$s = $this->settings();
+	private function wants( string $kind, ?array $alerts = null ): bool {
+		$s = $alerts ?? $this->settings();
 		return ! empty( $s['enabled'] ) && ! empty( $s[ $kind ] );
 	}
 
@@ -331,7 +339,7 @@ final class AlertNotifier {
 	 */
 
 	/**
-	 * Queue an alert for risky settings changes (critical: its own email budget).
+	 * Queue an alert for risky settings changes (own hourly cap, separate from the critical budget).
 	 *
 	 * Call this BEFORE the new settings are loaded: whether to alert, and who
 	 * gets it, come from the settings in force until now. Otherwise one save
@@ -342,12 +350,21 @@ final class AlertNotifier {
 	 * The caller has already written the audit row to the Activity Log, so the
 	 * event is marked as logged. Only key paths are named, never values.
 	 *
-	 * @param string[]             $risky        The risky changed key paths (see SettingsDiff::risky()).
-	 * @param string[]             $all          Every changed key path.
-	 * @param array<string, mixed> $new_settings The settings being saved.
+	 * @param string[]                  $risky        The risky changed key paths (see SettingsDiff::risky()).
+	 * @param string[]                  $all          Every changed key path.
+	 * @param array<string, mixed>      $new_settings The settings being saved.
+	 * @param array<string, mixed>|null $old_settings The settings before the write. When given, whether to
+	 *                                           alert and the base recipients come from its "alerts" part, not from
+	 *                                           the loaded settings (which can be stale under WP-CLI, or belong to another blog).
+	 * @param string|null               $actor        Who did it, from the same builder as the Activity Log row.
+	 * @param bool                      $row_written  False when the Activity Log row could not be written (the alert says so).
 	 */
-	public function on_risky_settings_change( array $risky, array $all, array $new_settings = array() ): void {
-		if ( empty( $risky ) || ! $this->wants( 'firewall_changes' ) ) {
+	public function on_risky_settings_change( array $risky, array $all, array $new_settings = array(), ?array $old_settings = null, ?string $actor = null, bool $row_written = true ): void {
+		$old_alerts = null;
+		if ( null !== $old_settings ) {
+			$old_alerts = isset( $old_settings['alerts'] ) && is_array( $old_settings['alerts'] ) ? $old_settings['alerts'] : array();
+		}
+		if ( empty( $risky ) || ! $this->wants( 'firewall_changes', $old_alerts ) ) {
 			return;
 		}
 		$detail = 'Risky: ' . implode( ', ', $risky );
@@ -355,8 +372,35 @@ final class AlertNotifier {
 		if ( ! empty( $other ) ) {
 			$detail .= '. Also changed: ' . implode( ', ', $other );
 		}
+		if ( ! $row_written ) {
+			$detail .= '. The Activity Log row could not be written.';
+		}
 		$new_alerts = isset( $new_settings['alerts'] ) && is_array( $new_settings['alerts'] ) ? $new_settings['alerts'] : array();
-		$this->queue( 'firewall', 'Firewall settings changed', $detail, '', '', true, true, $this->firewall_recipients( $new_alerts ) );
+		// Own hourly cap (not the critical budget); site details are fixed now, not at shutdown.
+		$ctx = array(
+			'site_name'    => wp_specialchars_decode( (string) get_option( 'blogname' ), ENT_QUOTES ),
+			'site_url'     => home_url( '/' ),
+			'settings_url' => admin_url( 'admin.php?page=wp-bouncer&tab=general#wpb-alerts' ),
+		);
+		if ( null !== $actor ) {
+			$ctx['actor'] = $actor;
+		}
+		$this->queue(
+			'firewall',
+			'Firewall settings changed',
+			$detail,
+			'',
+			'',
+			false,
+			true,
+			$this->firewall_recipients( $new_alerts, $old_alerts ),
+			array(
+				'settings' => true,
+				'uncapped' => self::silences_alerts( $risky ),
+				'blog'     => get_current_blog_id(),
+				'ctx'      => $ctx,
+			)
+		);
 	}
 
 	/**
@@ -372,11 +416,12 @@ final class AlertNotifier {
 	 * Who gets firewall alerts: the current recipients, the recipients being
 	 * saved, and on multisite the network admin.
 	 *
-	 * @param array<string, mixed> $new_alerts The alerts settings being saved (empty when none).
+	 * @param array<string, mixed>      $new_alerts The alerts settings being saved (empty when none).
+	 * @param array<string, mixed>|null $old_alerts The alerts settings before the write; replaces the loaded ones as the base.
 	 * @return string[]
 	 */
-	private function firewall_recipients( array $new_alerts = array() ): array {
-		$list = $this->recipients();
+	private function firewall_recipients( array $new_alerts = array(), ?array $old_alerts = null ): array {
+		$list = $this->base_recipients( $old_alerts );
 		if ( array_key_exists( 'recipients', $new_alerts ) ) {
 			$incoming = array_values( (array) $new_alerts['recipients'] );
 			$list     = array_merge( $list, ! empty( $incoming ) ? $incoming : array( (string) get_option( 'admin_email' ) ) );
@@ -465,16 +510,17 @@ final class AlertNotifier {
 	/**
 	 * Queue.
 	 *
-	 * @param string   $type   admin|plugin.
-	 * @param string   $title  What happened.
-	 * @param string   $detail More detail.
-	 * @param string   $key    De-duplication key.
-	 * @param string   $log_detail Detail for the stored log row, when it must differ from the email.
-	 * @param bool     $critical   Uses the separate email budget (new administrators, WP Bouncer switched off).
-	 * @param bool     $logged     The caller has already written the Activity Log row.
-	 * @param string[] $recipients Addresses to add to the usual recipients.
+	 * @param string               $type   admin|plugin.
+	 * @param string               $title  What happened.
+	 * @param string               $detail More detail.
+	 * @param string               $key    De-duplication key.
+	 * @param string               $log_detail Detail for the stored log row, when it must differ from the email.
+	 * @param bool                 $critical   Uses the separate email budget (new administrators, WP Bouncer switched off).
+	 * @param bool                 $logged     The caller has already written the Activity Log row.
+	 * @param string[]             $recipients Addresses to mail instead of the usual recipients.
+	 * @param array<string, mixed> $extra Further event fields (settings flag, blog id, site details).
 	 */
-	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '', bool $critical = false, bool $logged = false, array $recipients = array() ): void {
+	private function queue( string $type, string $title, string $detail, string $key = '', string $log_detail = '', bool $critical = false, bool $logged = false, array $recipients = array(), array $extra = array() ): void {
 		$event = array(
 			'type'   => $type,
 			'title'  => $title,
@@ -495,11 +541,25 @@ final class AlertNotifier {
 		if ( '' !== $log_detail ) {
 			$event['log_detail'] = $log_detail;
 		}
-		$this->queue[] = $event;
+		$this->queue[] = array_merge( $extra, $event );
 		if ( ! $this->shutdown_hooked ) {
 			add_action( 'shutdown', array( $this, 'flush' ) );
 			$this->shutdown_hooked = true;
 		}
+	}
+
+	/**
+	 * Does a change touch what silences or redirects alerts (alerts.*, mode, or the whole option)?
+	 *
+	 * @param string[] $paths Changed paths.
+	 */
+	private static function silences_alerts( array $paths ): bool {
+		foreach ( $paths as $path ) {
+			if ( 'mode' === $path || 'settings' === $path || 0 === strpos( $path, 'alerts.' ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -526,36 +586,117 @@ final class AlertNotifier {
 		}
 
 		// Cheap plugin events can't use up the email budget of the alerts that matter most:
-		// new administrators and WP Bouncer being switched off have their own.
-		$general = (int) get_transient( self::THROTTLE_KEY );
-		$crit    = (int) get_transient( self::THROTTLE_KEY_CRITICAL );
-		$send    = array();
-		$uses    = array(
-			'general'  => false,
-			'critical' => false,
+		// new administrators and WP Bouncer being switched off have their own, and so do
+		// settings changes (whoever writes the option, they can't starve the others).
+		// Changes that silence or redirect alerts are never capped.
+		$keys   = array(
+			'general'  => self::THROTTLE_KEY,
+			'critical' => self::THROTTLE_KEY_CRITICAL,
+			'settings' => self::THROTTLE_KEY_SETTINGS,
 		);
-		foreach ( $events as $event ) {
-			$is_critical = self::is_critical( $event );
-			if ( $is_critical ? $crit < self::MAX_CRITICAL_PER_HOUR : $general < self::MAX_PER_HOUR ) {
-				$send[]                                        = $event;
-				$uses[ $is_critical ? 'critical' : 'general' ] = true;
-			}
+		$maxes  = array(
+			'general'  => self::MAX_PER_HOUR,
+			'critical' => self::MAX_CRITICAL_PER_HOUR,
+			'settings' => self::MAX_SETTINGS_PER_HOUR,
+		);
+		$counts = array();
+		foreach ( $keys as $bucket => $key ) {
+			$counts[ $bucket ] = (int) get_transient( $key );
 		}
-		if ( empty( $send ) ) {
-			return;
-		}
-		if ( $uses['general'] ) {
-			set_transient( self::THROTTLE_KEY, $general + 1, HOUR_IN_SECONDS );
-		}
-		if ( $uses['critical'] ) {
-			set_transient( self::THROTTLE_KEY_CRITICAL, $crit + 1, HOUR_IN_SECONDS );
-		}
-		$events = $send;
 
-		$mail = AlertFormatter::format( $events, $context );
-		$to   = $this->recipients();
+		// One mail per group. An event from another site than the current one (a switched blog) is
+		// reported as that site; everything else is one combined mail, as before.
+		$current = get_current_blog_id();
+		$groups  = array();
 		foreach ( $events as $event ) {
-			$to = array_merge( $to, $event['recipients'] ?? array() );
+			$ctx = isset( $event['ctx'] ) && is_array( $event['ctx'] ) ? $event['ctx'] : array();
+			if ( isset( $event['blog'] ) && (int) $event['blog'] !== $current ) {
+				$gkey = (string) wp_json_encode( array( $event['blog'], $ctx ) );
+			} else {
+				$gkey = '';
+				$ctx  = array_intersect_key( $ctx, array( 'actor' => true ) );
+			}
+			$groups[ $gkey ]['ctx']      = array_merge( $groups[ $gkey ]['ctx'] ?? array(), $ctx );
+			$groups[ $gkey ]['events'][] = $event;
+		}
+
+		$uncapped      = get_transient( self::THROTTLE_KEY_UNCAPPED );
+		$uncapped      = is_array( $uncapped ) ? $uncapped : array();
+		$uncapped_used = false;
+		$dropped       = array();
+		foreach ( $groups as $group ) {
+			$send = array();
+			$uses = array();
+			foreach ( $group['events'] as $event ) {
+				$bucket  = ! empty( $event['settings'] ) ? 'settings' : ( self::is_critical( $event ) ? 'critical' : 'general' );
+				$blog_id = (int) ( $event['blog'] ?? $current );
+				$free    = ! empty( $event['uncapped'] ) && ( $uncapped[ $blog_id ] ?? 0 ) < self::MAX_UNCAPPED_PER_HOUR;
+				if ( $free ) {
+					$uncapped[ $blog_id ] = ( $uncapped[ $blog_id ] ?? 0 ) + 1;
+					$uncapped_used        = true;
+				}
+				if ( $free || $counts[ $bucket ] < $maxes[ $bucket ] ) {
+					$send[]          = $event;
+					$uses[ $bucket ] = true;
+				} elseif ( 'settings' === $bucket ) {
+					$dropped[ (int) ( $event['blog'] ?? $current ) ][] = $event;
+				}
+			}
+			if ( empty( $send ) ) {
+				continue;
+			}
+			// Each email counts once against every budget it uses.
+			foreach ( array_keys( $uses ) as $bucket ) {
+				++$counts[ $bucket ];
+				set_transient( $keys[ $bucket ], $counts[ $bucket ], HOUR_IN_SECONDS );
+			}
+			$this->send_mail( $send, array_merge( $context, $group['ctx'] ) );
+		}
+
+		if ( $uncapped_used ) {
+			set_transient( self::THROTTLE_KEY_UNCAPPED, $uncapped, HOUR_IN_SECONDS );
+		}
+
+		// One notice per site and hour, with only that site's recipients and details; it counts against no cap.
+		if ( ! empty( $dropped ) ) {
+			$noticed = get_transient( self::THROTTLE_KEY_SET_NOTICE );
+			$noticed = is_array( $noticed ) ? $noticed : array();
+			foreach ( $dropped as $blog => $lost ) {
+				if ( in_array( $blog, $noticed, true ) ) {
+					continue;
+				}
+				$noticed[] = $blog;
+				$to        = array();
+				foreach ( $lost as $event ) {
+					$to = array_merge( $to, $event['recipients'] ?? array() );
+				}
+				$this->send_mail(
+					array(
+						array(
+							'type'       => 'firewall',
+							'title'      => 'Settings-change alerts throttled',
+							'detail'     => sprintf( '%d not emailed, see the Activity Log.', count( $lost ) ),
+							'recipients' => array_values( array_unique( $to ) ),
+						),
+					),
+					array_merge( $context, $lost[0]['ctx'] ?? array() )
+				);
+			}
+			set_transient( self::THROTTLE_KEY_SET_NOTICE, $noticed, HOUR_IN_SECONDS );
+		}
+	}
+
+	/**
+	 * Mail a set of events. Events with their own recipients are not also sent to the usual ones.
+	 *
+	 * @param array<int, array<string, mixed>> $events  Events.
+	 * @param array<string, string>            $context Mail context.
+	 */
+	private function send_mail( array $events, array $context ): void {
+		$mail = AlertFormatter::format( $events, $context );
+		$to   = array();
+		foreach ( $events as $event ) {
+			$to = array_merge( $to, ! empty( $event['recipients'] ) ? $event['recipients'] : $this->recipients() );
 		}
 		wp_mail( array_values( array_unique( $to ) ), $mail['subject'], $mail['body'] );
 	}
@@ -595,7 +736,17 @@ final class AlertNotifier {
 	 * @return string[] Where alerts go.
 	 */
 	public function recipients(): array {
-		$list = (array) ( $this->settings()['recipients'] ?? array() );
+		return $this->base_recipients( null );
+	}
+
+	/**
+	 * The configured recipients, or the site admin when none are set.
+	 *
+	 * @param array<string, mixed>|null $alerts Alert settings to read instead of the loaded ones.
+	 * @return string[]
+	 */
+	private function base_recipients( ?array $alerts ): array {
+		$list = (array) ( ( $alerts ?? $this->settings() )['recipients'] ?? array() );
 		return ! empty( $list ) ? array_values( $list ) : array( (string) get_option( 'admin_email' ) );
 	}
 

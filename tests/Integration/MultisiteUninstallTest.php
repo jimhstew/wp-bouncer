@@ -67,7 +67,7 @@ final class MultisiteUninstallTest extends IntegrationTestCase {
 			global $wpdb;
 			include WP_BOUNCER_DIR . '/uninstall.php';
 		};
-		$run();
+		$this->without_settings_audit( $run );
 	}
 
 	private function super_admin(): void {

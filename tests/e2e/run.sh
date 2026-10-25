@@ -664,6 +664,21 @@ check "...but logs it"               monitored "$(dbq "SELECT action FROM wp_bou
 set_settings '$s["mode"] = "enforce"'
 
 fi
+if want "Settings audit (WP-CLI)"; then
+# WPB-8: a settings write outside the admin UI is logged with a non-blank actor.
+dbq "DELETE FROM wp_bouncer_log WHERE rule = 'settings'" >/dev/null
+$WP option patch update wp_bouncer_settings mode monitor >/dev/null
+check "wp option patch: one settings row" 1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+AUDIT_REASON=$(dbq "SELECT reason FROM wp_bouncer_log WHERE rule = 'settings' ORDER BY id DESC LIMIT 1")
+check "  ...names the actor (not blank)" 1 "$(printf '%s' "$AUDIT_REASON" | grep -Ec '^Settings changed by [^ :]+')"
+check "  ...and the key path"            1 "$(printf '%s' "$AUDIT_REASON" | grep -c 'mode')"
+check "  ...as an alert row"             alert "$(dbq "SELECT action FROM wp_bouncer_log WHERE rule = 'settings' ORDER BY id DESC LIMIT 1")"
+$WP option patch update wp_bouncer_settings mode enforce >/dev/null
+check "reverting the mode adds a second row" 2 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+$WP option patch update wp_bouncer_settings mode enforce >/dev/null
+check "a no-change write adds no row" 2 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+
+fi
 if want "Per-rule switches"; then
 set_settings '$s["rules"]["user_agent"]["enabled"] = false'
 check "User-Agent rule off"          200 "$(status 203.0.113.31 "sqlmap/1.7" "$U/")"
@@ -724,6 +739,19 @@ for tab in dashboard general rules countries log traffic tools; do
 	check "admin tab '$tab' loads"     200 "$code"
 	check "admin tab '$tab' no PHP errors" 0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$out")"
 done
+# WPB-10b: drag-to-resize columns. Header attributes on the two tables only; the script is served from the plugin folder.
+for tab in log traffic; do
+	check "$tab tab loads the column script"   1 "$(grep -c 'assets/columns.js?ver=' "$WORK/tab-$tab.html")"
+	check "  ...with the header attribute"     1 "$( [ "$(grep -c 'data-wpb-col="request"' "$WORK/tab-$tab.html")" -ge 1 ] && echo 1 || echo 0 )"
+	check "  ...and a hidden reset button"     1 "$(grep -c 'class="button wpb-cols-reset" hidden' "$WORK/tab-$tab.html")"
+	check "  ...with its table name, and no nonce" 1 "$(grep -c "wpBouncerCols = {\"table\":\"$tab\"" "$WORK/tab-$tab.html")"
+	check "  ...in any script data"            0 "$(grep -o 'wpBouncerCols = {.*' "$WORK/tab-$tab.html" | grep -ci 'nonce')"
+done
+for tab in dashboard rules; do
+	check "$tab tab has no column script or attributes" 0 "$(grep -c 'columns.js\|data-wpb-col\|wpBouncerCols' "$WORK/tab-$tab.html")"
+done
+check "column script is served"            200 "$(curl -s -o "$WORK/columns.js" -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-content/plugins/wp-bouncer/assets/columns.js")"
+check "  ...and is the real file"            1 "$(grep -c 'wpb_cols' "$WORK/columns.js")"
 check "log lists blocked entries" 1 "$( [ "$(grep -o 'wpb-badge-blocked' "$WORK/tab-log.html" | wc -l)" -gt 5 ] && echo 1 || echo 0 )"
 check "admin is never banned for probes" 404 "$(status 198.51.100.50 "$MOZ" "$U/.env" -b "$J")"
 check "  ...still gets in"           200 "$(status 198.51.100.50 "$MOZ" "$U/wp-admin/" -b "$J")"

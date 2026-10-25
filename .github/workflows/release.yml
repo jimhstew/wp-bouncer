@@ -70,6 +70,11 @@ jobs:
       - name: PHPStan
         run: composer analyse -- --no-progress --memory-limit=1G
       - run: composer test
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+      # make test-js skips when node is missing; a release must not.
+      - run: command -v node && make test-js
       - run: make manifest
       - name: End-to-end tests against the release zip
         # No download cache here: a release always fetches WordPress, wp-cli and the SQLite plugin

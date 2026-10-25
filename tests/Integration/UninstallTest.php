@@ -37,7 +37,8 @@ final class UninstallTest extends IntegrationTestCase {
 			global $wpdb;
 			include WP_BOUNCER_DIR . '/uninstall.php';
 		};
-		$run();
+		// A real uninstall runs with the plugin inactive, so its hooks are not loaded.
+		$this->without_settings_audit( $run );
 	}
 
 	/** Put data of every kind in place. */
@@ -93,6 +94,9 @@ final class UninstallTest extends IntegrationTestCase {
 			'wpb_flash_7',
 			'wpb_alert_count',
 			'wpb_alert_count_critical',
+			'wpb_alert_count_settings',
+			'wpb_alert_settings_notice',
+			'wpb_alert_uncapped',
 			DashboardWidget::TRANSIENT,
 			'wp_bouncer_export_' . md5( 'abc' ),
 			'wp_bouncer_erase_range_5',

@@ -116,13 +116,13 @@ final class AlertFormatter {
 	 * Merge duplicates. Creating an administrator fires both "user registered"
 	 * and "role set" hooks; only one line should appear.
 	 *
-	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[]}> $events Events.
-	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[]}>
+	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, ctx?: array<string, string>}> $events Events.
+	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, ctx?: array<string, string>}>
 	 */
 	public static function dedupe( array $events ): array {
 		$out = array();
 		foreach ( $events as $event ) {
-			$key = $event['key'] ?? ( $event['type'] . '|' . $event['title'] . '|' . $event['detail'] );
+			$key = $event['key'] ?? ( $event['type'] . '|' . $event['title'] . '|' . $event['detail'] . '|' . ( $event['blog'] ?? '' ) );
 			if ( ! isset( $out[ $key ] ) ) {
 				$out[ $key ] = array(
 					'type'   => $event['type'],
@@ -135,6 +135,11 @@ final class AlertFormatter {
 			}
 			if ( ! empty( $event['critical'] ) ) {
 				$out[ $key ]['critical'] = true;
+			}
+			foreach ( array( 'settings', 'uncapped', 'blog', 'ctx' ) as $extra ) {
+				if ( isset( $event[ $extra ] ) && ! isset( $out[ $key ][ $extra ] ) ) {
+					$out[ $key ][ $extra ] = $event[ $extra ];
+				}
 			}
 			if ( ! empty( $event['recipients'] ) ) {
 				$out[ $key ]['recipients'] = array_values( array_unique( array_merge( $out[ $key ]['recipients'] ?? array(), $event['recipients'] ) ) );

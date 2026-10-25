@@ -71,19 +71,52 @@ final class SettingsDiffTest extends TestCase {
 		$this->assertSame( array( 'rules.ip_blocklist.ips' ), SettingsDiff::changes( $this->base(), $new ) );
 	}
 
-	public function test_a_key_added_or_removed_is_a_change(): void {
+	public function test_a_key_the_schema_does_not_know_is_not_a_path(): void {
 		$new                  = $this->base();
 		$new['alerts']['new'] = true;
 
-		$this->assertSame( array( 'alerts.new' ), SettingsDiff::changes( $this->base(), $new ) );
-		$this->assertSame( array( 'alerts.new' ), SettingsDiff::changes( $new, $this->base() ) );
+		$this->assertSame( array(), SettingsDiff::changes( $this->base(), $new ) );
+		$this->assertSame( array(), SettingsDiff::changes( $new, $this->base() ) );
+	}
+
+	public function test_a_missing_key_is_a_change(): void {
+		$new = $this->base();
+		unset( $new['alerts']['enabled'] );
+
+		$this->assertSame( array( 'alerts.enabled' ), SettingsDiff::changes( $this->base(), $new ) );
+	}
+
+	public function test_a_scalar_setting_written_as_an_array_is_one_leaf(): void {
+		$new         = $this->base();
+		$new['mode'] = array( "x\n<b>" => array( 'deep' => 1 ), 'y' => 2 );
+
+		$this->assertSame( array( 'mode' ), SettingsDiff::changes( $this->base(), $new ) );
+		$new['rules']['xmlrpc']['enabled'] = array( 'a' => 1 );
+		$this->assertSame( array( 'mode', 'rules.xmlrpc.enabled' ), SettingsDiff::changes( $this->base(), $new ) );
+	}
+
+	public function test_hostile_nested_keys_never_produce_a_path_outside_the_schema(): void {
+		$new                       = $this->base();
+		$new['rules']['waf']['zz'] = 1;
+		$new['rules']['evil']      = array( 'a' => 1 );
+		$new['evil']               = array( 'a' => array( 'b' => 1 ) );
+		$new['traffic']['evil']    = 'x';
+
+		$this->assertSame( array(), SettingsDiff::changes( $this->base(), $new ) );
+	}
+
+	public function test_a_nested_array_in_excluded_params_is_risky_and_does_not_warn(): void {
+		$new                                     = $this->base();
+		$new['rules']['waf']['excluded_params'] = array( array( 'x' ) );
+
+		$this->assertSame( array( 'rules.waf.excluded_params' ), SettingsDiff::risky( array( 'rules.waf.excluded_params' ), $this->base(), $new ) );
 	}
 
 	public function test_a_type_change_is_a_change(): void {
-		$old = array( 'a' => 1 );
-		$new = array( 'a' => '1' );
+		$old = array( 'log_retention_days' => 30 );
+		$new = array( 'log_retention_days' => '30' );
 
-		$this->assertSame( array( 'a' ), SettingsDiff::changes( $old, $new ) );
+		$this->assertSame( array( 'log_retention_days' ), SettingsDiff::changes( $old, $new ) );
 	}
 
 	/** @param array<string, mixed> $after */
@@ -174,9 +207,9 @@ final class SettingsDiffTest extends TestCase {
 	}
 
 	public function test_lowering_a_retention_period_is_risky_and_raising_it_is_not(): void {
-		$low                                = $this->base();
-		$low['log_retention_days']          = 1;
-		$low['traffic']['retention_days']   = 1;
+		$low                              = $this->base();
+		$low['log_retention_days']        = 1;
+		$low['traffic']['retention_days'] = 1;
 		$this->assertSame( array( 'log_retention_days', 'traffic.retention_days' ), $this->risky_of( $low ) );
 
 		$this->assertSame( array(), $this->risky_of( $this->base(), $low ), 'a longer retention only keeps more' );
@@ -211,5 +244,78 @@ final class SettingsDiffTest extends TestCase {
 		$this->assertLessThanOrEqual( 255, strlen( $reason ) );
 		$this->assertStringStartsWith( 'Settings changed by eve: allowlist, mode; also: rules.some_rule.setting_number_0', $reason );
 		$this->assertStringEndsWith( '...', $reason );
+	}
+
+	public function test_safe_paths_strips_hostile_characters(): void {
+		$this->assertSame( array( 'rules.waf.ab', '?', 'a-b_c.d' ), SettingsDiff::safe_paths( array( "rules.waf.a<b>\n", "<>\n", 'a-b_c.d' ) ) );
+	}
+
+	public function test_safe_paths_caps_the_length_of_a_path(): void {
+		$out = SettingsDiff::safe_paths( array( str_repeat( 'x', 100 ) ) );
+		$this->assertSame( str_repeat( 'x', 64 ), $out[0] );
+	}
+
+	public function test_safe_paths_keeps_at_most_20_and_counts_the_rest(): void {
+		$paths = array();
+		for ( $i = 0; $i < 25; $i++ ) {
+			$paths[] = 'p' . $i;
+		}
+		$out = SettingsDiff::safe_paths( $paths );
+		$this->assertCount( 21, $out );
+		$this->assertSame( 'p19', $out[19] );
+		$this->assertSame( '+5 more', $out[20] );
+		$this->assertCount( 20, SettingsDiff::safe_paths( array_slice( $paths, 0, 20 ) ) );
+	}
+
+	public function test_the_settings_path_is_risky(): void {
+		$this->assertSame( array( 'settings' ), SettingsDiff::risky( array( 'settings' ), $this->base(), $this->base() ) );
+	}
+
+	/** @return array<string, array{0: string, 1: array<string, mixed>}> */
+	public static function list_shapes(): array {
+		return array(
+			'allowlist'       => array( 'allowlist', array( 'allowlist' => array( 'k' => '203.0.113.7' ) ) ),
+			'trusted_proxies' => array( 'trusted_proxies', array( 'trusted_proxies' => array( 'x' => '10.0.0.1' ) ) ),
+			'recipients'      => array( 'alerts.recipients', array( 'alerts' => array( 'recipients' => array( 'k' => 'a@example.com' ) ) ) ),
+			'excluded_params' => array( 'rules.waf.excluded_params', array( 'rules' => array( 'waf' => array( 'excluded_params' => array( 'k' => 'p' ) ) ) ) ),
+		);
+	}
+
+	/** @dataProvider list_shapes */
+	public function test_a_list_written_as_an_associative_array_is_one_risky_path( string $path, array $override ): void {
+		$new     = array_replace_recursive( $this->base(), $override );
+		$changes = SettingsDiff::changes( $this->base(), $new );
+		$this->assertSame( array( $path ), $changes );
+		$this->assertSame( array( $path ), SettingsDiff::risky( $changes, $this->base(), $new ) );
+	}
+
+	public function test_hostile_nested_keys_in_a_list_never_become_paths(): void {
+		$new              = $this->base();
+		$new['allowlist'] = array( "evil\n<script>" => array( 'deep' => 1 ) );
+		$this->assertSame( array( 'allowlist' ), SettingsDiff::changes( $this->base(), $new ) );
+	}
+
+	public function test_risky_keys_match_by_prefix(): void {
+		$this->assertSame( array( 'allowlist.x' ), SettingsDiff::risky( array( 'allowlist.x', 'allowlisted' ), $this->base(), $this->base() ) );
+	}
+
+	/** @return array<string, array{0: string}> */
+	public static function alert_switches(): array {
+		return array(
+			'new_admin'      => array( 'new_admin' ),
+			'plugin_changes' => array( 'plugin_changes' ),
+		);
+	}
+
+	/** @dataProvider alert_switches */
+	public function test_an_alert_switch_going_off_is_risky_and_going_on_is_not( string $key ): void {
+		$on                    = $this->base();
+		$off                   = $this->base();
+		$on['alerts'][ $key ]  = true;
+		$off['alerts'][ $key ] = false;
+		$path                  = 'alerts.' . $key;
+
+		$this->assertSame( array( $path ), SettingsDiff::risky( array( $path ), $on, $off ) );
+		$this->assertSame( array(), SettingsDiff::risky( array( $path ), $off, $on ) );
 	}
 }

@@ -31,6 +31,23 @@ jobs:
       - run: composer install --no-interaction --no-progress --no-plugins
       - run: composer test
 
+  # JS logic tests (tests/js) with Node's built-in runner: no npm, no package.json. Locally
+  # `make test-js` skips when node is missing; here a missing node must fail the job.
+  unit-js:
+    name: Unit (JS, Node 22)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+      - run: command -v node && node --version
+      - run: make test-js
+
   # Supply-chain guard for the workflows themselves (RT-02): fails if an action isn't pinned to
   # a full commit SHA, a job has no `permissions`, `contents: write` is held by a job with a
   # step other than `gh release`, or the wp-cli / SQLite downloads lose their checksums.

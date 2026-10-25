@@ -61,7 +61,11 @@ final class InstallerTest extends IntegrationTestCase {
 	public function test_activate_on_a_fresh_site_creates_tables_records_version_and_schedules_jobs(): void {
 		global $wpdb;
 		$this->drop_tables();
-		delete_option( Settings::OPTION );
+		$this->without_settings_audit(
+			static function (): void {
+				delete_option( Settings::OPTION );
+			}
+		);
 		delete_option( Installer::DB_VERSION_OPTION );
 		$this->clear_cron();
 		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_log' ), 'precondition: tables are gone' );

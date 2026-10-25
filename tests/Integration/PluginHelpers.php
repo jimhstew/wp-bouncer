@@ -69,8 +69,8 @@ trait PluginHelpers {
 	 * update checks turn a transport error into a (test-failing) _doing_it_wrong notice.
 	 *
 	 * @param false|array<string, mixed>|\WP_Error $pre  Earlier filters' answer.
-	 * @param array<string, mixed>                  $args Request args.
-	 * @param string                                $url  Request URL.
+	 * @param array<string, mixed>                 $args Request args.
+	 * @param string                               $url  Request URL.
 	 * @return false|array<string, mixed>|\WP_Error
 	 */
 	public function wpb_block_http( $pre, $args, $url ) {
@@ -194,8 +194,37 @@ trait PluginHelpers {
 	 */
 	protected function set_settings( array $overrides ): void {
 		$values = Settings::sanitize( array_replace_recursive( Settings::defaults(), $overrides ) );
-		update_option( Settings::OPTION, $values, true );
+		$this->without_settings_audit(
+			static function () use ( $values ): void {
+				update_option( Settings::OPTION, $values, true );
+			}
+		);
 		$this->plugin->reload_settings();
+	}
+
+	/**
+	 * Run a callback with the settings auditor unhooked (fixtures that write the option
+	 * must not add Activity Log rows or alerts of their own).
+	 *
+	 * @param callable $fn Code that writes the settings option.
+	 */
+	protected function without_settings_audit( callable $fn ): void {
+		global $wp_filter;
+		$tags  = array( 'update_option_' . Settings::OPTION, 'add_option_' . Settings::OPTION, 'delete_option', 'delete_option_' . Settings::OPTION );
+		$saved = array();
+		foreach ( $tags as $tag ) {
+			if ( isset( $wp_filter[ $tag ] ) ) {
+				$saved[ $tag ] = clone $wp_filter[ $tag ];
+				unset( $wp_filter[ $tag ] );
+			}
+		}
+		try {
+			$fn();
+		} finally {
+			foreach ( $saved as $tag => $hook ) {
+				$wp_filter[ $tag ] = $hook; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- restoring what was removed above.
+			}
+		}
 	}
 
 	/**

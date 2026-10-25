@@ -2,7 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [1.2.1] - Unreleased
+## [1.2.1] - 2026-10-24
+
+### Security
+
+- **Settings changes are audited whichever way they are made (WPB-8).** Changes to WP Bouncer's settings are now logged in the Activity Log and alerted, whether they are made on the admin screen, with WP-CLI, or by code calling `update_option()`. The actor is shown as `login #ID (context)`, or as `cli` or `unknown` when no one is signed in. Settings-change alert emails have their own limit of 10 an hour. After that, one "throttled" notice is sent, so they can't crowd out other critical alerts. Changes that could silence alerts (switching the firewall mode, turning off any alert, or changing alert recipients) are always emailed, up to 50 an hour per site. On multisite, alerts name the site where the change happened.
+- **Turning off any alert is now treated as a risky change.** In 1.2.0, switching off the new-administrator or plugin-change alerts was logged but not emailed. It now sends a firewall-change alert, as switching off the other alerts already did.
 
 ### Changed
 
@@ -12,10 +17,19 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - **Activity Log and Traffic tab (WPB-10a).** Long Request, User-Agent, Client and Referrer values no longer spill over the next column. They are cut off with an ellipsis at the edge of their own column, and the full value is shown on hover.
 
+### Added
+
+- **Resizable columns (WPB-10b).** On the Activity Log and the Traffic tab, drag the edge of a column heading to make that column wider or narrower. The keyboard works too: Tab to the edge, then use the arrow keys (Home and End jump to the smallest and largest width, Escape resets). Double-click an edge, or press **Reset column widths**, to go back to the default widths. Widths are remembered in this browser only, kept separately for each table. Resizing is off at 782px and below, where WordPress shows the tables in its narrow layout.
+
 ### Development
 
+- JavaScript unit tests use Node's built-in test runner (`make test-js`), and CI runs them.
 - The integration suite makes no live HTTP requests (outbound calls are answered locally) and its real-DDL tests drop and recreate tables far less often. It takes about 13 seconds, down from 31 seconds. No coverage was removed.
 - The end-to-end suite batches its WP-CLI calls, reads the database directly, and runs the test server with OPcache on. It takes about 58 seconds, down from 116 seconds. No coverage was removed.
+
+### Known limits
+
+- Settings changed while WP Bouncer isn't loaded, for example with `wp --skip-plugins`, or by editing the database directly, are not logged.
 
 ## [1.2.0] - 2026-10-24
 

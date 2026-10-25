@@ -13,6 +13,7 @@ use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
 use WPBouncer\Alerts\AlertNotifier;
+use WPBouncer\Audit\SettingsAuditor;
 use WPBouncer\Environment\EnvironmentAdmin;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\HttpResponder;
@@ -67,7 +68,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.2.0';
+	public const VERSION = '1.2.1';
 
 	/** Transient that limits the bad-filter log row to one a day. */
 	private const BAD_RULES_TRANSIENT = 'wp_bouncer_bad_rules_logged';
@@ -338,6 +339,8 @@ final class Plugin {
 		// traffic log keep working because they never refuse anyone.
 		$this->uploads_guard()->register();
 		$this->alerts()->register();
+		// Outside the is_disabled() branch: a write made while the switch is on is still audited.
+		( new SettingsAuditor( $this ) )->register();
 		( new TrafficRecorder( $this ) )->register();
 		( new PrivacyTools( $this ) )->register();
 		FirewallCapability::register();

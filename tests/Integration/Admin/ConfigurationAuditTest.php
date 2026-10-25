@@ -134,7 +134,7 @@ final class ConfigurationAuditTest extends IntegrationTestCase {
 		$this->assertCount( 1, $rows );
 		$this->assertSame( 'alert', $rows[0]['action'] );
 		$this->assertStringContainsString( 'rules.waf.enabled', $rows[0]['reason'] );
-		$this->assertStringStartsWith( 'Settings changed by auditor:', $rows[0]['reason'] );
+		$this->assertMatchesRegularExpression( '/^Settings changed by auditor #\d+: /', $rows[0]['reason'] );
 		$this->assertCount( 0, $this->rows( 'alerts' ), 'the audit row is not written twice' );
 
 		$mail = $this->sent_mail();
@@ -415,7 +415,7 @@ final class ConfigurationAuditTest extends IntegrationTestCase {
 
 		$rows = $this->rows( 'settings' );
 		$this->assertCount( 1, $rows );
-		$this->assertSame( 'Activity log cleared by auditor', $rows[0]['reason'] );
+		$this->assertMatchesRegularExpression( '/^Activity log cleared by auditor #\d+$/', $rows[0]['reason'] );
 		$mail = $this->sent_mail();
 		$this->assertCount( 1, $mail );
 		$this->assertStringContainsString( 'Activity Log cleared', $mail[0]['subject'] );

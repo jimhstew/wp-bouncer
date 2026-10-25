@@ -8,6 +8,7 @@
 namespace WPBouncer\Admin;
 
 use WPBouncer\Alerts\AlertNotifier;
+use WPBouncer\Audit\SettingsAuditor;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\IpResolver;
 use WPBouncer\Firewall\Request;
@@ -22,7 +23,6 @@ use WPBouncer\Rules\RateLimitRule;
 use WPBouncer\Rules\SensitiveFileRule;
 use WPBouncer\Rules\UserAgentRule;
 use WPBouncer\Settings;
-use WPBouncer\SettingsDiff;
 use WPBouncer\Support\CsvSanitizer;
 use WPBouncer\Support\CounterSubject;
 use WPBouncer\Support\IpUtils;
@@ -236,6 +236,33 @@ final class AdminController {
 				),
 			)
 		);
+
+		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display decision only.
+		if ( in_array( $tab, ColumnResize::TABS, true ) ) {
+			wp_enqueue_script(
+				'wp-bouncer-cols',
+				$url . 'assets/columns.js',
+				array(),
+				Plugin::VERSION,
+				array(
+					'in_footer' => true,
+					'strategy'  => 'defer',
+				)
+			);
+			wp_localize_script(
+				'wp-bouncer-cols',
+				'wpBouncerCols',
+				array(
+					'table' => $tab,
+					'i18n'  => array(
+						/* translators: %s: column name. */
+						'resize' => __( 'Resize %s column', 'wp-bouncer' ),
+						/* translators: %d: width in pixels. */
+						'px'     => __( '%d pixels', 'wp-bouncer' ),
+					),
+				)
+			);
+		}
 	}
 
 	/** Configuration warnings shown on our screen. */
@@ -436,52 +463,15 @@ final class AdminController {
 			// Sub-site admins on multisite can't change the .htaccess setting or add regex patterns.
 			$values = Settings::preserve_privileged( $this->plugin->settings()->to_array(), $values );
 		}
-		$old = $this->plugin->settings()->to_array();
+		// The audit (row, alert, action) happens in SettingsAuditor, from the option hooks.
 		update_option( Settings::OPTION, $values, true );
-		// Audit BEFORE the new settings load: the request's IP and country, who gets the
-		// alert, and whether alerts are on all come from the settings in force until now.
-		$changes = $this->audit( $old, $values );
+		// Idempotent, and keeps the UI correct even if the auditor were unhooked.
 		$this->plugin->reload_settings();
-		if ( ! empty( $changes ) ) {
-			/**
-			 * Fires after the settings were saved and something changed.
-			 *
-			 * @param string[]             $changes Changed key paths, such as "rules.xmlrpc.enabled" (lists count as one path).
-			 * @param array<string, mixed> $old     Settings before.
-			 * @param array<string, mixed> $new     Settings after.
-			 */
-			do_action( 'wp_bouncer_settings_changed', $changes, $old, $values );
-		}
 	}
 
-	/**
-	 * Configuration audit: record and alert on a settings change.
-	 *
-	 * Writes one "alert" row (rule "settings") naming the acting user and the
-	 * changed key paths, never the values. Risky changes also queue a
-	 * firewall_changes email. Nothing happens when nothing changed.
-	 *
-	 * @param array<string, mixed> $before Settings before the save.
-	 * @param array<string, mixed> $after  Settings as saved.
-	 * @return string[] The changed key paths.
-	 */
-	private function audit( array $before, array $after ): array {
-		$changes = SettingsDiff::changes( $before, $after );
-		if ( empty( $changes ) ) {
-			return array();
-		}
-		$risky = SettingsDiff::risky( $changes, $before, $after );
-		$this->write_audit_row( SettingsDiff::describe( $this->actor(), $changes, $risky ) );
-		if ( ! empty( $risky ) ) {
-			$this->plugin->alerts()->on_risky_settings_change( $risky, $changes, $after );
-		}
-		return $changes;
-	}
-
-	/** Login of the signed-in user, for audit rows. */
+	/** Login of the signed-in user (with its context), for audit rows. */
 	private function actor(): string {
-		$user = wp_get_current_user();
-		return $user->exists() ? $user->user_login : 'unknown';
+		return ( new SettingsAuditor( $this->plugin ) )->actor();
 	}
 
 	/**
@@ -490,19 +480,7 @@ final class AdminController {
 	 * @param string $reason What happened and who did it; no setting values.
 	 */
 	private function write_audit_row( string $reason ): void {
-		$request = $this->plugin->current_request();
-		$this->plugin->log_writer()->record(
-			array(
-				'ip'         => $request->ip(),
-				'country'    => (string) $this->plugin->geo()->lookup( $request->ip() ),
-				'rule'       => self::SETTINGS_LOG_RULE,
-				'action'     => BlockLogInterface::ACTION_ALERT,
-				'reason'     => mb_strimwidth( $reason, 0, 255, '...' ),
-				'method'     => $request->method(),
-				'uri'        => $request->uri(),
-				'user_agent' => $request->user_agent(),
-			)
-		);
+		( new SettingsAuditor( $this->plugin ) )->record_row( $reason );
 	}
 
 	/** Save one settings tab. */

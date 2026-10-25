@@ -19,7 +19,27 @@ defined( 'ABSPATH' ) || exit;
 final class SettingsDiff {
 
 	/** Top-level keys whose change is always worth an alert. */
-	private const RISKY_KEYS = array( 'allowlist', 'trusted_proxies', 'ip_source', 'geo_source', 'geo_header', 'alerts.enabled', 'alerts.firewall_changes', 'alerts.recipients', 'rules.xmlrpc.mode' );
+	private const RISKY_KEYS = array( 'settings', 'allowlist', 'trusted_proxies', 'ip_source', 'geo_source', 'geo_header', 'alerts.enabled', 'alerts.firewall_changes', 'alerts.recipients', 'rules.xmlrpc.mode' );
+
+	/**
+	 * Settings that hold a list. They count as one path whatever shape they were
+	 * written in, so a non-list array can't hide behind child paths.
+	 */
+	private const LIST_PATHS = array(
+		'allowlist',
+		'trusted_proxies',
+		'alerts.recipients',
+		'rules.ip_blocklist.ips',
+		'rules.user_agent.patterns',
+		'rules.country.countries',
+		'rules.login_lockout.banned_usernames',
+		'rules.waf.excluded_params',
+		'rules.sensitive_files.extra_paths',
+	);
+
+	/** Longest single path, and most paths, passed on by safe_paths(). */
+	private const PATH_MAX  = 64;
+	private const PATHS_MAX = 20;
 
 	/** Longest Activity Log reason (the column is varchar(255)). */
 	private const REASON_MAX = 255;
@@ -33,7 +53,7 @@ final class SettingsDiff {
 	 */
 	public static function changes( array $before, array $after ): array {
 		$out = array();
-		self::walk( $before, $after, '', $out );
+		self::walk( $before, $after, '', $out, Settings::defaults() );
 		sort( $out, SORT_STRING );
 		return $out;
 	}
@@ -94,6 +114,29 @@ final class SettingsDiff {
 	}
 
 	/**
+	 * Make paths safe to log, email and pass to listeners.
+	 *
+	 * Keeps only [A-Za-z0-9_.-] (an emptied path becomes "?"), cuts each path at
+	 * 64 characters and keeps at most 20, adding "+N more".
+	 *
+	 * @param string[] $paths Changed paths.
+	 * @return string[] Safe paths.
+	 */
+	public static function safe_paths( array $paths ): array {
+		$out = array();
+		foreach ( $paths as $path ) {
+			$clean = (string) preg_replace( '/[^A-Za-z0-9_.-]/', '', (string) $path );
+			$out[] = '' === $clean ? '?' : substr( $clean, 0, self::PATH_MAX );
+		}
+		if ( count( $out ) > self::PATHS_MAX ) {
+			$extra = count( $out ) - self::PATHS_MAX;
+			$out   = array_slice( $out, 0, self::PATHS_MAX );
+			$out[] = '+' . $extra . ' more';
+		}
+		return $out;
+	}
+
+	/**
 	 * Is this one change risky?
 	 *
 	 * @param string $path   Changed path.
@@ -101,8 +144,10 @@ final class SettingsDiff {
 	 * @param mixed  $after  Value after.
 	 */
 	private static function is_risky( string $path, $before, $after ): bool {
-		if ( in_array( $path, self::RISKY_KEYS, true ) ) {
-			return true;
+		foreach ( self::RISKY_KEYS as $key ) {
+			if ( $path === $key || 0 === strpos( $path, $key . '.' ) ) {
+				return true;
+			}
 		}
 		// A shorter retention makes the daily purge erase older audit rows.
 		if ( 'log_retention_days' === $path || 'traffic.retention_days' === $path ) {
@@ -110,6 +155,10 @@ final class SettingsDiff {
 		}
 		if ( 'mode' === $path ) {
 			return 'enforce' === $before && 'enforce' !== $after;
+		}
+		// Any alert switch going from on to off (new switches are covered automatically).
+		if ( 0 === strpos( $path, 'alerts.' ) ) {
+			return true === $before && true !== $after;
 		}
 		if ( 0 !== strpos( $path, 'rules.' ) ) {
 			return false;
@@ -121,7 +170,11 @@ final class SettingsDiff {
 			return true;
 		}
 		if ( 'rules.waf.excluded_params' === $path ) {
-			return array() !== array_diff( (array) $after, (array) $before );
+			$added = (array) $after;
+			if ( count( $added ) !== count( array_filter( $added, 'is_scalar' ) ) ) {
+				return true; // A nested array in a list of names is never an ordinary exclusion.
+			}
+			return array() !== array_diff( $added, array_filter( (array) $before, 'is_scalar' ) );
 		}
 		if ( 'rules.ip_blocklist.ips' === $path || 'rules.user_agent.patterns' === $path ) {
 			return count( (array) $after ) < count( (array) $before );
@@ -132,31 +185,27 @@ final class SettingsDiff {
 	/**
 	 * Recursive comparison.
 	 *
-	 * @param mixed    $before    Old value.
-	 * @param mixed    $after    New value.
+	 * Goes deeper only where the schema (the defaults) has an array with named
+	 * keys at that path; everything else is a leaf, and keys the schema doesn't
+	 * know never become paths.
+	 *
+	 * @param mixed    $before Old value.
+	 * @param mixed    $after  New value.
 	 * @param string   $path   Path so far.
 	 * @param string[] $out    Collected paths.
+	 * @param mixed    $schema Defaults at this path.
 	 */
-	private static function walk( $before, $after, string $path, array &$out ): void {
-		if ( is_array( $before ) && is_array( $after ) && ! self::is_filled_list( $before ) && ! self::is_filled_list( $after ) ) {
-			foreach ( array_unique( array_merge( array_keys( $before ), array_keys( $after ) ) ) as $key ) {
+	private static function walk( $before, $after, string $path, array &$out, $schema ): void {
+		if ( is_array( $schema ) && array() !== $schema && ! array_is_list( $schema ) && ! in_array( $path, self::LIST_PATHS, true ) && is_array( $before ) && is_array( $after ) ) {
+			foreach ( array_keys( $schema ) as $key ) {
 				$child = '' === $path ? (string) $key : $path . '.' . $key;
-				self::walk( $before[ $key ] ?? null, $after[ $key ] ?? null, $child, $out );
+				self::walk( $before[ $key ] ?? null, $after[ $key ] ?? null, $child, $out, $schema[ $key ] );
 			}
 			return;
 		}
 		if ( $before !== $after && '' !== $path ) {
 			$out[] = $path;
 		}
-	}
-
-	/**
-	 * Is this a non-empty list (sequential integer keys)?
-	 *
-	 * @param array<mixed> $value Array.
-	 */
-	private static function is_filled_list( array $value ): bool {
-		return array() !== $value && array_is_list( $value );
 	}
 
 	/**

@@ -25,6 +25,11 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 	function wp_bouncer_uninstall_site(): void {
 		global $wpdb;
 
+		// If the plugin was loaded in this process, its settings auditor must not write rows into the tables dropped below.
+		if ( class_exists( '\WPBouncer\Audit\SettingsAuditor' ) ) {
+			\WPBouncer\Audit\SettingsAuditor::unregister();
+		}
+
 		// Remove our block from uploads/.htaccess (anything else in that file stays).
 		// Forced: the plugin's files are being deleted, so its block must not outlive it.
 		\WPBouncer\Hardening\UploadsGuard::teardown( true );
@@ -69,7 +74,7 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		// Our transients (and their timeout rows): counters, lockouts and bans are wpb_<32 hex>; the rest
 		// have fixed names. Found with a loose LIKE (no escaping, so it works on SQLite too) and then
 		// matched exactly, in id order and in batches, so another plugin's wpb_* transient is left alone.
-		$wpb_exact  = '/^_transient_(?:timeout_)?(?:wpb_(?:[0-9a-f]{32}|ctrfb_.+|flash_\d+|alert_count(?:_critical)?|widget_stats.*)|wp_bouncer_(?:export_[0-9a-f]{32}|erase_range_\d+))$/';
+		$wpb_exact  = '/^_transient_(?:timeout_)?(?:wpb_(?:[0-9a-f]{32}|ctrfb_.+|flash_\d+|alert_count(?:_critical|_settings)?|alert_settings_notice|alert_uncapped|widget_stats.*)|wp_bouncer_(?:export_[0-9a-f]{32}|erase_range_\d+))$/';
 		$wpb_cursor = 0;
 		do {
 			$wpb_rows = (array) $wpdb->get_results(

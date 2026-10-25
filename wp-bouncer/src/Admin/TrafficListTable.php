@@ -22,6 +22,11 @@ if ( ! class_exists( '\WP_List_Table' ) ) {
 final class TrafficListTable extends \WP_List_Table {
 
 	/**
+	 * Minimum widths in pixels for the narrow columns (others use ColumnResize::DEFAULT_MIN).
+	 */
+	private const RESIZE_MIN = array( 'status' => 44 );
+
+	/**
 	 * Log store.
 	 *
 	 * @var TrafficLog
@@ -72,6 +77,27 @@ final class TrafficListTable extends \WP_List_Table {
 			'client'     => array( 'client', false ),
 			'status'     => array( 'status', false ),
 		);
+	}
+
+	/**
+	 * Print the header row, marked up for drag-to-resize (the footer row is left as core prints it).
+	 *
+	 * @param bool $with_id Whether to print the column ids (true for the header, false for the footer).
+	 * @return void
+	 */
+	public function print_column_headers( $with_id = true ) {
+		if ( ! $with_id ) {
+			parent::print_column_headers( false );
+			return;
+		}
+		ob_start();
+		try {
+			parent::print_column_headers( true );
+			$html = (string) ob_get_contents();
+		} finally {
+			ob_end_clean();
+		}
+		echo ColumnResize::annotate( $html, $this->get_columns(), self::RESIZE_MIN ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- core's own header markup; attributes are added and escaped by WP_HTML_Tag_Processor.
 	}
 
 	/**
@@ -153,6 +179,9 @@ final class TrafficListTable extends \WP_List_Table {
 
 		submit_button( __( 'Filter', 'wp-bouncer' ), '', 'filter_action', false );
 		echo '</div>';
+
+		// Shown by assets/columns.js once resizing is active; without JS it stays hidden.
+		echo '<div class="alignleft actions"><button type="button" class="button wpb-cols-reset" hidden>' . esc_html__( 'Reset column widths', 'wp-bouncer' ) . '</button></div>';
 
 		$args   = array_merge( AdminController::traffic_filters_to_args( $filters ), array( 'action' => 'wp_bouncer_export_traffic' ) );
 		$export = wp_nonce_url( add_query_arg( $args, admin_url( 'admin-post.php' ) ), 'wp_bouncer_export_traffic' );
