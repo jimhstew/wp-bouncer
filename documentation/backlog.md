@@ -163,7 +163,7 @@ Split into two deliverables so the fix does not wait for the feature.
 7. Changelog **Fixed** entry. No readme Upgrade Notice.
 
 ### WPB-10b: Drag-to-resize columns on Activity Log and Traffic tab (feature)
-- **Status:** done, awaiting release in 1.2.1.
+- **Status:** done, awaiting release in 1.2.1. Owner tested the resizing in a browser on 2026-10-24 ("works well").
 - **Type:** feature
 - **Priority:** P3. See the table above.
 - **Effort:** M
