@@ -56,8 +56,39 @@ trait PluginHelpers {
 		wp_mkdir_p( $this->uploads_dir );
 		add_filter( 'upload_dir', array( $this, 'wpb_upload_dir' ) );
 
+		// No test may reach the network (core's update checks fire on upgrader_process_complete and
+		// would call api.wordpress.org). Runs last, so a test's own fake at the default priority wins.
+		add_filter( 'pre_http_request', array( $this, 'wpb_block_http' ), PHP_INT_MAX, 3 );
+
 		$this->reset_request();
 		$plugin->reload_settings();
+	}
+
+	/**
+	 * Refuse outbound HTTP that no test faked. It answers 503 rather than a WP_Error, because core's
+	 * update checks turn a transport error into a (test-failing) _doing_it_wrong notice.
+	 *
+	 * @param false|array<string, mixed>|\WP_Error $pre  Earlier filters' answer.
+	 * @param array<string, mixed>                  $args Request args.
+	 * @param string                                $url  Request URL.
+	 * @return false|array<string, mixed>|\WP_Error
+	 */
+	public function wpb_block_http( $pre, $args, $url ) {
+		unset( $args );
+		if ( false !== $pre ) {
+			return $pre;
+		}
+		unset( $url );
+		return array(
+			'headers'  => array(),
+			'body'     => '',
+			'response' => array(
+				'code'    => 503,
+				'message' => 'Outbound HTTP is blocked in tests',
+			),
+			'cookies'  => array(),
+			'filename' => null,
+		);
 	}
 
 	/** Call from tear_down() before the parent. */

@@ -75,7 +75,7 @@ Conventions:
 - geo import through the Tools tab, the way a browser does it: upload and URL import both start, take several AJAX steps and load every range; a file that isn't a geo CSV, a URL that fails, and uploads over `upload_max_filesize` and `post_max_size` are refused with a message and leave the old data in place; the no-JavaScript Continue button and the Stop button work; the working file is cleaned up
 - WordPress's `debug.log` is empty at the end
 
-The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
+The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. OPcache is on, with timestamp validation on every request, so the update tests can swap the linked plugin folder for a copy and still see the new files. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
 
 Options: `PHP=/path/to/php`, `WPB_E2E_ZIP=builds/wp-bouncer-<version>.zip` (install from a built zip instead of linking `wp-bouncer/`), `WPB_E2E_PORT=8899`, `WPB_E2E_DIR=/some/dir` (reused between runs, faster), `WPB_E2E_KEEP=1`.
 
@@ -106,6 +106,8 @@ WPB_E2E_DB=mysql WPB_E2E_DB_USER=root WPB_E2E_DB_PASSWORD=root WPB_E2E_WP_VERSIO
 | `WP_VERSION` | `latest` | WordPress version for the test library, for example `7.0`. Set on the command line, as in `make integration WP_VERSION=7.0`. |
 
 On the first run, `tests/Integration/install-wp.sh` downloads the WordPress test library into `builds/wp-core/<version>`. Set `WP_MULTISITE=1` to run the suite as a multisite network. CI runs single-site and multisite on MySQL 8.4 and MariaDB 10.11 and 11.4.
+
+No integration test reaches the network. Every outbound HTTP request is answered locally with a 503 (`PluginHelpers::wpb_block_http()`) unless the test fakes that request itself. Tests that need real DDL call `use_real_ddl()` and rebuild the schema afterwards.
 
 Example:
 

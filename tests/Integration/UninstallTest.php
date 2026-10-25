@@ -71,55 +71,22 @@ final class UninstallTest extends IntegrationTestCase {
 		$wpdb->query( 'COMMIT' );
 	}
 
-	public function test_it_drops_all_four_tables(): void {
+	/**
+	 * One populated site, one uninstall (each real DDL statement is slow), checked from every angle.
+	 * The assertion messages name the behaviour that failed.
+	 */
+	public function test_it_removes_everything_of_ours_and_nothing_else(): void {
 		global $wpdb;
-		$this->populate();
-
-		$this->uninstall();
-
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
-			$this->assertFalse( $this->table_exists( $wpdb->prefix . $t ), $t );
-		}
-	}
-
-	public function test_it_leaves_other_tables_alone(): void {
-		global $wpdb;
-		$this->populate();
-
-		$this->uninstall();
-
-		$this->assertTrue( $this->table_exists( $wpdb->options ) );
-		$this->assertTrue( $this->table_exists( $wpdb->users ) );
-	}
-
-	public function test_it_deletes_the_options(): void {
+		$file = $this->uploads_dir . '/.htaccess';
+		file_put_contents( $file, "Options -Indexes\n" );
+		UploadsGuard::write_block();
 		$this->populate();
 		update_option( UploadsGuard::STATE_OPTION, array( 'ok' => true ) );
 		update_option( UploadsGuard::PROBE_OPTION, array( 'result' => 'protected' ) );
+		wp_schedule_single_event( time() + 60, 'wp_bouncer_old_wp_email' );
+		$this->assertNotFalse( wp_next_scheduled( Installer::CRON_HOOK ), 'precondition: cron is scheduled' );
+		$this->assertGreaterThan( 0, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%'" ), 'precondition: counters and bans exist' ); // phpcs:ignore WordPress.DB
 
-		$this->uninstall();
-
-		foreach ( array( Settings::OPTION, Installer::DB_VERSION_OPTION, Plugin::GEO_META_OPTION, GeoImport::STATE_OPTION, UploadsGuard::STATE_OPTION, UploadsGuard::PROBE_OPTION ) as $option ) {
-			$this->assertFalse( get_option( $option ), $option );
-		}
-		$this->assertFalse( get_site_transient( Updater::CACHE ) );
-		$this->assertSame( 'keep me', get_option( 'unrelated_option' ) );
-	}
-
-	public function test_it_deletes_counters_lockouts_and_bans_but_not_other_transients(): void {
-		global $wpdb;
-		$this->populate();
-		$this->assertGreaterThan( 0, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%'" ) ); // phpcs:ignore WordPress.DB
-
-		$this->uninstall();
-
-		$this->assertSame( '0', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%' OR option_name LIKE '\\_transient\\_timeout\\_wpb\\_%'" ) ); // phpcs:ignore WordPress.DB
-		$this->assertSame( 'keep me', get_transient( 'unrelated_transient' ) );
-	}
-
-	public function test_it_deletes_all_of_its_transients_and_only_those(): void {
-		global $wpdb;
-		$this->populate();
 		$ours   = array(
 			'wpb_' . md5( 'ban:1' ),
 			'wpb_ctrfb_' . md5( 'x' ),
@@ -143,12 +110,43 @@ final class UninstallTest extends IntegrationTestCase {
 			}
 			return $n;
 		};
-		$this->assertSame( 2 * count( $ours ), $count( $ours ) );
+		$this->assertSame( 2 * count( $ours ), $count( $ours ), 'precondition: our transients exist' );
 
 		$this->uninstall();
 
+		// Tables.
+		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
+			$this->assertFalse( $this->table_exists( $wpdb->prefix . $t ), "table {$t} dropped" );
+		}
+		$this->assertTrue( $this->table_exists( $wpdb->options ), 'other tables left alone: options' );
+		$this->assertTrue( $this->table_exists( $wpdb->users ), 'other tables left alone: users' );
+
+		// Options.
+		foreach ( array( Settings::OPTION, Installer::DB_VERSION_OPTION, Plugin::GEO_META_OPTION, GeoImport::STATE_OPTION, UploadsGuard::STATE_OPTION, UploadsGuard::PROBE_OPTION ) as $option ) {
+			$this->assertFalse( get_option( $option ), "option {$option} deleted" );
+		}
+		$this->assertFalse( get_site_transient( Updater::CACHE ), 'updater cache deleted' );
+		$this->assertSame( 'keep me', get_option( 'unrelated_option' ), 'unrelated option kept' );
+
+		// Transients.
+		// Only the two look-alikes below that happen to start with wpb_ (4 rows with their timeouts) may match.
+		$this->assertSame( 4, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%' OR option_name LIKE '\\_transient\\_timeout\\_wpb\\_%'" ), 'counters, lockouts and bans deleted' ); // phpcs:ignore WordPress.DB
+		$this->assertSame( 'keep me', get_transient( 'unrelated_transient' ), 'unrelated transient kept' );
 		$this->assertSame( 0, $count( $ours ), 'every one of ours is gone, with its timeout row' );
 		$this->assertSame( 2 * count( $others ), $count( $others ), 'other plugins\' look-alikes stay' );
+
+		// Cron.
+		$this->assertFalse( wp_next_scheduled( 'wp_bouncer_old_wp_email' ), 'old-WordPress email event cleared' );
+		$this->assertFalse( wp_next_scheduled( Installer::CRON_HOOK ), 'daily cron cleared' );
+		$this->assertFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ), 'traffic purge cron cleared' );
+		$this->assertFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ), 'uploads check cron cleared' );
+		$this->assertFalse( wp_next_scheduled( \WPBouncer\Storage\RedactionMigration::HOOK ), 'redaction cron cleared' );
+		$this->assertFalse( get_option( \WPBouncer\Storage\RedactionMigration::STATE_OPTION ), 'redaction state deleted' );
+
+		// The .htaccess block.
+		$text = (string) file_get_contents( $file );
+		$this->assertStringContainsString( 'Options -Indexes', $text, 'the owner\'s .htaccess lines stay' );
+		$this->assertStringNotContainsString( 'WP Bouncer', $text, 'our .htaccess block is removed' );
 	}
 
 	public function test_it_does_not_delete_a_working_file_outside_its_own_folder(): void {
@@ -159,33 +157,6 @@ final class UninstallTest extends IntegrationTestCase {
 		$this->uninstall();
 
 		$this->assertFileExists( $outside );
-	}
-
-	public function test_it_clears_every_cron_hook(): void {
-		$this->populate();
-		$this->assertNotFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
-		wp_schedule_single_event( time() + 60, 'wp_bouncer_old_wp_email' );
-
-		$this->uninstall();
-
-		$this->assertFalse( wp_next_scheduled( 'wp_bouncer_old_wp_email' ) );
-		$this->assertFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
-		$this->assertFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
-		$this->assertFalse( wp_next_scheduled( UploadsGuard::CHECK_HOOK ) );
-		$this->assertFalse( wp_next_scheduled( \WPBouncer\Storage\RedactionMigration::HOOK ) );
-		$this->assertFalse( get_option( \WPBouncer\Storage\RedactionMigration::STATE_OPTION ) );
-	}
-
-	public function test_it_removes_our_htaccess_block_but_not_the_owners_lines(): void {
-		file_put_contents( $this->uploads_dir . '/.htaccess', "Options -Indexes\n" );
-		UploadsGuard::write_block();
-		$this->populate();
-
-		$this->uninstall();
-
-		$text = (string) file_get_contents( $this->uploads_dir . '/.htaccess' );
-		$this->assertStringContainsString( 'Options -Indexes', $text );
-		$this->assertStringNotContainsString( 'WP Bouncer', $text );
 	}
 
 	public function test_it_removes_an_unfinished_import_and_its_working_files(): void {

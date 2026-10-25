@@ -145,8 +145,11 @@ login() { # login IP USER PASS [curl args...] -> writes page to $WORK/login.html
 		-d "log=$user&pwd=$pass&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
 }
 
-set_settings() { # set_settings 'PHP code that edits $s'
-	$WP eval "\$s = get_option('wp_bouncer_settings'); $1; update_option('wp_bouncer_settings', \$s);"
+settings_php() { # settings_php 'PHP code that edits $s' -> PHP that loads, edits and saves the settings (to join with other code in one wp eval)
+	printf '%s' "\$s = get_option('wp_bouncer_settings'); $1; update_option('wp_bouncer_settings', \$s);"
+}
+set_settings() { # set_settings 'PHP code that edits $s' ['PHP to run first']
+	$WP eval "${2:-} $(settings_php "$1")"
 }
 
 echo "==> Setting up WordPress in $WORK"
@@ -304,13 +307,10 @@ else
 fi
 $WP core is-installed 2>/dev/null || $WP core install --url="$U" --title=E2E --admin_user=admin_e2e --admin_password=e2e-pass-123 --admin_email=e2e@example.test --skip-email
 # Pin the URLs: WP-CLI can otherwise record the directory name in siteurl.
-$WP option update siteurl "$U"
-$WP option update home "$U"
 # Pretty permalinks, as almost every live site has: with plain ones, WordPress
 # answers most unknown paths with the home page or a redirect, not a 404.
-$WP rewrite structure '/%postname%/'
 $WP plugin activate wp-bouncer
-$WP eval '$d = WPBouncer\Settings::defaults(); $d["ip_source"] = "x_real_ip"; $d["trusted_proxies"] = ["127.0.0.1"]; update_option("wp_bouncer_settings", $d); global $wpdb; $wpdb->query("DELETE FROM {$wpdb->prefix}bouncer_log"); $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%transient%wpb\_%\"");'
+$WP eval 'update_option("siteurl", "'"$U"'"); update_option("home", "'"$U"'"); global $wp_rewrite; $wp_rewrite->set_permalink_structure("/%postname%/"); flush_rewrite_rules(false); $d = WPBouncer\Settings::defaults(); $d["ip_source"] = "x_real_ip"; $d["trusted_proxies"] = ["127.0.0.1"]; update_option("wp_bouncer_settings", $d); global $wpdb; $wpdb->query("DELETE FROM {$wpdb->prefix}bouncer_log"); $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE \"%transient%wpb\_%\"");'
 rm -f "$W/debug.log"
 
 # Capture outgoing mail instead of sending it: one JSON line per email.
@@ -372,12 +372,14 @@ PHPEOF
 # display_errors is off as on a production host; PHP's own start-up warnings
 # (such as "POST too large") would otherwise land in the page and break redirects.
 # Several workers, so the site can make a request to itself (the uploads test does).
-# opcache.enable=0: the update tests swap the linked plugin folder for a copy. OPcache (on by
-# default in the built-in server when the extension is loaded) would keep serving the compiled
-# plugin under the old, linked path, so __FILE__ would point at the source folder and the
-# updater could not recognise its own plugin file ("The plugin is at the latest version").
+# OPcache stays on (it halves the run time: WordPress is not recompiled on every request) but checks the
+# file's timestamp on every request (validate_timestamps=1, revalidate_freq=0) and resolves paths again
+# (revalidate_path=1). The update tests swap the linked plugin folder for a copy; with OPcache's defaults
+# (a 2 second revalidation interval, cached path lookups) it kept serving the compiled plugin under the old,
+# linked path, so __FILE__ pointed at the source folder and the updater could not recognise its own plugin
+# file ("The plugin is at the latest version"). With these settings the Updates section passed on every run.
 PHP_CLI_SERVER_WORKERS=4 "$PHP" -d max_execution_time=30 -d upload_max_filesize=2M -d post_max_size=8M -d display_errors=0 \
-	-d opcache.enable=0 -S "127.0.0.1:$PORT" -t "$W" "$WORK/router.php" > "$WORK/server.log" 2>&1 &
+	-d opcache.enable=1 -d opcache.validate_timestamps=1 -d opcache.revalidate_freq=0 -d opcache.revalidate_path=1 -S "127.0.0.1:$PORT" -t "$W" "$WORK/router.php" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 1 50); do curl -s -o /dev/null "$U/" && break; sleep 0.1; done
 sleep 0.2
@@ -423,8 +425,70 @@ mail_count() { count_in '"subject"' "$MAILLOG"; }
 open_panels() { # open_panels -> comma-separated rule rows of the Rules tab in $WORK/admin.html whose Settings panel is open
 	"$PHP" -r 'preg_match_all("/<div class=\"wpb-rule\" id=\"(rule-[a-z_]+)\".*?(?=<div class=\"wpb-rule\" id=|<\/section>)/s", file_get_contents($argv[1]), $m, PREG_SET_ORDER); $o = array(); foreach ($m as $r) { if (preg_match("/<details class=\"wpb-rule-settings\" open>/", $r[0])) { $o[] = $r[1]; } } echo implode(",", $o);' "$WORK/admin.html"
 }
+# Reads (and a few plain writes) that need no WordPress code go straight to the database: booting
+# WordPress through WP-CLI costs about 250 ms a time, this about 20 ms. Use a "wp eval" only where the
+# plugin's own code has to run. Tables are wp_*. dbq prints one line per row, columns separated by tabs
+# (NULL as an empty string):
+#   dbq "SELECT ..."                  rows of a query
+#   dbq "DELETE ..." / "INSERT ..."   run a statement
+#   dbq_opt NAME 'PHP using $o'       evaluate PHP on the unserialized value of option NAME ($o is null when it is missing)
+cat > "$WORK/dbq.php" <<'PHPEOF'
+<?php
+mysqli_report( MYSQLI_REPORT_OFF );
+$mode = $argv[1];
+$arg  = $argv[2];
+$expr = $argv[3] ?? '';
+if ( 'sqlite' === getenv( 'WPB_Q_DB' ) ) {
+	$pdo = new PDO( 'sqlite:' . getenv( 'WPB_Q_SQLITE' ) );
+	$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
+	$pdo->setAttribute( PDO::ATTR_TIMEOUT, 20 );
+	$run = static function ( string $sql ) use ( $pdo ) {
+		if ( preg_match( '/^\s*select/i', $sql ) ) {
+			return $pdo->query( $sql )->fetchAll( PDO::FETCH_NUM );
+		}
+		$pdo->exec( $sql );
+		return array();
+	};
+} else {
+	$h = getenv( 'WPB_Q_HOST' ); $port = 3306;
+	if ( preg_match( '/^(.*):([0-9]+)$/', $h, $m ) ) { $h = $m[1]; $port = (int) $m[2]; }
+	$c = mysqli_init();
+	if ( ! @$c->real_connect( $h, getenv( 'WPB_Q_USER' ), getenv( 'WPB_Q_PASS' ), getenv( 'WPB_Q_NAME' ), $port ) ) { fwrite( STDERR, "dbq: connect failed\n" ); exit( 1 ); }
+	$c->set_charset( 'utf8mb4' );
+	$run = static function ( string $sql ) use ( $c ) {
+		$r = $c->query( $sql );
+		if ( false === $r ) { fwrite( STDERR, 'dbq: ' . $c->error . "\n" ); exit( 1 ); }
+		return true === $r ? array() : $r->fetch_all( MYSQLI_NUM );
+	};
+}
+if ( 'opt' === $mode ) {
+	$q   = "SELECT option_value FROM wp_options WHERE option_name = '" . str_replace( "'", "''", $arg ) . "'";
+	$row = $run( $q )[0] ?? null;
+	$o   = null === $row ? null : maybe_unserialize_e2e( $row[0] );
+	eval( $expr );
+	exit( 0 );
+}
+foreach ( $run( $arg ) as $row ) {
+	echo implode( "\t", array_map( 'strval', $row ) ), "\n";
+}
+function maybe_unserialize_e2e( $v ) {
+	$u = @unserialize( $v );
+	return ( false === $u && 'b:0;' !== $v ) ? $v : $u;
+}
+PHPEOF
+if [ "$DB" = sqlite ]; then
+	# The SQLite plugin keeps the file at the path its db-path.php returns (newer versions), or in wp-content/database/.ht.sqlite.
+	export WPB_Q_DB=sqlite WPB_Q_SQLITE="$("$PHP" -r 'define( "ABSPATH", $argv[1] . "/" ); $d = $argv[1] . "/wp-content/database/"; echo is_file( $d . "db-path.php" ) ? require $d . "db-path.php" : $d . ".ht.sqlite";' "$W")"
+else
+	export WPB_Q_DB=mysql WPB_Q_HOST="$DB_HOST" WPB_Q_USER="$DB_USER" WPB_Q_PASS="$DB_PASSWORD" WPB_Q_NAME="$DB_NAME"
+fi
+dbq() { # dbq SQL -> rows (the first row's single value, usually), tab-separated
+	local out; out=$("$PHP" "$WORK/dbq.php" sql "$1") || { echo "dbq failed: $1" >&2; return 1; }
+	printf '%s' "${out%$'\n'}"   # the last newline goes, as with $(...) anywhere else; inner ones stay
+}
+dbq_opt() { "$PHP" "$WORK/dbq.php" opt "$1" "$2"; }
 log_value() { # log_value COLUMN "WHERE ..." -> first matching value from the bouncer log
-	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_log WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
+	dbq "SELECT $1 FROM wp_bouncer_log WHERE $2 ORDER BY id DESC LIMIT 1"
 }
 
 if want "Normal traffic"; then
@@ -459,7 +523,19 @@ WAF_DEEP=$(head -c 600 /dev/zero | tr '\0' '[')$(head -c 600 /dev/zero | tr '\0'
 check "WAF: JSON nested past 512 levels" 403 "$(status 203.0.113.55 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data "$WAF_DEEP")"
 check "WAF: broken JSON gets no verdict" 400 "$(status 203.0.113.56 "$MOZ" "$U/?rest_route=/wp/v2/posts" -X POST -H 'Content-Type: application/json' --data '{"title":')"
 # A non-admin (editor) saving a post with block-editor markup through the REST API is not blocked.
-$WP user get editor_e2e > /dev/null 2>&1 || $WP user create editor_e2e editor@example.test --role=editor --user_pass=e2e-editor-123 > /dev/null
+# One WP-CLI call creates both users (if a reused work directory lacks them) and their application passwords.
+read -r -d '' E2E_USERS < <($WP eval '
+	$out = array();
+	foreach ( array( "editor_e2e" => array( "editor", "e2e-editor-123" ), "sub_e2e" => array( "subscriber", "e2e-sub-123" ) ) as $login => $def ) {
+		$u  = get_user_by( "login", $login );
+		$id = $u ? $u->ID : wp_insert_user( array( "user_login" => $login, "user_email" => explode( "_", $login )[0] . "@example.test", "role" => $def[0], "user_pass" => $def[1] ) );
+		$pw = WP_Application_Passwords::create_new_application_password( $id, array( "name" => "e2e-rest" ) );
+		$out[] = $id;
+		$out[] = $pw[0];
+	}
+	echo implode( "\n", $out );
+') || true
+{ read -r EDITOR_ID; read -r APPPW; read -r SUB_ID; read -r SUBPW; } <<< "$E2E_USERS"
 EJ="$WORK/editor-cookies.txt"
 curl -s -o /dev/null -c "$EJ" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" \
 	-d "log=editor_e2e&pwd=e2e-editor-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
@@ -469,7 +545,6 @@ check "editor saves a post over REST" 201 "$(curl -s -o /dev/null -w '%{http_cod
 WAF_CODE='{"title":"Code tutorial","status":"draft","content":"<!-- wp:html --><iframe src=\"https://example.org/\"></iframe><!-- /wp:html --><!-- wp:code --><pre>eval(x); SELECT a FROM t UNION SELECT b FROM u</pre><!-- /wp:code -->"}'
 check "editor saves HTML and code over REST (JSON scan skips editors)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -b "$EJ" -H "X-Real-IP: 198.51.100.57" -A "$MOZ" -H "X-WP-Nonce: $ENONCE" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts")"
 # A subscriber is not an editor: the same JSON is refused by the WAF (a WordPress refusal would be a JSON "code" error instead).
-$WP user get sub_e2e > /dev/null 2>&1 || $WP user create sub_e2e sub@example.test --role=subscriber --user_pass=e2e-sub-123 > /dev/null
 SJ="$WORK/sub-cookies.txt"
 curl -s -o /dev/null -c "$SJ" -b "wordpress_test_cookie=WP%20Cookie%20check" -H "X-Real-IP: 198.51.100.58" -A "$MOZ" \
 	-d "log=sub_e2e&pwd=e2e-sub-123&wp-submit=Log+In&testcookie=1" "$U/wp-login.php"
@@ -481,14 +556,12 @@ check "anonymous JSON with code is blocked" 403 "$(status 203.0.113.59 "$MOZ" "$
 mkdir -p "$W/wp-content/mu-plugins"
 echo "<?php add_filter( 'wp_is_application_passwords_available', '__return_true' );" > "$W/wp-content/mu-plugins/wpb-e2e-apppw.php"
 [ -n "${WPB_E2E_CONTROL:-}" ] && $WP plugin deactivate wp-bouncer
-APPPW=$($WP user application-password create editor_e2e e2e-rest --porcelain 2>/dev/null)
 APP_OUT=$(curl -s -w ' HTTP:%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.61" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_POST" "$U/?rest_route=/wp/v2/posts")
 check "application-password REST save creates the post" 201 "$(echo "$APP_OUT" | sed 's/.*HTTP://')"
-check "  ...as the editor"            1 "$(echo "$APP_OUT" | grep -c '"author":'"$($WP user get editor_e2e --field=ID)"'[,}]')"
+check "  ...as the editor"            1 "$(echo "$APP_OUT" | grep -c '"author":'"$EDITOR_ID"'[,}]')"
 APP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -u "editor_e2e:$APPPW" -H "X-Real-IP: 198.51.100.61" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts")
 check "application-password editor is exempt from the JSON scan" 201 "$APP_CODE"
 # An application-password subscriber is not an editor: the same JSON is refused (by the WAF, not by WordPress).
-SUBPW=$($WP user application-password create sub_e2e e2e-rest --porcelain 2>/dev/null)
 curl -s -o "$WORK/sub-app.html" -u "sub_e2e:$SUBPW" -H "X-Real-IP: 198.51.100.62" -A "$MOZ" -H 'Content-Type: application/json' --data "$WAF_CODE" "$U/?rest_route=/wp/v2/posts"
 check "app-password subscriber with code: refused by the WAF" 0 "$(grep -c 'rest_cannot_create' "$WORK/sub-app.html")"
 # A Basic header with a wrong password: the user stays 0, so the body is scanned as a visitor's (our block page, not core's 401).
@@ -543,12 +616,12 @@ fi
 if want "Privacy minimisation"; then
 # A mistyped password in the username field must not reach the log, and a secret in a blocked URL is stored redacted.
 for i in 1 2 3 4 5; do login 198.51.100.15 "hunter2-e2e-typo" "wrong$i" > /dev/null; done
-check "lockout row written"          1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE ip = \"198.51.100.15\" AND action = \"lockout\"");')"
-check "unknown username not stored"  0 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE reason LIKE \"%hunter2-e2e-typo%\"");')"
-check "lockout reason is a count"    1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE ip = \"198.51.100.15\" AND reason LIKE \"%unknown username%\"");')"
+check "lockout row written"          1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE ip = '198.51.100.15' AND action = 'lockout'")"
+check "unknown username not stored"  0 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE reason LIKE '%hunter2-e2e-typo%'")"
+check "lockout reason is a count"    1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE ip = '198.51.100.15' AND reason LIKE '%unknown username%'")"
 check "scanner with a secret in URL" 403 "$(status 203.0.113.61 "sqlmap/1.7" "$U/?key=E2ESECRETKEY&token=E2ESECRETTOKEN&ok=1")"
-check "secret not stored"            0 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE uri LIKE \"%E2ESECRET%\"");')"
-check "URI stored redacted"          "/?key=[removed]&token=[removed]&ok=1" "$($WP eval 'global $wpdb; echo $wpdb->get_var("SELECT uri FROM {$wpdb->prefix}bouncer_log WHERE ip = \"203.0.113.61\" ORDER BY id DESC LIMIT 1");')"
+check "secret not stored"            0 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE uri LIKE '%E2ESECRET%'")"
+check "URI stored redacted"          "/?key=[removed]&token=[removed]&ok=1" "$(dbq "SELECT uri FROM wp_bouncer_log WHERE ip = '203.0.113.61' ORDER BY id DESC LIMIT 1")"
 
 fi
 if want "Emergency switch (WP_BOUNCER_DISABLE)"; then
@@ -566,8 +639,8 @@ check "unlocked IP can log in"       302 "$(login 198.51.100.5 admin_e2e e2e-pas
 
 fi
 if want "Country blocking"; then
-$WP eval '$g = WPBouncer\Plugin::instance()->geo_database(); $g->import_file("'"$FIXTURES"'/geo-sample.csv"); update_option(WPBouncer\Plugin::GEO_META_OPTION, ["rows" => $g->count(), "source" => "fixture", "imported" => time()]);'
-set_settings '$s["rules"]["country"] = ["enabled" => true, "mode" => "block", "countries" => ["CN"], "block_unknown" => false, "scope" => "site"]'
+set_settings '$s["rules"]["country"] = ["enabled" => true, "mode" => "block", "countries" => ["CN"], "block_unknown" => false, "scope" => "site"]' \
+	'$g = WPBouncer\Plugin::instance()->geo_database(); $g->import_file("'"$FIXTURES"'/geo-sample.csv"); update_option(WPBouncer\Plugin::GEO_META_OPTION, ["rows" => $g->count(), "source" => "fixture", "imported" => time()]);'
 check "blocked country (CN)"         403 "$(status 1.0.2.5 "$MOZ" "$U/")"
 check "other country (AU)"           200 "$(status 1.0.0.5 "$MOZ" "$U/")"
 check "unknown country"              200 "$(status 8.8.8.8 "$MOZ" "$U/")"
@@ -587,7 +660,7 @@ fi
 if want "Monitor mode"; then
 set_settings '$s["mode"] = "monitor"'
 check "monitor mode lets scanner in" 200 "$(status 203.0.113.77 "sqlmap/1.7" "$U/")"
-check "...but logs it"               monitored "$($WP eval 'global $wpdb; echo $wpdb->get_var("SELECT action FROM {$wpdb->prefix}bouncer_log WHERE ip = \"203.0.113.77\"");')"
+check "...but logs it"               monitored "$(dbq "SELECT action FROM wp_bouncer_log WHERE ip = '203.0.113.77' ORDER BY id LIMIT 1")"
 set_settings '$s["mode"] = "enforce"'
 
 fi
@@ -660,7 +733,8 @@ check "  ...and a fixed intro"        1 "$(grep -c 'checks WP Bouncer runs' "$WO
 check "front page has no environment data" 0 "$(curl -s -H "X-Real-IP: 203.0.113.30" -A "$MOZ" "$U/" | grep -c 'wpb-environment\|WP Bouncer runs\|DISALLOW_FILE_EDIT')"
 
 # Dashboard widget (WPB-4): renders for the admin without JavaScript, from the blocks logged above.
-$WP eval 'WPBouncer\Admin\DashboardWidget::flush();'
+WIDGET_FLUSH="DELETE FROM wp_options WHERE option_name LIKE '%wpb_widget_stats%'"   # DashboardWidget::flush(): its transients and their timeouts
+dbq "$WIDGET_FLUSH"
 admin "$U/wp-admin/index.php" > /dev/null
 check "dashboard widget renders for the admin" 1 "$(grep -c 'id="wp_bouncer_dashboard"' "$WORK/admin.html")"
 check "  ...with the status line"      1 "$( [ "$(grep -c 'rules on)' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
@@ -668,13 +742,15 @@ check "  ...with counts from the log"  1 "$( [ "$(grep -c 'in the last 24 hours'
 check "  ...and a link to the Activity Log" 1 "$( [ "$(grep -c 'tab=log' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
 check "  ...and no PHP errors"         0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
 # Stored XSS: hostile values in every log column. The widget escapes the fields it shows and never shows the rest.
-$WP eval 'global $wpdb; $wpdb->insert( $wpdb->prefix . "bouncer_log", array( "created_at" => gmdate( "Y-m-d H:i:s" ), "ip" => "<img src=x onerror=wpbip()>", "country" => "", "rule" => "<script>wpbrule()</script>", "action" => "blocked", "reason" => "<script>wpbreason()</script>", "method" => "GET", "uri" => "/<script>wpburi()</script>", "user_agent" => "<script>wpbua()</script>" ) ); WPBouncer\Admin\DashboardWidget::flush();'
+dbq "INSERT INTO wp_bouncer_log (created_at, ip, country, rule, action, reason, method, uri, user_agent) VALUES ('$(date -u '+%Y-%m-%d %H:%M:%S')', '<img src=x onerror=wpbip()>', '', '<script>wpbrule()</script>', 'blocked', '<script>wpbreason()</script>', 'GET', '/<script>wpburi()</script>', '<script>wpbua()</script>')"
+dbq "$WIDGET_FLUSH"
 admin "$U/wp-admin/index.php" > /dev/null
 check "widget escapes a hostile rule name"  1 "$(grep -c '&lt;script&gt;wpbrule()&lt;/script&gt;' "$WORK/admin.html")"
 check "  ...and a hostile IP"               1 "$( [ "$(grep -c '&lt;img src=x onerror=wpbip()&gt;' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
 check "  ...no raw script or img from the log" 0 "$(grep -c '<script>wpb\|<img src=x onerror=wpbip' "$WORK/admin.html")"
 check "  ...never shows the URI, UA or reason" 0 "$(grep -c 'wpburi\|wpbua\|wpbreason' "$WORK/admin.html")"
-$WP eval 'global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->prefix}bouncer_log WHERE rule LIKE \"%wpbrule%\"" ); WPBouncer\Admin\DashboardWidget::flush();'
+dbq "DELETE FROM wp_bouncer_log WHERE rule LIKE '%wpbrule%'"
+dbq "$WIDGET_FLUSH"
 
 fi
 if want "Rules tab"; then
@@ -685,9 +761,9 @@ RULES_URL="$U/wp-admin/admin.php?page=wp-bouncer&tab=rules"
 FORMFIELDS="$REPO_DIR/tests/Support/FormFields.php"
 RT_BAK="$WORK/settings-before-rules-tab.json"
 RT_LOG_MAX=$(log_value id "1 = 1"); RT_LOG_MAX=${RT_LOG_MAX:-0}
-$WP eval 'file_put_contents("'"$RT_BAK"'", wp_json_encode(get_option("wp_bouncer_settings")));'
+dbq_opt wp_bouncer_settings 'echo json_encode($o);' > "$RT_BAK"
 settings_json() { # the stored settings as JSON with sorted keys, so two states compare as text
-	$WP eval '$f = function (array &$a) use (&$f) { ksort($a); foreach ($a as &$v) { if (is_array($v)) { $f($v); } } }; $s = (array) get_option("wp_bouncer_settings"); $f($s); echo wp_json_encode($s);'
+	dbq_opt wp_bouncer_settings '$f = function (array &$a) use (&$f) { ksort($a); foreach ($a as &$v) { if (is_array($v)) { $f($v); } } }; $s = (array) $o; $f($s); echo json_encode($s);'
 }
 rules_state() { # rules_state defaults|fixture -> every rule at its default, or at tests/fixtures/rules-non-default.php (other settings kept)
 	$WP eval '$s = (array) get_option("wp_bouncer_settings"); $d = WPBouncer\Settings::defaults(); $s["rules"] = $d["rules"]; if ("'"$1"'" === "fixture") { $f = require "'"$FIXTURES"'/rules-non-default.php"; foreach ($f["rules"] as $id => $r) { $s["rules"][$id] = array_merge($s["rules"][$id], $r); } } update_option("wp_bouncer_settings", WPBouncer\Settings::sanitize($s));'
@@ -746,7 +822,7 @@ for name in 'Block lists' 'Login and accounts' 'Scanners and floods' 'Attack pay
 	check "dashboard shows category '$name'" 1 "$( [ "$(grep -cF "$name" "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
 done
 check "dashboard has a Turn on/off button per rule" 11 "$(grep -c 'name="action" value="wp_bouncer_toggle_rule"' "$WORK/admin.html")"
-xmlrpc_on() { $WP eval 'echo get_option("wp_bouncer_settings")["rules"]["xmlrpc"]["enabled"] ? "on" : "off";'; }
+xmlrpc_on() { dbq_opt wp_bouncer_settings 'echo $o["rules"]["xmlrpc"]["enabled"] ? "on" : "off";'; }
 check "xmlrpc starts on"               on "$(xmlrpc_on)"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_toggle_rule dashboard)&action=wp_bouncer_toggle_rule&rule=xmlrpc" > /dev/null
 check "dashboard button turns it off"  off "$(xmlrpc_on)"
@@ -755,7 +831,7 @@ check "  ...and back on"               on "$(xmlrpc_on)"
 
 # Put everything back, including the audit rows and mail the saves above caused.
 $WP eval 'update_option("wp_bouncer_settings", json_decode(file_get_contents("'"$RT_BAK"'"), true));'
-$WP eval 'global $wpdb; $wpdb->query( $wpdb->prepare( "DELETE FROM {$wpdb->prefix}bouncer_log WHERE rule = %s AND id > %d", "settings", '"$RT_LOG_MAX"' ) );'
+dbq "DELETE FROM wp_bouncer_log WHERE rule = 'settings' AND id > $RT_LOG_MAX"
 rm -f "$MAILLOG" "$RT_BAK" "$WORK/rules-post.txt"
 
 fi
@@ -781,8 +857,8 @@ printf '<!DOCTYPE html><html><body><h1>404 Not Found</h1></body></html>\n' > "$W
 head -c 3000000 /dev/urandom | gzip -1 > "$WORK/too-big.csv.gz"   # over upload_max_filesize (2M)
 head -c 9000000 /dev/urandom > "$WORK/way-too-big.csv"              # over post_max_size (8M)
 
-geo_rows() { $WP eval 'echo WPBouncer\Plugin::instance()->geo_database()->count();'; }
-import_running() { $WP eval 'echo null === WPBouncer\Plugin::instance()->geo_import()->status() ? 0 : 1;'; }
+geo_rows() { dbq "SELECT COUNT(*) FROM wp_bouncer_geo"; }
+import_running() { dbq_opt wp_bouncer_geo_import 'echo ( is_array( $o ) && ! empty( $o["file"] ) ) ? 1 : 0;'; }   # GeoImport::status() is not null
 run_steps() { # run_steps -> number of AJAX steps until done, or "error: ..."
 	local nonce n=0 out
 	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=tools" > /dev/null
@@ -827,13 +903,13 @@ check "Tools shows progress"         1   "$(grep -c 'id="wpb-geo-progress"' "$WO
 check "import needs several steps"   ok  "$(at_least 6 "$(run_steps)")"
 check "all 3000 ranges loaded"       3000 "$(geo_rows)"
 check "import no longer running"     0   "$(import_running)"
-check "meta records the file"        "3000 geo.csv.gz" "$($WP eval '$m = get_option(WPBouncer\Plugin::GEO_META_OPTION); echo $m["rows"], " ", $m["source"];')"
+check "meta records the file"        "3000 geo.csv.gz" "$(dbq_opt wp_bouncer_geo_meta '$o = (array) $o; echo $o["rows"], " ", $o["source"];')"
 check "working file removed"         0   "$(find "$W/wp-content/uploads/wp-bouncer" -name '*.csv' | wc -l | tr -d ' ')"
 check "work folder has .htaccess"    1   "$(grep -c 'Require all denied' "$W/wp-content/uploads/wp-bouncer/.htaccess")"
 check "lookup uses new data"         NL  "$($WP eval 'echo WPBouncer\Plugin::instance()->geo_database()->lookup("5.4.7.9");')"
 
 # The previous import left 3000 rows, so empty the table first: otherwise "all ranges" would pass without this import.
-$WP eval 'WPBouncer\Plugin::instance()->geo_database()->truncate();'
+dbq "DELETE FROM wp_bouncer_geo"   # GeoDatabase::truncate() (TRUNCATE is not portable to SQLite)
 check "import by URL starts"         302 "$(from_url "$FILES_URL/geo.csv.gz")"
 check "  ...without an error"        ok  "$(redirect_err)"
 check "  ...and an import is running" 1   "$(import_running)"
@@ -854,7 +930,7 @@ upload "$FILES/geo.csv.gz" > /dev/null
 check "no-JS step button works"      302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_geo_step)&action=wp_bouncer_geo_step")"
 check "stop button works"            302 "$(admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_geo_cancel)&action=wp_bouncer_geo_cancel")"
 check "  ...keeps partial data"      500 "$(geo_rows)"
-check "  ...marked incomplete"       1   "$($WP eval 'echo (int) ( false !== strpos( get_option( WPBouncer\Plugin::GEO_META_OPTION )["source"], "incomplete" ) );')"
+check "  ...marked incomplete"       1   "$(dbq_opt wp_bouncer_geo_meta 'echo (int) ( false !== strpos( $o["source"], "incomplete" ) );')"
 check "  ...import not running"      0   "$(import_running)"
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=tools" > /dev/null
 check "step with nothing running"    1   "$(curl -s -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" -d "action=wp_bouncer_geo_step&_ajax_nonce=$(ajax_nonce)" "$U/wp-admin/admin-ajax.php" | grep -c '"success":false')"
@@ -866,12 +942,12 @@ if want "No PHP in uploads"; then
 UP="$W/wp-content/uploads"
 HT="$UP/.htaccess"
 rm -f "$HT" "$W/wp-content/e2e-htaccess-500"  # left by an earlier run in a reused WPB_E2E_DIR
-$WP option delete wp_bouncer_uploads_htaccess > /dev/null 2>&1
+dbq "DELETE FROM wp_options WHERE option_name = 'wp_bouncer_uploads_htaccess'"
 status 203.0.113.10 "$MOZ" "$U/" > /dev/null   # any request writes the block if needed
 check "block written to uploads/.htaccess" 1 "$(count_in '# BEGIN WP Bouncer' "$HT")"
 probe() { # probe -> result of the Rules tab's "Test now" button
 	admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_uploads_probe rules)&action=wp_bouncer_uploads_probe" > /dev/null
-	$WP eval 'echo get_option( WPBouncer\Hardening\UploadsGuard::PROBE_OPTION )["result"];'
+	dbq_opt wp_bouncer_uploads_probe 'echo $o["result"];'
 }
 check "Test now: protected"          protected "$(probe)"
 check "  ...test files deleted"      0 "$(find "$UP" -maxdepth 1 -name 'wp-bouncer-*' | wc -l | tr -d ' ')"
@@ -1009,14 +1085,13 @@ $WP eval 'set_transient( "wpb_alert_count_critical", 20, HOUR_IN_SECONDS );'
 rm -f "$MAILLOG"
 $WP user create eve5_e2e eve5@example.test --role=administrator --user_pass=e2e-pass-eve
 check "over 20 an hour: not emailed" 0 "$(mail_count)"
-check "  ...but still logged"        1 "$($WP eval 'global $wpdb; echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE action = \"alert\" AND reason LIKE \"%eve4_e2e%\"");')"
-$WP eval 'delete_transient( "wpb_alert_count" );'
-set_settings '$s["alerts"]["enabled"] = false'
+check "  ...but still logged"        1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE action = 'alert' AND reason LIKE '%eve4_e2e%'")"
+set_settings '$s["alerts"]["enabled"] = false' 'delete_transient( "wpb_alert_count" );'
 rm -f "$MAILLOG"
 $WP user create eve5_e2e eve5@example.test --role=administrator --user_pass=e2e-pass-eve
 check "alerts off: no email"         0 "$(mail_count)"
 set_settings '$s["alerts"] = ["enabled" => true, "recipients" => [], "new_admin" => true, "plugin_changes" => true, "plugin_updates" => true]'
-for u in eve_e2e sub_e2e eve2_e2e eve3_e2e eve4_e2e eve5_e2e; do $WP user delete "$u" --yes > /dev/null 2>&1; done
+$WP user delete eve_e2e sub_e2e eve2_e2e eve3_e2e eve4_e2e eve5_e2e --yes > /dev/null 2>&1
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=log&log_action=alert" > /dev/null
 check "Activity Log shows alerts"    1 "$( [ "$(grep -o 'wpb-badge-alert' "$WORK/admin.html" | wc -l)" -ge 5 ] && echo 1 || echo 0 )"
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard" > /dev/null
@@ -1025,16 +1100,19 @@ check "Dashboard still loads"        200 "$(admin "$U/wp-admin/admin.php?page=wp
 fi
 if want "Traffic log"; then
 traffic_value() { # traffic_value COLUMN "WHERE ..." -> newest matching value from the traffic log
-	$WP eval 'global $wpdb; echo $wpdb->get_var("SELECT '"$1"' FROM {$wpdb->prefix}bouncer_traffic WHERE '"$2"' ORDER BY id DESC LIMIT 1");'
+	dbq "SELECT $1 FROM wp_bouncer_traffic WHERE $2 ORDER BY id DESC LIMIT 1"
+}
+traffic_row() { # traffic_row "col1, col2" "WHERE ..." -> newest matching row, columns tab-separated
+	dbq "SELECT $1 FROM wp_bouncer_traffic WHERE $2 ORDER BY id DESC LIMIT 1"
 }
 traffic_count() { traffic_value "COUNT(*)" "$1"; }
-check "purge job scheduled"          1 "$($WP cron event list --hook=wp_bouncer_traffic_purge --format=count)"
-$WP eval 'WPBouncer\Plugin::instance()->traffic_log()->clear();'
+check "purge job scheduled"          1 "$(dbq_opt cron '$n = 0; foreach ( (array) $o as $hooks ) { if ( is_array( $hooks ) && isset( $hooks["wp_bouncer_traffic_purge"] ) ) { $n += count( $hooks["wp_bouncer_traffic_purge"] ); } } echo $n;')"
+dbq "DELETE FROM wp_bouncer_traffic"   # TrafficLog::clear()
 status 203.0.113.81 "$MOZ" "$U/" > /dev/null
 check "off by default"               0 "$(traffic_count "1=1")"
 set_settings '$s["traffic"]["enabled"] = true'
 status 203.0.113.81 "$MOZ" "$U/" -e "https://www.example.com/where-they-came-from" > /dev/null
-check "page view recorded"           "200 browser /" "$(traffic_value status "ip = '203.0.113.81'") $(traffic_value client "ip = '203.0.113.81'") $(traffic_value uri "ip = '203.0.113.81'")"
+check "page view recorded"           "200 browser /" "$(traffic_row "status, client, uri" "ip = '203.0.113.81'" | tr '\t' ' ')"
 check "  ...with the referrer"       "https://www.example.com/where-they-came-from" "$(traffic_value referrer "ip = '203.0.113.81'")"
 check "  ...and the User-Agent"      "$MOZ" "$(traffic_value user_agent "ip = '203.0.113.81'")"
 status 203.0.113.82 "$MOZ" "$U/no-such-page/" > /dev/null
@@ -1044,7 +1122,7 @@ check "redirect recorded"            302 "$(traffic_value status "ip = '203.0.11
 status 203.0.113.83 "$MOZ" "$U/.env" > /dev/null
 check "blocked request recorded"     403 "$(traffic_value status "ip = '203.0.113.83'")"
 status 203.0.113.84 "" "$U/" > /dev/null
-check "no User-Agent: unknown, 403"  "unknown 403" "$(traffic_value client "ip = '203.0.113.84'") $(traffic_value status "ip = '203.0.113.84'")"
+check "no User-Agent: unknown, 403"  "unknown 403" "$(traffic_row "client, status" "ip = '203.0.113.84'" | tr '\t' ' ')"
 status 203.0.113.85 "$GOOGLEBOT" "$U/" > /dev/null
 check "Googlebot: search engine"     search_engine "$(traffic_value client "ip = '203.0.113.85'")"
 status 203.0.113.86 "curl/8.4.0" "$U/" > /dev/null
@@ -1073,30 +1151,28 @@ curl -s -o "$WORK/traffic.csv" -b "$J" -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "
 check "CSV export"                   "time_utc,ip,client,method,url,status,referrer,user_agent,user_id" "$(head -1 "$WORK/traffic.csv")"
 check "  ...keeps the filter"        2 "$(grep -c '203.0.113.82' "$WORK/traffic.csv")"
 set_settings '$s["traffic"]["skip_admins"] = true'
-$WP eval 'WPBouncer\Plugin::instance()->traffic_log()->clear();'
+dbq "DELETE FROM wp_bouncer_traffic"
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=traffic" > /dev/null
 check "skip administrators"          0 "$(traffic_count "ip = '198.51.100.50'")"
 set_settings '$s["traffic"]["skip_admins"] = false'
-# "wp cron event run" reschedules a recurring event for now + 1 hour and then unschedules the old slot. When
-# two runs start within the same second the new slot IS the old one, the event vanishes and the next run
-# fails with "Invalid cron event" (seen on fast CI runners). Putting the event in the past first keeps the slots apart.
-run_purge() {
-	$WP eval 'wp_clear_scheduled_hook( "wp_bouncer_traffic_purge" ); wp_schedule_event( time() - 60, "hourly", "wp_bouncer_traffic_purge" );'
-	$WP cron event run wp_bouncer_traffic_purge > /dev/null
+# The purge runs its hook directly (the "purge job scheduled" check above covers the cron registration).
+# It used to go through "wp cron event run", which loses the event when two runs land in the same second.
+# The plugin reads its settings once per request, so a change only applies to the NEXT process: each eval below
+# purges first and then stores the setting the following purge needs. That also keeps this to one WP-CLI call per purge.
+run_purge() { # run_purge ['PHP to run before the purge'] ['PHP to run after it']
+	$WP eval "${1:-} wp_clear_scheduled_hook( 'wp_bouncer_traffic_purge' ); wp_schedule_event( time() - 60, 'hourly', 'wp_bouncer_traffic_purge' ); do_action( 'wp_bouncer_traffic_purge' ); ${2:-}"
 }
-# Old rows: 8 days, 2 days and 1 hour ago.
-$WP eval 'global $wpdb; foreach ( array( 8 * DAY_IN_SECONDS, 2 * DAY_IN_SECONDS, HOUR_IN_SECONDS ) as $age ) { $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - $age ), "ip" => "192.0.2.1", "uri" => "/age-" . $age ) ); }'
-run_purge
+# Old rows: 8 days, 2 days and 1 hour ago. Afterwards: skip_admins off again and a 1-day retention for the next purge.
+run_purge 'global $wpdb; foreach ( array( 8 * DAY_IN_SECONDS, 2 * DAY_IN_SECONDS, HOUR_IN_SECONDS ) as $age ) { $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - $age ), "ip" => "192.0.2.1", "uri" => "/age-" . $age ) ); }' \
+	"$(settings_php '$s["traffic"]["skip_admins"] = false; $s["traffic"]["retention_days"] = 1')"
 check "7-day retention purges"       "0 1 1" "$(traffic_count "uri = '/age-691200'") $(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
-set_settings '$s["traffic"]["retention_days"] = 1'
-run_purge
+# Afterwards: retention 99 stored behind the form's back, and a row older than the 7-day cap.
+run_purge '' "$(settings_php '$s["traffic"]["retention_days"] = 99') global \$wpdb; \$wpdb->insert( \$wpdb->prefix . 'bouncer_traffic', array( 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 8 * DAY_IN_SECONDS ), 'ip' => '192.0.2.1', 'uri' => '/age-old' ) );"
 check "1-day retention purges"       "0 1" "$(traffic_count "uri = '/age-172800'") $(traffic_count "uri = '/age-3600'")"
-set_settings '$s["traffic"]["retention_days"] = 99'   # stored behind the form's back
-$WP eval 'global $wpdb; $wpdb->insert( $wpdb->prefix . "bouncer_traffic", array( "created_at" => gmdate( "Y-m-d H:i:s", time() - 8 * DAY_IN_SECONDS ), "ip" => "192.0.2.1", "uri" => "/age-old" ) );'
 run_purge
 check "never kept past 7 days"       0 "$(traffic_count "uri = '/age-old'")"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_save traffic)&action=wp_bouncer_save&tab=traffic&wp_bouncer[traffic][enabled]=1&wp_bouncer[traffic][retention_days]=3&wp_bouncer[traffic][skip_background]=1" > /dev/null
-check "Traffic tab saves settings"   "1 3" "$($WP eval '$t = WPBouncer\Settings::load()->get("traffic"); echo (int) $t["enabled"], " ", $t["retention_days"];')"
+check "Traffic tab saves settings"   "1 3" "$(dbq_opt wp_bouncer_settings '$t = $o["traffic"]; echo (int) $t["enabled"], " ", $t["retention_days"];')"
 admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_clear_traffic traffic)&action=wp_bouncer_clear_traffic" > /dev/null
 check "Clear traffic log"            0 "$(traffic_count "ip <> '198.51.100.50'")"
 set_settings '$s["traffic"]["enabled"] = false'
@@ -1106,7 +1182,7 @@ check "switched off: not recorded"   0 "$(traffic_count "ip = '203.0.113.89'")"
 fi
 if want "IP trust (header ignored without trusted proxies, loopback, setup notice)"; then
 ipsetup_nonce() { nonce_for wp_bouncer_ip_setup dashboard; }
-stored_ip() { $WP eval '$s = get_option( "wp_bouncer_settings" ); echo $s["ip_source"] . "|" . implode( ",", $s["trusted_proxies"] );'; }
+stored_ip() { dbq_opt wp_bouncer_settings 'echo $o["ip_source"] . "|" . implode( ",", $o["trusted_proxies"] );'; }
 # Loopback as the forwarded address is refused: the request resolves to the proxy, which is never
 # banned itself; requests carrying a refused header are counted and banned under "rejected:<proxy>".
 check "loopback header: probe refused"  403 "$(status 127.0.0.1 "$MOZ" "$U/.env")"
@@ -1172,9 +1248,12 @@ if [ -L "$INSTALLED" ] || [ "$(cd "$INSTALLED" && pwd -P)" = "$(cd "$PLUGIN_DIR"
 	echo "Refusing to test updates: $INSTALLED is the source folder"; exit 1
 fi
 # The update alert needs plugin_updates on; the Email alerts section leaves it so, and a partial run may skip that section.
-set_settings '$s["alerts"] = ["enabled" => true, "recipients" => [], "new_admin" => true, "plugin_changes" => true, "plugin_updates" => true]'
-CURRENT=$($WP plugin get wp-bouncer --field=version)
-$WP plugin auto-updates disable wp-bouncer > /dev/null 2>&1   # left on by an earlier run in a reused WPB_E2E_DIR
+# Auto-updates are switched off first: an earlier run in a reused WPB_E2E_DIR may have left them on.
+set_settings '$s["alerts"] = ["enabled" => true, "recipients" => [], "new_admin" => true, "plugin_changes" => true, "plugin_updates" => true]' \
+	'update_option( "auto_update_plugins", array_values( array_diff( (array) get_option( "auto_update_plugins", array() ), array( "wp-bouncer/wp-bouncer.php" ) ) ) );'
+plugin_version() { sed -n 's/^ \* Version: *//p' "$INSTALLED/wp-bouncer.php" | head -1 | tr -d '\r'; }   # what "wp plugin get --field=version" reads
+plugin_status() { dbq_opt active_plugins 'echo in_array( "wp-bouncer/wp-bouncer.php", (array) $o, true ) ? "active" : "inactive";'; }
+CURRENT=$(plugin_version)
 
 cat > "$W/wp-content/mu-plugins/wpb-e2e-update.php" <<PHPEOF
 <?php
@@ -1202,9 +1281,9 @@ publish() { # publish VERSION -> a plugin zip with that version and its update.j
 }
 refresh_updates() { $WP eval 'delete_site_transient( "update_plugins" ); delete_site_transient( WPBouncer\Update\Updater::CACHE ); wp_update_plugins();'; }
 offered() { # offered -> the version WordPress offers for wp-bouncer, "none", or "unsupported"
-	$WP eval '$t = get_site_transient( "update_plugins" ); $f = "wp-bouncer/wp-bouncer.php"; echo isset( $t->response[ $f ] ) ? $t->response[ $f ]->new_version : ( isset( $t->no_update[ $f ] ) ? "none" : "unsupported" );'
+	dbq_opt _site_transient_update_plugins '$t = $o; $f = "wp-bouncer/wp-bouncer.php"; echo isset( $t->response[ $f ] ) ? $t->response[ $f ]->new_version : ( isset( $t->no_update[ $f ] ) ? "none" : "unsupported" );'
 }
-installed_version() { $WP plugin get wp-bouncer --field=version; }
+installed_version() { plugin_version; }
 update_now() { # update_now -> the JSON from the Plugins screen's "Update now" (admin-ajax update-plugin)
 	admin "$U/wp-admin/plugins.php" > /dev/null
 	local nonce
@@ -1225,24 +1304,24 @@ check "new release is offered"       9.0.0 "$(offered)"
 admin "$U/wp-admin/plugins.php" > /dev/null
 check "Plugins screen shows it"      1    "$(grep -c 'There is a new version of WP Bouncer available' "$WORK/admin.html")"
 admin "$U/wp-admin/update-core.php" > /dev/null
-check "Dashboard > Updates lists it" 1    "$(grep -c 'You have version [0-9.]* installed. Update to 9.0.0' "$WORK/admin.html")"
+check "Dashboard > Updates lists it" 1    "$(grep -c 'You have version [0-9][0-9A-Za-z.+-]* installed. Update to 9.0.0' "$WORK/admin.html")"
 admin "$U/wp-admin/plugin-install.php?tab=plugin-information&plugin=wp-bouncer&section=changelog" > /dev/null
 check "View details shows changelog" 1    "$(grep -c 'Release 9.0.0 for the e2e update test' "$WORK/admin.html")"
 
 sed -i.bak 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' "$FILES/update.json" && rm -f "$FILES/update.json.bak"
-$WP eval 'delete_site_transient( WPBouncer\Update\Updater::CACHE );'
+dbq "DELETE FROM wp_options WHERE option_name LIKE '%wp_bouncer_update_manifest%'"   # delete_site_transient( Updater::CACHE )
 check "tampered zip is refused"      1    "$(update_now | grep -c 'failed its integrity check')"
 check "  ...old version still there" "$CURRENT" "$(installed_version)"
 check "  ...and still running"       403  "$(status 203.0.113.51 "sqlmap/1.7" "$U/")"
 
 publish 9.0.0
-$WP eval 'delete_site_transient( WPBouncer\Update\Updater::CACHE );'
+dbq "DELETE FROM wp_options WHERE option_name LIKE '%wp_bouncer_update_manifest%'"   # delete_site_transient( Updater::CACHE )
 rm -f "$MAILLOG"
 check "Update now succeeds"          1    "$(update_now | grep -c '"success":true')"
 check "  ...new version installed"   9.0.0 "$(installed_version)"
-check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
+check "  ...still active"            active "$(plugin_status)"
 check "  ...update alert sent"       1    "$(count_in 'Plugin updated: WP Bouncer' "$MAILLOG")"
-check "  ...settings kept"           x_real_ip "$($WP eval 'echo get_option( "wp_bouncer_settings" )["ip_source"];')"
+check "  ...settings kept"           x_real_ip "$(dbq_opt wp_bouncer_settings 'echo $o["ip_source"];')"
 check "  ...still blocking"          403  "$(status 203.0.113.52 "sqlmap/1.7" "$U/")"
 check "  ...no update offered now"   none "$(offered)"
 
@@ -1258,7 +1337,7 @@ refresh_updates
 # under test it would upgrade core to the latest release mid-run, so only plugins are allowed.
 $WP eval 'define( "DOING_CRON", true ); add_filter( "auto_update_core", "__return_false" ); add_filter( "auto_update_theme", "__return_false" ); add_filter( "auto_update_translation", "__return_false" ); wp_maybe_auto_update();'
 check "auto-update installs 9.1.0"   9.1.0 "$(installed_version)"
-check "  ...still active"            active "$($WP plugin get wp-bouncer --field=status)"
+check "  ...still active"            active "$(plugin_status)"
 check "  ...still blocking"          403  "$(status 203.0.113.53 "sqlmap/1.7" "$U/")"
 
 echo "<?php define( 'WP_BOUNCER_DISABLE_UPDATES', true );" > "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php"
@@ -1270,12 +1349,21 @@ rm -f "$W/wp-content/mu-plugins/wpb-e2e-noupdates.php" "$W/wp-content/mu-plugins
 fi
 if want "Privacy tools (export and erase personal data)"; then
 # Runs the registered callbacks on the real database (SQLite or MySQL): no DELETE ... LIMIT, no unsupported SQL.
-priv() { $WP eval "$1"; }
-priv 'global $wpdb; $u = get_user_by("login", "admin_e2e"); $wpdb->delete($wpdb->prefix . "bouncer_traffic", array("user_id" => $u->ID)); for ($i = 0; $i < 3; $i++) { $wpdb->insert($wpdb->prefix . "bouncer_traffic", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "uri" => "/priv" . $i, "user_id" => $u->ID)); } $wpdb->insert($wpdb->prefix . "bouncer_log", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "rule" => "login_lockout", "action" => "lockout", "reason" => "5 failed logins (last username \"admin_e2e\")", "uri" => "/wp-login.php?x=1"));'
-check "exporter returns the rows"    3 "$(priv '$e = apply_filters("wp_privacy_personal_data_exporters", array()); $r = $e["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo count($r["data"]);')"
-check "log eraser redacts the login"  '1 5 failed logins (last username "[erased]") |' "$(priv 'global $wpdb; $r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-log"]["callback"]("e2e@example.test", 1); $row = $wpdb->get_row("SELECT reason, uri FROM {$wpdb->prefix}bouncer_log WHERE ip = \"192.0.2.77\"", ARRAY_A); echo (int) $r["items_retained"], " ", $row["reason"], " |", $row["uri"];')"
-check "traffic eraser deletes rows"  "3 0" "$(priv 'global $wpdb; $r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo $r["items_removed"], " ", (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_traffic WHERE ip = \"192.0.2.77\"");')"
-$WP eval 'global $wpdb; $wpdb->delete($wpdb->prefix . "bouncer_log", array("ip" => "192.0.2.77"));'
+# One WP-CLI call prepares the rows, runs the exporter and both erasers and prints one result per line.
+mapfile -t PRIV < <($WP eval '
+	global $wpdb;
+	$u = get_user_by("login", "admin_e2e");
+	$wpdb->delete($wpdb->prefix . "bouncer_traffic", array("user_id" => $u->ID));
+	for ($i = 0; $i < 3; $i++) { $wpdb->insert($wpdb->prefix . "bouncer_traffic", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "uri" => "/priv" . $i, "user_id" => $u->ID)); }
+	$wpdb->insert($wpdb->prefix . "bouncer_log", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.77", "rule" => "login_lockout", "action" => "lockout", "reason" => "5 failed logins (last username \"admin_e2e\")", "uri" => "/wp-login.php?x=1"));
+	$e = apply_filters("wp_privacy_personal_data_exporters", array()); $r = $e["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo count($r["data"]), "\n";
+	$r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-log"]["callback"]("e2e@example.test", 1); $row = $wpdb->get_row("SELECT reason, uri FROM {$wpdb->prefix}bouncer_log WHERE ip = \"192.0.2.77\"", ARRAY_A); echo (int) $r["items_retained"], " ", $row["reason"], " |", $row["uri"], "\n";
+	$r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-traffic"]["callback"]("e2e@example.test", 1); echo $r["items_removed"], " ", (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_traffic WHERE ip = \"192.0.2.77\""), "\n";
+	$wpdb->delete($wpdb->prefix . "bouncer_log", array("ip" => "192.0.2.77"));
+')
+check "exporter returns the rows"    3 "${PRIV[0]:-}"
+check "log eraser redacts the login"  '1 5 failed logins (last username "[erased]") |' "${PRIV[1]:-}"
+check "traffic eraser deletes rows"  "3 0" "${PRIV[2]:-}"
 
 fi
 if want "PHP debug log"; then

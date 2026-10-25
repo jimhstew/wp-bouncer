@@ -33,11 +33,16 @@ final class InstallerTest extends IntegrationTestCase {
 		wp_cache_delete( 'notoptions', 'options' );
 	}
 
-	/** Drop the three tables for real (DDL), as on a site that never activated the plugin. */
-	private function drop_tables(): void {
+	/**
+	 * Drop plugin tables for real (DDL). Each DDL statement is slow on a durable server, so
+	 * tests drop only the tables they need missing. All four: a site that never activated the plugin.
+	 *
+	 * @param string[] $tables Table names without the prefix.
+	 */
+	private function drop_tables( array $tables = array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) ): void {
 		global $wpdb;
 		$this->use_real_ddl();
-		foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
+		foreach ( $tables as $t ) {
 			$wpdb->query( "DROP TABLE IF EXISTS {$wpdb->prefix}{$t}" ); // phpcs:ignore WordPress.DB
 		}
 	}
@@ -49,13 +54,21 @@ final class InstallerTest extends IntegrationTestCase {
 		wp_clear_scheduled_hook( RedactionMigration::HOOK );
 	}
 
-	public function test_activate_creates_the_three_tables_with_expected_columns(): void {
+	/**
+	 * One fresh install (all four tables dropped, so the slow DDL runs once) checked from every angle.
+	 * The labels name the behaviour that failed.
+	 */
+	public function test_activate_on_a_fresh_site_creates_tables_records_version_and_schedules_jobs(): void {
 		global $wpdb;
 		$this->drop_tables();
-		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_log' ) );
+		delete_option( Settings::OPTION );
+		delete_option( Installer::DB_VERSION_OPTION );
+		$this->clear_cron();
+		$this->assertFalse( $this->table_exists( $wpdb->prefix . 'bouncer_log' ), 'precondition: tables are gone' );
 
 		Installer::activate();
 
+		// Columns of the three tables.
 		$this->assertSame(
 			array( 'id', 'created_at', 'ip', 'country', 'rule', 'action', 'reason', 'method', 'uri', 'user_agent' ),
 			$this->columns_of( $wpdb->prefix . 'bouncer_log' )
@@ -68,25 +81,15 @@ final class InstallerTest extends IntegrationTestCase {
 			array( 'id', 'created_at', 'ip', 'method', 'uri', 'referrer', 'user_agent', 'client', 'status', 'user_id' ),
 			$this->columns_of( $wpdb->prefix . 'bouncer_traffic' )
 		);
-	}
 
-	public function test_activate_creates_the_counters_table(): void {
-		global $wpdb;
-		$this->drop_tables();
-		Installer::activate();
-
+		// Counters table.
 		$this->assertSame( array( 'counter_key', 'hits', 'expires_at' ), $this->columns_of( $wpdb->prefix . 'bouncer_counters' ) );
 		$indexes = $this->indexes_of( $wpdb->prefix . 'bouncer_counters' );
 		$this->assertSame( array( 'counter_key' ), $indexes['PRIMARY'] );
 		$this->assertSame( array( 'expires_at' ), $indexes['expires_at'] );
 		$this->assertFalse( RedactionMigration::pending(), 'a fresh install has nothing to redact' );
-	}
 
-	public function test_activate_creates_the_expected_indexes(): void {
-		global $wpdb;
-		$this->drop_tables();
-		Installer::activate();
-
+		// Indexes.
 		$log = $this->indexes_of( $wpdb->prefix . 'bouncer_log' );
 		$this->assertSame( array( 'id' ), $log['PRIMARY'] );
 		$this->assertSame( array( 'created_at' ), $log['created_at'] );
@@ -101,13 +104,8 @@ final class InstallerTest extends IntegrationTestCase {
 		foreach ( array( 'created_at', 'ip', 'client', 'status', 'user_id' ) as $col ) {
 			$this->assertSame( array( $col ), $traffic[ $col ], "traffic index on {$col}" );
 		}
-	}
 
-	public function test_activate_uses_the_documented_column_types(): void {
-		global $wpdb;
-		$this->drop_tables();
-		Installer::activate();
-
+		// Column types.
 		$types = array();
 		foreach ( (array) $wpdb->get_results( "SHOW COLUMNS FROM {$wpdb->prefix}bouncer_geo", ARRAY_A ) as $row ) { // phpcs:ignore WordPress.DB
 			$types[ $row['Field'] ] = strtolower( $row['Type'] );
@@ -123,47 +121,19 @@ final class InstallerTest extends IntegrationTestCase {
 		$this->assertSame( 'varchar(2048)', $types['uri'] );
 		$this->assertSame( 'varchar(45)', $types['ip'] );
 		$this->assertSame( 'datetime', $types['created_at'] );
-	}
 
-	public function test_activate_records_db_version_and_default_settings(): void {
-		$this->drop_tables();
-		delete_option( Settings::OPTION );
-		delete_option( Installer::DB_VERSION_OPTION );
-
-		Installer::activate();
-
+		// Version and default settings.
 		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
 		$this->assertSame( Settings::defaults(), get_option( Settings::OPTION ) );
-	}
 
-	public function test_activate_keeps_existing_settings(): void {
-		$this->drop_tables();
-		$custom         = Settings::defaults();
-		$custom['mode'] = 'monitor';
-		update_option( Settings::OPTION, $custom );
-
-		Installer::activate();
-
-		$this->assertSame( 'monitor', get_option( Settings::OPTION )['mode'] );
-	}
-
-	public function test_activate_schedules_both_jobs(): void {
-		$this->drop_tables();
-		$this->clear_cron();
-
-		Installer::activate();
-
+		// Cron jobs.
 		$this->assertNotFalse( wp_next_scheduled( Installer::CRON_HOOK ) );
 		$this->assertNotFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertSame( 'daily', wp_get_schedule( Installer::CRON_HOOK ) );
 		$this->assertSame( 'hourly', wp_get_schedule( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertSame( 'hourly', wp_get_schedule( Installer::COUNTER_PURGE_HOOK ), 'expired login counters are purged hourly' );
-	}
 
-	public function test_create_tables_twice_is_harmless_and_keeps_rows(): void {
-		global $wpdb;
-		$this->drop_tables();
-		Installer::create_tables();
+		// Running create_tables again is harmless and keeps rows.
 		$wpdb->insert(
 			$wpdb->prefix . 'bouncer_log',
 			array(
@@ -174,8 +144,18 @@ final class InstallerTest extends IntegrationTestCase {
 
 		Installer::create_tables();
 
-		$this->assertSame( '1', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" ) ); // phpcs:ignore WordPress.DB
-		$this->assertSame( '', (string) $wpdb->last_error );
+		$this->assertSame( '1', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" ), 'create_tables twice keeps rows' ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '', (string) $wpdb->last_error, 'create_tables twice raises no error' );
+	}
+
+	public function test_activate_keeps_existing_settings(): void {
+		$custom         = Settings::defaults();
+		$custom['mode'] = 'monitor';
+		update_option( Settings::OPTION, $custom );
+
+		Installer::activate();
+
+		$this->assertSame( 'monitor', get_option( Settings::OPTION )['mode'] );
 	}
 
 	public function test_schedule_does_not_duplicate_events(): void {
@@ -206,10 +186,8 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_maybe_upgrade_from_version_1_adds_traffic_table_and_purge_job(): void {
 		global $wpdb;
-		$this->drop_tables();
 		// A site on schema version 1: log and geo only, no purge job.
-		Installer::create_tables();
-		$wpdb->query( "DROP TABLE {$wpdb->prefix}bouncer_traffic" ); // phpcs:ignore WordPress.DB
+		$this->drop_tables( array( 'bouncer_traffic', 'bouncer_counters' ) );
 		$wpdb->insert(
 			$wpdb->prefix . 'bouncer_log',
 			array(
@@ -232,7 +210,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_maybe_upgrade_runs_when_the_version_option_is_missing(): void {
 		global $wpdb;
-		$this->drop_tables();
+		$this->drop_tables( array( 'bouncer_log', 'bouncer_traffic' ) );
 		delete_option( Installer::DB_VERSION_OPTION );
 
 		Installer::maybe_upgrade();
@@ -243,7 +221,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_a_held_upgrade_lock_makes_maybe_upgrade_skip_dbdelta(): void {
 		global $wpdb;
-		$this->drop_tables();
+		$this->drop_tables( array( 'bouncer_log', 'bouncer_traffic' ) );
 		delete_option( Installer::DB_VERSION_OPTION );
 		add_option( Installer::LOCK_OPTION, (string) time(), '', false );
 
@@ -257,7 +235,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_a_stale_upgrade_lock_is_taken_over_and_released(): void {
 		global $wpdb;
-		$this->drop_tables();
+		$this->drop_tables( array( 'bouncer_log', 'bouncer_traffic' ) );
 		delete_option( Installer::DB_VERSION_OPTION );
 		add_option( Installer::LOCK_OPTION, (string) ( time() - HOUR_IN_SECONDS ), '', false );
 
@@ -270,7 +248,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_a_failed_create_leaves_the_version_unchanged_so_the_upgrade_is_retried(): void {
 		global $wpdb;
-		$this->drop_tables();
+		$this->drop_tables( array( 'bouncer_traffic' ) );
 		delete_option( Installer::DB_VERSION_OPTION );
 		$break = static function ( $sql ) {
 			return ( 0 === stripos( ltrim( (string) $sql ), 'CREATE TABLE' ) && false !== strpos( (string) $sql, 'bouncer_traffic' ) ) ? 'SELECT * FROM wpb_no_such_table_zz' : $sql;
@@ -314,9 +292,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_maybe_upgrade_does_nothing_when_current(): void {
 		global $wpdb;
-		$this->drop_tables();
-		Installer::create_tables();
-		$wpdb->query( "DROP TABLE {$wpdb->prefix}bouncer_traffic" ); // phpcs:ignore WordPress.DB
+		$this->drop_tables( array( 'bouncer_traffic' ) );
 		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
 
 		Installer::maybe_upgrade();
@@ -380,9 +356,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_maybe_upgrade_from_version_2_adds_counters_and_redacts_existing_rows(): void {
 		global $wpdb;
-		$this->drop_tables();
-		Installer::create_tables();
-		$wpdb->query( "DROP TABLE {$wpdb->prefix}bouncer_counters" ); // phpcs:ignore WordPress.DB
+		$this->drop_tables( array( 'bouncer_counters' ) );
 		$wpdb->query( "ALTER TABLE {$wpdb->prefix}bouncer_traffic DROP INDEX user_id" ); // phpcs:ignore WordPress.DB
 		delete_option( RedactionMigration::STATE_OPTION );
 		update_option( Installer::DB_VERSION_OPTION, '2' );
@@ -481,8 +455,6 @@ final class InstallerTest extends IntegrationTestCase {
 
 	public function test_upgrade_leaves_a_resumable_migration_for_cron_on_a_big_table(): void {
 		global $wpdb;
-		$this->drop_tables();
-		Installer::create_tables();
 		delete_option( RedactionMigration::STATE_OPTION );
 		update_option( Installer::DB_VERSION_OPTION, '2' );
 		$this->clear_cron();
