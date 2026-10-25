@@ -91,7 +91,9 @@
 .wpb-geo-error { color: #b32d2e; font-weight: 600; }
 
 /* Log */
-.wpb-trunc { display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* Block + 100% of the cell, so it never spills into a neighbour whatever the column width (fixed table layout, resized, RTL). */
+.wpb-trunc { display: block; box-sizing: border-box; width: fit-content; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wp-bouncer .wp-list-table :is(td.column-request, td.column-user_agent, td.column-client, td.column-referrer) { overflow: hidden; }
 .wpb-clear-log { margin-top: 12px; }
 .wp-bouncer .column-created_at { width: 150px; }
 .wp-bouncer .column-country { width: 80px; }
@@ -105,7 +107,9 @@
 .wpb-expand { margin: 0; }
 .wpb-expand[hidden] { display: none; }
 .wpb-category, .wpb-rule, #wpb-alerts { scroll-margin-top: 46px; }
-.wpb-category > h2 { margin-bottom: 2px; }
+.wpb-rules-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(360px, calc((100% - 32px) / 3)), 1fr)); gap: 16px; align-items: start; margin-block-end: 16px; }
+.wpb-rules-grid > .wpb-category { margin: 0; }
+.wpb-category > h2 { margin-bottom: 2px; font-size: 1.495em; overflow-wrap: anywhere; }
 .wpb-category > .description { margin: 0 0 4px; }
 .wpb-cat-summary { margin: 0 0 8px; color: #50575e; }
 .wpb-category .wpb-rule { padding-block: 14px 4px; border-block-start: 1px solid #dcdcde; }
@@ -144,8 +148,8 @@
 }
 
 @media (max-width: 782px) {
+	.wpb-rules-grid { grid-template-columns: minmax(0, 1fr); }
 	.wpb-savebar { position: static; }
 	.wpb-country-toolbar { top: 46px; }
 	.wpb-grid { grid-template-columns: 1fr; }
-	.wpb-trunc { max-width: 180px; }
 }

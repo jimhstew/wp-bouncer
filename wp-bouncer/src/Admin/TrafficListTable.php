@@ -212,7 +212,7 @@ final class TrafficListTable extends \WP_List_Table {
 	 */
 	protected function column_client( $item ) {
 		return sprintf(
-			'<span class="wpb-badge wpb-client-%1$s">%2$s</span><br><span class="wpb-trunc description" title="%3$s">%3$s</span>',
+			'<span class="wpb-badge wpb-client-%1$s">%2$s</span><span class="wpb-trunc description" title="%3$s">%3$s</span>',
 			esc_attr( $item['client'] ),
 			esc_html( AdminController::client_label( $item['client'] ) ),
 			esc_attr( $item['user_agent'] )

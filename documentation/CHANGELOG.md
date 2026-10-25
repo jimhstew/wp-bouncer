@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - Unreleased
+
+### Changed
+
+- **Rules tab layout (WPB-9).** The rule categories sit side by side, in up to three columns on wide screens, and in one column on narrow screens and on mobile. Category headings are a little larger. Presentation only: no settings change, and the save bar stays put.
+
+### Fixed
+
+- **Activity Log and Traffic tab (WPB-10a).** Long Request, User-Agent, Client and Referrer values no longer spill over the next column. They are cut off with an ellipsis at the edge of their own column, and the full value is shown on hover.
+
+### Development
+
+- The integration suite makes no live HTTP requests (outbound calls are answered locally) and its real-DDL tests drop and recreate tables far less often. It takes about 13 seconds, down from 31 seconds. No coverage was removed.
+- The end-to-end suite batches its WP-CLI calls, reads the database directly, and runs the test server with OPcache on. It takes about 58 seconds, down from 116 seconds. No coverage was removed.
+
 ## [1.2.0] - 2026-10-24
 
 Folds in the work planned for the never-released 1.1.2 and 1.1.3 releases. Sites on PHP below 8.3 aren't offered 1.2.0 automatically. Sites on WordPress below 7.0 may be (see the upgrade notes).

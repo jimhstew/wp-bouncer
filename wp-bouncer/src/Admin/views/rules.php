@@ -56,11 +56,14 @@ $wpb_categories = $overview->categories();
 	<input type="hidden" name="action" value="wp_bouncer_save">
 	<input type="hidden" name="tab" value="rules">
 
-	<?php
-	foreach ( $wpb_categories as $wpb_category ) {
-		require __DIR__ . '/partials/rule-category.php';
-	}
-	?>
+	<?php // The grid is a wrapper so the save bar stays outside it and can stick to the viewport. ?>
+	<div class="wpb-rules-grid">
+		<?php
+		foreach ( $wpb_categories as $wpb_category ) {
+			require __DIR__ . '/partials/rule-category.php';
+		}
+		?>
+	</div>
 
 	<div class="wpb-savebar">
 		<?php submit_button(); ?>
