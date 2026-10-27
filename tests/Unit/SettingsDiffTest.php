@@ -318,4 +318,19 @@ final class SettingsDiffTest extends TestCase {
 		$this->assertSame( array( $path ), SettingsDiff::risky( array( $path ), $on, $off ) );
 		$this->assertSame( array(), SettingsDiff::risky( array( $path ), $off, $on ) );
 	}
+
+	public function test_switching_the_admin_login_settings_off_is_risky_and_on_is_not(): void {
+		$off                                  = $this->base();
+		$off['alerts']['record_admin_logins'] = false;
+		$this->assertSame( array( 'alerts.record_admin_logins' ), $this->risky_of( $off ) );
+
+		$off                                   = $this->base();
+		$off['alerts']['admin_login_location'] = false;
+		$this->assertSame( array( 'alerts.admin_login_location' ), $this->risky_of( $off ) );
+
+		$both                                  = $this->base();
+		$both['alerts']['record_admin_logins'] = false;
+		$both['alerts']['admin_login_location'] = false;
+		$this->assertSame( array(), $this->risky_of( $this->base(), $both ), 'turning them back on is not risky' );
+	}
 }

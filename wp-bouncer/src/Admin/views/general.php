@@ -109,9 +109,20 @@ $your_ip = $plugin->client_ip();
 					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][new_admin]" value="1" <?php checked( $settings['alerts']['new_admin'] ); ?>> <?php esc_html_e( 'an administrator account is created, or an account is promoted to administrator', 'wp-bouncer' ); ?></label><br>
 					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][plugin_changes]" value="1" <?php checked( $settings['alerts']['plugin_changes'] ); ?>> <?php esc_html_e( 'a plugin is installed, activated, deactivated or deleted (including WP Bouncer itself being deactivated)', 'wp-bouncer' ); ?></label><br>
 					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][plugin_updates]" value="1" <?php checked( $settings['alerts']['plugin_updates'] ); ?>> <?php esc_html_e( 'a plugin is updated (off by default: updates are routine)', 'wp-bouncer' ); ?></label><br>
-					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][firewall_changes]" value="1" <?php checked( $settings['alerts']['firewall_changes'] ); ?>> <?php esc_html_e( 'the firewall is weakened (mode, allowlist, trusted proxies, IP source or a rule switched off), or WP_BOUNCER_DISABLE is on', 'wp-bouncer' ); ?></label>
+					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][firewall_changes]" value="1" <?php checked( $settings['alerts']['firewall_changes'] ); ?>> <?php esc_html_e( 'the firewall is weakened (mode, allowlist, trusted proxies, IP source or a rule switched off), or WP_BOUNCER_DISABLE is on', 'wp-bouncer' ); ?></label><br>
+					<label class="wpb-indent"><input type="checkbox" name="wp_bouncer[alerts][admin_login_location]" value="1" <?php checked( $settings['alerts']['admin_login_location'] ); ?>> 
+					<?php
+					echo esc_html(
+						sprintf(
+							/* translators: %d: number of days. */
+							__( 'an administrator logs in from a new location (a country or network not seen for that account in the last %d days)', 'wp-bouncer' ),
+							\WPBouncer\AdminLogins\AdminLoginRecorder::window_days()
+						)
+					);
+					?>
+					</label>
 				</fieldset>
-				<p class="description"><?php esc_html_e( 'Changes made in one go arrive as one email. At most 20 emails are sent per hour; every alert is also written to the Activity Log.', 'wp-bouncer' ); ?></p>
+				<p class="description"><?php esc_html_e( 'Changes made in one go arrive as one email. At most 20 emails are sent per hour (administrator login alerts have their own limit of 10 per hour, and at most 3 per account); every alert is also written to the Activity Log.', 'wp-bouncer' ); ?></p>
 			</td>
 		</tr>
 		<tr>
@@ -126,6 +137,16 @@ $your_ip = $plugin->client_ip();
 					<button type="submit" class="button button-small" form="wpb-test-alert-form"><?php esc_html_e( 'Send a test email', 'wp-bouncer' ); ?></button>
 				</p>
 				<p class="description"><?php esc_html_e( 'Save first if you changed the addresses. Alerts use WordPress\'s normal mail sending; many hosts need an SMTP plugin for mail to arrive.', 'wp-bouncer' ); ?></p>
+			</td>
+		</tr>
+		<tr>
+			<th scope="row"><?php esc_html_e( 'Administrator logins', 'wp-bouncer' ); ?></th>
+			<td>
+				<label><input type="checkbox" name="wp_bouncer[alerts][record_admin_logins]" value="1" <?php checked( $settings['alerts']['record_admin_logins'] ); ?>> <?php esc_html_e( 'Record administrator logins in the Activity Log', 'wp-bouncer' ); ?></label>
+				<p class="description"><?php esc_html_e( 'Turning this off also stops the new-location email and the per-account location history. Application-password and XML-RPC logins are recorded once per hour per network. With no geo database, only the network is compared.', 'wp-bouncer' ); ?></p>
+				<?php if ( 'remote_addr' !== $settings['ip_source'] && empty( $settings['trusted_proxies'] ) ) : ?>
+					<p class="description"><strong><?php esc_html_e( 'Location checks are skipped until a trusted proxy is configured.', 'wp-bouncer' ); ?></strong></p>
+				<?php endif; ?>
 			</td>
 		</tr>
 	</table>

@@ -28,6 +28,7 @@ WordPress continues normally
    │                              Plugin::reserve_login_attempt()  counts the attempt before the password check
    │                              Plugin::filter_authenticate()    refuses locked-out IPs, generic errors
    ├─ wp_login_failed            ──► LoginGuard::record_failure()    counts, locks out, logs
+   ├─ wp_login / application_password_did_authenticate (20) ──► AdminLoginRecorder   admin login row, location check, alert (see architecture/admin-logins.md)
    ├─ wp_handle_upload/sideload_prefilter ──► UploadsGuard::filter_upload()  refuses scripts in disguise
    ├─ template_redirect (999)    ──► Plugin::track_not_found()       counts 404s, bans floods
    ├─ user_register, set_user_role, activated_plugin, … ──► AlertNotifier   queues alert events
@@ -39,9 +40,9 @@ WordPress continues normally
 
 | Layer | Classes | Talks to WordPress? |
 |---|---|---|
-| Decision core | `Firewall\*` (including `FetchContext`, `IpSetupAdvisor`), `Rules\*`, `Login\LoginGuard`, `Settings`, `SettingsDiff`, `Audit\SettingsChange` and `Audit\AuditActor` (settings audit, see [settings-audit](architecture/settings-audit.md)), `Support\*` (including `CounterSubject`, `UrlRedactor`, `CsvSanitizer`), `Log\WriteBudget`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Geo\GeoUrlPolicy`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry`, `Environment\*` checks and `Environment\SupportPolicy`, `Admin\RuleCatalog` (rule categories), `Admin\RuleStatus` (the one status every screen reads) and `Admin\WidgetStats` (widget numbers) | **No.** Pure PHP, unit-tested |
-| Storage adapters | `Storage\TransientStore`, `Storage\TableCounter`, `Storage\ObjectCacheCounter`, `Storage\RedactionMigration`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport`, `Traffic\TrafficLog` | Yes (transients, object cache, `$wpdb`) |
-| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Admin\RuleOverview` (gathers the facts and runs `wp_bouncer_rule_info`), `Admin\RuleLabels` (translated text), `Admin\DashboardWidget` (capability and transient cache), `Traffic\TrafficRecorder` (shutdown hook, purge cron), `Log\BudgetedBlockLog` (decorator around `BlockLog`), `Privacy\PrivacyTools` (exporter, erasers, policy text), `Audit\SettingsAuditor` (option hooks: audits every `wp_bouncer_settings` write, UI or not), `Environment\EnvironmentAdmin` and `SiteHealth` | Yes |
+| Decision core | `Firewall\*` (including `FetchContext`, `IpSetupAdvisor`), `Rules\*`, `Login\LoginGuard`, `Settings`, `SettingsDiff`, `Audit\SettingsChange` and `Audit\AuditActor` (settings audit, see [settings-audit](architecture/settings-audit.md)), `AdminLogins\LocationHistory`, `LoginLocationPolicy`, `LoginAssessment` and `LoginEvent` (admin logins, see [admin-logins](architecture/admin-logins.md)), `Support\*` (including `CounterSubject`, `UrlRedactor`, `CsvSanitizer`), `Log\WriteBudget`, `Geo\CsvImporter`, `Geo\HeaderGeoProvider`, `Geo\ChainGeoProvider`, `Geo\Countries`, `Geo\GeoUrlPolicy`, `Update\ReleaseManifest`, `Hardening\UploadsPolicy`, `Alerts\AlertFormatter`, `Traffic\ClientClassifier`, `Traffic\TrafficEntry`, `Environment\*` checks and `Environment\SupportPolicy`, `Admin\RuleCatalog` (rule categories), `Admin\RuleStatus` (the one status every screen reads) and `Admin\WidgetStats` (widget numbers) | **No.** Pure PHP, unit-tested |
+| Storage adapters | `Storage\TransientStore`, `Storage\TableCounter`, `Storage\ObjectCacheCounter`, `Storage\RedactionMigration`, `Log\BlockLog`, `Geo\GeoDatabase`, `Geo\GeoImport`, `Traffic\TrafficLog`, `AdminLogins\LoginHistoryRepository` (user options) | Yes (transients, object cache, `$wpdb`) |
+| Integration | `Plugin`, `Installer`, `Admin\*`, `Update\Updater` (WordPress plugin updater, GitHub releases), `Hardening\UploadsGuard` (uploads `.htaccess`, upload checks, self-test), `Alerts\AlertNotifier` (hooks, `wp_mail`), `Admin\RuleOverview` (gathers the facts and runs `wp_bouncer_rule_info`), `Admin\RuleLabels` (translated text), `Admin\DashboardWidget` (capability and transient cache), `Traffic\TrafficRecorder` (shutdown hook, purge cron), `Log\BudgetedBlockLog` (decorator around `BlockLog`), `Privacy\PrivacyTools` (exporter, erasers, policy text), `Privacy\AdminLoginPrivacy` (admin-login exporter and eraser), `AdminLogins\AdminLoginRecorder` (login hooks, never refuses anyone), `Audit\SettingsAuditor` (option hooks: audits every `wp_bouncer_settings` write, UI or not), `Environment\EnvironmentAdmin` and `SiteHealth` | Yes |
 
 Collaborators reach the core through four interfaces, each with a test double in `tests/Support/`:
 
@@ -72,7 +73,9 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 **Alerts are batched and never block.** `AlertNotifier` queues events and sends one email on `shutdown`, throttled to 20 an hour, and logs every event first. It stays registered while `WP_BOUNCER_DISABLE` is on.
 
-**Log flood protection.** A flood of requests from one IP would otherwise mean one `INSERT` per request. `Firewall` writes at most one log row per IP+rule per 60 seconds (per /64 network for IPv6), and a site-wide write budget (`Log\WriteBudget`, 120 rows a minute by default, with a separate 30 a minute for lockouts and uploads blocks) caps the total. Rows over the budget are counted into one `suppressed` summary row for the minute. The budget is checked before the de-duplication key is written, so a flood of distinct IPs creates neither rows nor keys beyond the budget. Alert rows bypass it. Every request is still blocked.
+**Admin logins (1.3.0).** Successful admin logins are rows in the same log (action `login`, rule `admin_login`), not a new table. They are matched to a user by the fixed `User ID N:` prefix of `reason`, so there is no `user_id` column. A per-site location history in user meta drives a "new location" email. Login rows are never threats: `BlockLog::NON_THREAT_ACTIONS` keeps them out of counts. See [admin-logins](architecture/admin-logins.md).
+
+**Log flood protection.** A flood of requests from one IP would otherwise mean one `INSERT` per request. `Firewall` writes at most one log row per IP+rule per 60 seconds (per /64 network for IPv6), and a site-wide write budget (`Log\WriteBudget`, 120 rows a minute by default, with a separate 30 a minute for lockouts and uploads blocks, and from 1.3.0 a separate 20 a minute for admin logins) caps the total. Rows over the budget are counted into one `suppressed` summary row for the minute. The budget is checked before the de-duplication key is written, so a flood of distinct IPs creates neither rows nor keys beyond the budget. Alert rows bypass it. Every request is still blocked.
 
 **JSON bodies.** `WafRule` scans a JSON body the way it scans form fields, within a size, depth, field-count and memory budget. A body it can't check is refused (fail closed). Users who can edit posts are skipped, because their REST saves carry HTML and code. WAF verdicts block the request and never ban (only the rate limit, probe, 404 and login rules place bans).
 
@@ -95,12 +98,13 @@ Collaborators reach the core through four interfaces, each with a test double in
 | Option `wp_bouncer_settings` | All settings (one array, autoloaded) |
 | Option `wp_bouncer_geo_meta` | Row count, source and import time of the geo DB |
 | Option `wp_bouncer_db_version` | Schema version for upgrades (currently 3) |
-| Table `{prefix}bouncer_log` | Activity log. Times in UTC. Indexed on time, IP, rule. Purged daily by cron per retention setting |
+| Table `{prefix}bouncer_log` | Activity log. Times in UTC. Indexed on time, IP, rule. Purged daily by cron per retention setting. Holds admin-login rows from 1.3.0 (action `login`) |
 | Table `{prefix}bouncer_traffic` | Traffic log, if switched on: one row per request that reached WordPress. Times in UTC. Indexed on time, IP, client, status and user (`user_id`, added by dbDelta in schema version 3). Kept 1 to 7 days, purged hourly by cron |
 | Table `{prefix}bouncer_geo` | IP ranges → country. Bounds stored as 32-char hex of the 16-byte address (IPv4 mapped to `::ffff:a.b.c.d`), so string order equals address order on MySQL and SQLite alike |
 | Table `{prefix}bouncer_counters` (version 3) | Login-attempt counters (`counter_key`, `hits`, `expires_at`), purged hourly by cron. Empty when an object cache holds the counters. Dropped on uninstall |
 | Transients `wpb_<md5>` | Rate-limit, probe and 404-flood counters and bans, log budget and de-dup markers. All expire on their own. (Login counters are in the counters table, or the object cache.) |
-| Transient `wpb_alert_count` | Alert emails sent in the current hour |
+| Transient `wpb_alert_count` | Alert emails sent in the current hour (also `_critical`, `_settings`, `_login` buckets) |
+| User meta `{blog_prefix}wpb_login_seen` (1.3.0) | Per admin and site: location history (IP range, country, last seen; up to 20 entries, 90 days) and `since`. Exported and erased by the privacy tools, pruned daily, deleted on uninstall |
 | Transients `wpb_widget_stats`, `wpb_widget_stats_stale`, `wpb_widget_stats_lock` | Dashboard widget numbers (cached 5 minutes, or an hour while the log is flooded), a copy kept a day for other requests while one rebuilds, and a 30-second rebuild lock. Cleared when the log or settings change, and after the daily purge |
 | Option `wp_bouncer_migration_3` (internal) | Cursors of the version 3 redaction of older rows. Deleted when the migration finishes; a short lock option sits beside it |
 | Option `wp_bouncer_last_purge` (internal) | When the log purge last ran, so it can run from admin visits if WP-Cron is not running |
@@ -116,5 +120,6 @@ Deactivating keeps the data but removes the uploads `.htaccess` block. Deleting 
 
 - `wp_bouncer_rules` filter: add, remove or reorder rules. See [adding-a-rule.md](adding-a-rule.md).
 - `wp_bouncer_rule_info` filter: give a third-party rule a category and a title on the Rules tab. See [adding-a-rule.md](adding-a-rule.md#give-the-rule-a-category-and-a-title-optional).
+- Admin logins: `wp_bouncer_admin_login_recorded`, `wp_bouncer_admin_login_alert`, `wp_bouncer_admin_login_is_admin`, `wp_bouncer_admin_login_window_days`, `wp_bouncer_record_admin_login` (for 2FA plugins). See [admin-logins](architecture/admin-logins.md#7-settings-ui-and-public-hooks).
 - Filters, the `wp_bouncer_settings_changed` action and wp-config constants: see the [developer guide](developer-guide.md#hooks-filters-and-constants).
 - `WP_BOUNCER_DISABLE` constant: emergency off switch.

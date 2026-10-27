@@ -31,6 +31,9 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 		'user_agent' => 512,
 	);
 
+	/** Rows that are not threats: email alerts and successful administrator logins. Never counted as blocked traffic. */
+	public const NON_THREAT_ACTIONS = array( 'alert', 'login' );
+
 	/** Actions the dashboard widget counts (alerts are never counted). */
 	private const WIDGET_ACTIONS = array( 'blocked', 'monitored', 'lockout', 'suppressed' );
 
@@ -182,14 +185,14 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 			return array();
 		}
 		$limit = max( 1, min( 100, $limit ) );
-		$args  = array( $since );
+		$args  = array_merge( array( $since ), self::NON_THREAT_ACTIONS );
 		$extra = '';
 		if ( null !== $action ) {
 			$extra  = ' AND action = %s';
 			$args[] = $action;
 		}
 		$rows = $this->db->get_results(
-			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action <> 'alert'{$extra} GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $args ), // phpcs:ignore WordPress.DB.PreparedSQL -- $column is checked against an allow-list above, $limit is an int clamped to 1-100, $extra is a fixed fragment and the values are bound with %s; the table name is built from $wpdb->prefix.
+			$this->db->prepare( "SELECT {$column} AS k, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND {$column} <> '' AND action NOT IN (%s, %s){$extra} GROUP BY {$column} ORDER BY n DESC LIMIT {$limit}", $args ), // phpcs:ignore WordPress.DB.PreparedSQL -- $column is checked against an allow-list above, $limit is an int clamped to 1-100, $extra is a fixed fragment and the values are bound with %s; the table name is built from $wpdb->prefix.
 			ARRAY_A
 		);
 		$out  = array();
@@ -278,7 +281,7 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 		$days  = max( 1, min( 365, $days ) );
 		$start = gmdate( 'Y-m-d 00:00:00', time() - ( $days - 1 ) * DAY_IN_SECONDS );
 		$rows  = $this->db->get_results(
-			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND action <> 'alert' GROUP BY DATE(created_at)", $start ), // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
+			$this->db->prepare( "SELECT DATE(created_at) AS d, COUNT(*) AS n FROM {$this->table} WHERE created_at >= %s AND action NOT IN (%s, %s) GROUP BY DATE(created_at)", array_merge( array( $start ), self::NON_THREAT_ACTIONS ) ), // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix and the only variable value is bound with a %s placeholder.
 			ARRAY_A
 		);
 		$out   = array();

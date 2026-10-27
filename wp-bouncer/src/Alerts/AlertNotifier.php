@@ -7,6 +7,8 @@
 
 namespace WPBouncer\Alerts;
 
+use WPBouncer\AdminLogins\LoginAssessment;
+use WPBouncer\AdminLogins\LoginEvent;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Plugin;
 
@@ -41,6 +43,12 @@ final class AlertNotifier {
 	private const MAX_SETTINGS_PER_HOUR   = 10;
 	private const THROTTLE_KEY_SETTINGS   = 'wpb_alert_count_settings';
 	private const THROTTLE_KEY_SET_NOTICE = 'wpb_alert_settings_notice';
+	/** Administrator-login alerts have their own hourly cap, so they can't use up any other budget. */
+	private const MAX_LOGIN_PER_HOUR      = 10;
+	private const THROTTLE_KEY_LOGIN      = 'wpb_alert_count_login';
+	private const THROTTLE_KEY_LOGIN_NOTE = 'wpb_alert_login_notice';
+	/** Most new-location emails per administrator and hour. */
+	private const MAX_LOGIN_PER_USER_HOUR = 3;
 	/** Ceiling on uncapped (alert-silencing) settings alerts per blog and hour; above it the normal settings cap applies. */
 	private const MAX_UNCAPPED_PER_HOUR   = 50;
 	private const THROTTLE_KEY_UNCAPPED   = 'wpb_alert_uncapped';
@@ -111,7 +119,7 @@ final class AlertNotifier {
 	/**
 	 * Is this kind of alert switched on?
 	 *
-	 * @param string                    $kind   new_admin|plugin_changes|plugin_updates|firewall_changes.
+	 * @param string                    $kind   new_admin|plugin_changes|plugin_updates|firewall_changes|admin_login_location.
 	 * @param array<string, mixed>|null $alerts Alert settings to judge by instead of the loaded ones.
 	 */
 	private function wants( string $kind, ?array $alerts = null ): bool {
@@ -177,6 +185,82 @@ final class AlertNotifier {
 			$user = get_userdata( (int) $user_id );
 			$this->queue( 'admin', 'Account made a network super admin', $user ? 'Username: ' . $user->user_login . ', user ID ' . (int) $user_id : 'User ID ' . (int) $user_id, 'super|' . (int) $user_id );
 		}
+	}
+
+	/**
+	 * Decide what happens to the new-location email for a login, and count it against
+	 * the administrator's hourly cap. Call once per login, before writing the row.
+	 *
+	 * @param LoginEvent      $e The login.
+	 * @param LoginAssessment $a What was found.
+	 * @return string "none" (alerts off or vetoed), "send", or "throttled" (over the per-user cap).
+	 */
+	public function check_admin_login( LoginEvent $e, LoginAssessment $a ): string {
+		if ( ! $this->wants( 'admin_login_location' ) ) {
+			return 'none';
+		}
+		$flags = array(
+			'first'       => $a->first,
+			'new_range'   => $a->new_range,
+			'new_country' => $a->new_country,
+			'reliable'    => true,
+		);
+		/**
+		 * Filters whether the new-location email is sent for an administrator login.
+		 *
+		 * @param bool  $send  Default true.
+		 * @param array $event Keys user_id, login, ip, range, country, method, time.
+		 * @param array $flags Keys first, new_range, new_country, reliable.
+		 */
+		if ( ! apply_filters( 'wp_bouncer_admin_login_alert', true, $e->to_array(), $flags ) ) {
+			return 'none';
+		}
+		return $this->plugin->store()->increment( 'login_alert:' . $e->user_id, HOUR_IN_SECONDS ) > self::MAX_LOGIN_PER_USER_HOUR ? 'throttled' : 'send';
+	}
+
+	/**
+	 * An administrator logged in from a range or country not in their history.
+	 *
+	 * @param LoginEvent      $e        The login.
+	 * @param LoginAssessment $a        What was found.
+	 * @param bool            $logged   Whether the Activity Log row was written. When it wasn't, the alert row is.
+	 * @param string|null     $decision Result of check_admin_login() when the caller already asked, else null.
+	 * @return bool Whether an email was queued.
+	 */
+	public function on_admin_login( LoginEvent $e, LoginAssessment $a, bool $logged = true, ?string $decision = null ): bool {
+		$decision = $decision ?? $this->check_admin_login( $e, $a );
+		if ( 'none' === $decision ) {
+			return false;
+		}
+		$extra      = array( 'ctx' => array( 'actor' => sprintf( '%s (user ID %d)', $e->login, $e->user_id ) ) );
+		$recipients = array();
+		$key        = 'login|' . $e->user_id;
+		if ( is_multisite() ) {
+			// A login assessed on another site is reported as that site, with that site's recipients.
+			$extra['blog'] = get_current_blog_id();
+			$extra['ctx'] += array(
+				'site_name'    => wp_specialchars_decode( (string) get_option( 'blogname' ), ENT_QUOTES ),
+				'site_url'     => home_url( '/' ),
+				'settings_url' => admin_url( 'admin.php?page=wp-bouncer&tab=general#wpb-alerts' ),
+			);
+			$recipients    = $this->recipients();
+			$key          .= '|' . get_current_blog_id();
+		}
+		if ( 'throttled' === $decision ) {
+			$extra['capped'] = true;
+		}
+		$this->queue(
+			'login',
+			'Administrator login from a new location',
+			$e->email_detail( $a ),
+			$key,
+			'',
+			false,
+			$logged,
+			$recipients,
+			$extra
+		);
+		return 'send' === $decision;
 	}
 
 	/**
@@ -573,6 +657,7 @@ final class AlertNotifier {
 
 	/** Send everything collected during this request. */
 	public function flush(): void {
+		// May be registered at shutdown 10 from inside a priority-0 callback; it still runs in the same do_action.
 		$events      = AlertFormatter::dedupe( $this->queue );
 		$this->queue = array();
 		if ( empty( $events ) ) {
@@ -581,7 +666,12 @@ final class AlertNotifier {
 		$context = $this->context();
 		foreach ( $events as $event ) {
 			if ( empty( $event['logged'] ) ) {
-				$this->log( $event, $context );
+				if ( isset( $event['blog'] ) && get_current_blog_id() !== (int) $event['blog'] ) {
+					// The fallback row belongs to the log of the site the event is about.
+					$this->plugin->run_on_site( (int) $event['blog'], fn() => $this->log( $event, $context ) );
+				} else {
+					$this->log( $event, $context );
+				}
 			}
 		}
 
@@ -593,11 +683,13 @@ final class AlertNotifier {
 			'general'  => self::THROTTLE_KEY,
 			'critical' => self::THROTTLE_KEY_CRITICAL,
 			'settings' => self::THROTTLE_KEY_SETTINGS,
+			'login'    => self::THROTTLE_KEY_LOGIN,
 		);
 		$maxes  = array(
 			'general'  => self::MAX_PER_HOUR,
 			'critical' => self::MAX_CRITICAL_PER_HOUR,
 			'settings' => self::MAX_SETTINGS_PER_HOUR,
+			'login'    => self::MAX_LOGIN_PER_HOUR,
 		);
 		$counts = array();
 		foreach ( $keys as $bucket => $key ) {
@@ -628,9 +720,14 @@ final class AlertNotifier {
 			$send = array();
 			$uses = array();
 			foreach ( $group['events'] as $event ) {
-				$bucket  = ! empty( $event['settings'] ) ? 'settings' : ( self::is_critical( $event ) ? 'critical' : 'general' );
+				$bucket  = ! empty( $event['settings'] ) ? 'settings' : ( 'login' === $event['type'] ? 'login' : ( self::is_critical( $event ) ? 'critical' : 'general' ) );
 				$blog_id = (int) ( $event['blog'] ?? $current );
-				$free    = ! empty( $event['uncapped'] ) && ( $uncapped[ $blog_id ] ?? 0 ) < self::MAX_UNCAPPED_PER_HOUR;
+				if ( ! empty( $event['capped'] ) ) {
+					// Over the per-administrator cap: counted in the login notice, never mailed.
+					$dropped['login'][ $blog_id ][] = $event;
+					continue;
+				}
+				$free = ! empty( $event['uncapped'] ) && ( $uncapped[ $blog_id ] ?? 0 ) < self::MAX_UNCAPPED_PER_HOUR;
 				if ( $free ) {
 					$uncapped[ $blog_id ] = ( $uncapped[ $blog_id ] ?? 0 ) + 1;
 					$uncapped_used        = true;
@@ -638,8 +735,8 @@ final class AlertNotifier {
 				if ( $free || $counts[ $bucket ] < $maxes[ $bucket ] ) {
 					$send[]          = $event;
 					$uses[ $bucket ] = true;
-				} elseif ( 'settings' === $bucket ) {
-					$dropped[ (int) ( $event['blog'] ?? $current ) ][] = $event;
+				} elseif ( 'settings' === $bucket || 'login' === $bucket ) {
+					$dropped[ $bucket ][ (int) ( $event['blog'] ?? $current ) ][] = $event;
 				}
 			}
 			if ( empty( $send ) ) {
@@ -657,11 +754,18 @@ final class AlertNotifier {
 			set_transient( self::THROTTLE_KEY_UNCAPPED, $uncapped, HOUR_IN_SECONDS );
 		}
 
-		// One notice per site and hour, with only that site's recipients and details; it counts against no cap.
-		if ( ! empty( $dropped ) ) {
-			$noticed = get_transient( self::THROTTLE_KEY_SET_NOTICE );
+		// One notice per bucket, site and hour, with only that site's recipients and details; it counts against no cap.
+		$notices = array(
+			'settings' => array( self::THROTTLE_KEY_SET_NOTICE, 'Settings-change alerts throttled', '%d not emailed, see the Activity Log.' ),
+			'login'    => array( self::THROTTLE_KEY_LOGIN_NOTE, 'Admin login alerts throttled', '%d not emailed, see the Activity Log.' ),
+		);
+		foreach ( $notices as $bucket => $notice ) {
+			if ( empty( $dropped[ $bucket ] ) ) {
+				continue;
+			}
+			$noticed = get_transient( $notice[0] );
 			$noticed = is_array( $noticed ) ? $noticed : array();
-			foreach ( $dropped as $blog => $lost ) {
+			foreach ( $dropped[ $bucket ] as $blog => $lost ) {
 				if ( in_array( $blog, $noticed, true ) ) {
 					continue;
 				}
@@ -674,15 +778,15 @@ final class AlertNotifier {
 					array(
 						array(
 							'type'       => 'firewall',
-							'title'      => 'Settings-change alerts throttled',
-							'detail'     => sprintf( '%d not emailed, see the Activity Log.', count( $lost ) ),
+							'title'      => $notice[1],
+							'detail'     => sprintf( $notice[2], count( $lost ) ),
 							'recipients' => array_values( array_unique( $to ) ),
 						),
 					),
 					array_merge( $context, $lost[0]['ctx'] ?? array() )
 				);
 			}
-			set_transient( self::THROTTLE_KEY_SET_NOTICE, $noticed, HOUR_IN_SECONDS );
+			set_transient( $notice[0], $noticed, HOUR_IN_SECONDS );
 		}
 	}
 
@@ -757,7 +861,7 @@ final class AlertNotifier {
 	 */
 	private function context(): array {
 		$user    = function_exists( 'wp_get_current_user' ) ? wp_get_current_user() : null;
-		$actor   = $user && $user->exists() ? sprintf( '%s (user ID %d)', $user->user_login, $user->ID ) : 'no logged-in user (WP-CLI, a scheduled task, or code)';
+		$actor   = $user && $user->exists() ? sprintf( '%s (user ID %d)', LoginEvent::clean_login( (string) $user->user_login ), $user->ID ) : 'no logged-in user (WP-CLI, a scheduled task, or code)';
 		$request = $this->plugin->current_request();
 		$ip      = ( defined( 'WP_CLI' ) && WP_CLI ) ? '' : $request->ip();
 		return array(

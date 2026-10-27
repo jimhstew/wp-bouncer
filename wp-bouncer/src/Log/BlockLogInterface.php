@@ -27,6 +27,9 @@ interface BlockLogInterface {
 	/** Not a block: an email alert about a site change (new administrator, plugin change). */
 	public const ACTION_ALERT = 'alert';
 
+	/** Not a block: a successful administrator login (rule admin_login). */
+	public const ACTION_LOGIN = 'login';
+
 	/** Summary row: events dropped because the per-minute write budget ran out. */
 	public const ACTION_SUPPRESSED = 'suppressed';
 

@@ -1,6 +1,6 @@
 # WP Bouncer backlog
 
-Owner: product-manager. Last updated 2026-10-24, against released version 1.2.0.
+Owner: product-manager. Last updated 2026-10-26, against released version 1.2.0.
 Minimum supported: PHP 8.3, WordPress 7.0. Distribution: GitHub releases (not wp.org), so wp.org review does not gate a release, but the wp.org plugin guidelines (GPL, no tracking, escaped output, no remote calls without disclosure) are still the quality bar.
 
 ## Owner decisions (2026-10-23)
@@ -42,6 +42,7 @@ Method: **RICE** (Reach x Impact x Confidence / Effort), with one override: **se
 | WPB-10a | Activity Log and Traffic tab: long Request / User-Agent values overlap the next column (bug) | P2 | Severity: cosmetic, top of its class (values are unreadable, though still reachable via the title tooltip). RICE: Reach 6 x Impact 0.5 x Confidence 0.5 / Effort 0.5 = 3.0, with low confidence until reproduced. Ranked above WPB-9 because it hides data rather than just looking plain. |
 | WPB-10b | Resizable columns (drag) on Activity Log and Traffic tab | P3 | RICE: Reach 5 x Impact 0.5 x Confidence 0.8 / Effort 1.5 = 1.3. Owner-requested convenience; the bug fix removes most of the pain first. |
 | WPB-12 | Detect settings changes made while the plugin wasn't loaded | P2 | Security detection gap (WPB8-RT-02). Not yet RICE-scored; target 1.2.2 or 1.3.0. |
+| WPB-13 | Track admin logins (log every admin login, alert on a new location) | P2 | RICE: Reach 7 x Impact 1 x Confidence 0.5 / Effort 1.5 = 2.3. Security detection feature, not a bug, so no override. Ranks above WPB-11 (0.75) and is built first (owner decision). Confidence is low until the open questions are answered. |
 | WPB-11 | Activity Log: threat hotspot map by country | P3 | RICE: Reach 6 x Impact 1 x Confidence 0.5 / Effort 4 = 0.75. Owner-requested, new capability with an asset-licence and accessibility cost (hence the low confidence and L effort). Ranks last: nothing is broken without it, and it needs a new minor release. |
 
 No other open items are scored. "Later" items are unscored candidates.
@@ -54,7 +55,7 @@ No other open items are scored. "Later" items are unscored candidates.
 | **1.2.1** (patch) | Ready to tag 2026-10-24 (WPB-8, WPB-9, WPB-10a, WPB-10b) | WPB-8, WPB-9 | WPB-8 is a security fix to existing behaviour; WPB-9 is a presentation-only change. No new settings keys or breaking change in either. |
 | **1.2.1** (patch), addition | Proposed | WPB-10a | CSS-only bug fix (no new JS, settings or storage). Goes with WPB-8 and WPB-9; if 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
 | **1.2.1** (patch), addition | Owner decision 2026-10-24 | WPB-10b | New JS and a new capability would normally be a minor bump; the owner chose to ship it in the patch release. It is backwards compatible, with no settings keys or storage change (browser `localStorage` only). If 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
-| **1.3.0** (minor) | Proposed | WPB-11 | New user-facing capability (map, new JS and bundled map asset, one cache transient, no schema change). Backwards compatible, so a minor bump. |
+| **1.3.0** (minor) | Proposed | WPB-13 (built first), then WPB-11 | WPB-13: new logged event type, new alert setting and possibly per-user seen-history storage. WPB-11: new user-facing capability (map, new JS and bundled map asset, one cache transient, no schema change). Both backwards compatible, so a minor bump. |
 | **Hotfix** (out of band) | As needed | Any Critical or High finding | Do not wait for a planned release. Triage first, patch, tag. |
 
 Every release: bump `wp-bouncer.php` header and `Plugin::VERSION`, `readme.txt` Stable tag plus its Changelog and Upgrade Notice, and `documentation/CHANGELOG.md` together. Final security-red delta audit on the diff since the last tag before tagging.
@@ -205,6 +206,55 @@ Split into two deliverables so the fix does not wait for the feature.
 
 ---
 
+## WPB-13: Track admin logins
+- **Type:** feature (security detection)
+- **Priority:** P2. See the table above (RICE 2.3).
+- **Effort:** M (provisional; depends on where the seen-history lives).
+- **Risk:** Medium. (1) Log flooding: application-password logins can occur on every REST or XML-RPC call. (2) New personal data (IP and country per admin login) and a per-user seen-history, so privacy text, retention, export and erase must be reviewed. (3) False-positive alerts for admins on mobile or VPN networks. (4) The log write budget and firewall speed: nothing may be added to the `plugins_loaded` priority-1 path.
+- **Dependencies:** `AlertNotifier` (admin-created alert, around lines 170-230 and 750-800, which already writes `ACTION_ALERT` rows through `BlockLogInterface`); `Plugin::register_login_hooks()` (`wp_login`, `application_password_did_authenticate`); geolocation (`documentation/geolocation.md`); the Activity Log filters; the existing alert settings. Built before WPB-11 (both touch the Activity Log; WPB-11 counts only blocking actions, so login rows must not distort the map).
+- **Release:** 1.3.0 (owner decision 2026-10-26: alongside WPB-11, built first).
+
+**User story.** As a site admin, I want every successful administrator login recorded in the Activity Log, and an email when an admin signs in from a place not seen for that user recently, so that a stolen admin password or application password is noticed quickly.
+
+**Owner decisions (2026-10-26)**
+1. "Admin" means users with the administrator role or the `manage_options` capability, plus network super admins (same scope as the existing admin-created alert).
+2. Logins are recorded as rows in the existing Activity Log (user, IP, country, time, method: interactive password, or application password over REST or XML-RPC) and are filterable there. No new table and no new screen.
+3. An email alert is sent only when an admin logs in from an IP range or country not seen for that user recently, not on every login. It is part of the existing alert settings and can be switched off.
+4. Target 1.3.0, alongside WPB-11, built before WPB-11.
+5. (Owner, 2026-10-26, on security-blue SB13 advice) A "new location" is a country **or** IP range (IPv4 /24, IPv6 /64) not seen for that user in the history window. Country plus range, not country only.
+6. (Owner, 2026-10-26) The personal-data eraser removes that user's login rows from the Activity Log immediately, as well as their stored login history. Rows are not left to expire.
+7. (Owner, 2026-10-26) A separate "Record admin logins" setting, default on. Turning it off also stops the new-location alert. Answers open question 8.
+
+**Acceptance criteria**
+1. A successful interactive login (`wp_login`) by an admin creates one Activity Log row with the user, IP, country (empty if unknown), time and method "interactive password".
+2. A successful application-password authentication (`application_password_did_authenticate`) by an admin creates a row with method "application password" and the transport (REST or XML-RPC) where it can be told apart.
+3. Logins by non-admin users create no row. A user who gains or loses admin status is treated by their role at login time.
+4. Multisite (revised 2026-10-26 after WPB13-RT-01): a site admin's login, wherever on the network it happens, is recorded and assessed on every site where that user is an admin. A super admin's login is recorded on the site where it happened. Behaviour is unchanged on single sites.
+5. Failed logins and lockouts are unchanged, and no existing row type or count changes. Login rows are not counted as threats (WPB-11 and the dashboard widget exclude them).
+6. The Activity Log action filter can select login rows alone, and the row renders with an accessible, translated label that does not rely on colour.
+7. An email alert is queued when an admin's login comes from a location (per the architect's definition) not seen for that user in the "recent" window, and not otherwise. The first-ever login after the feature is installed does not alert (no history to compare); this is verified by a test.
+8. The alert setting sits with the existing alert settings, defaults to on, and switching it off stops the email while login rows are still recorded. Whether row recording itself can be switched off is an open question below.
+9. The email names the user, IP, country, time and method, and contains no password, token or application-password value. Logged values are escaped on output.
+10. Login recording adds no work to the `plugins_loaded` priority-1 firewall path and no extra database query on requests that are not logins.
+11. A login must never fail or be delayed because logging or alerting failed (errors are swallowed and reported to the debug log only).
+12. Works on MySQL, MariaDB and SQLite; SQL uses `$wpdb->prepare()`. No schema change unless the architect decides otherwise (then `Installer::DB_VERSION` and the upgrade path are covered).
+13. Privacy: the personal-data exporter and eraser, privacy-policy text and `uninstall.php` cover any new stored data (the log rows and any seen-history).
+14. Tests: unit tests for the pure-PHP "seen before" decision (same range, new range, new country, first login, expired history); integration tests for both hooks, non-admin users, the alert setting off, multisite super admin, and the flood limit once decided; an e2e or recorded manual check of the filter and the email.
+15. Docs: `documentation/CHANGELOG.md` and `readme.txt` Changelog **Added** entry, rules/alerts documentation, and an Upgrade Notice if the new alert defaults to on for existing sites.
+
+**Open questions for the architect and security-blue (not decided here)**
+1. "Recently": how long is the seen-history window (for example 30 or 90 days), and does it slide or expire?
+2. "IP range": IPv4 /24 and IPv6 /64, or another grouping, or ASN? Is country alone enough when geolocation is installed? What happens with no geo database, and with shared or proxy addresses (trusted proxies, IP source setting)?
+3. Where does per-user seen-history live (user meta, an option, derived from past log rows)? Consider size per user, multisite scope, cost of lookup at login, and survival of log pruning (the log keeps up to 365 days).
+4. Privacy and retention: are login rows kept as long as other log rows (up to 365 days)? Does the eraser remove or redact them? Does the log's lack of a `user_id` column (owner decision 2026-10-23) force a new column or storing the login name in an existing field? Is the privacy-policy text updated?
+5. Flooding: an application password can authenticate on every REST or XML-RPC request. Should such rows be deduplicated or rate-limited (for example one per user, IP and method per window), and how is that shown so the log stays truthful?
+6. Log write budget: how does this share the existing log write budget and flood protection with block rows, so that a login burst cannot crowd out blocking rows (or the reverse)?
+7. Alert noise and abuse: alert throttling per user, behaviour when the alert queue is already full, and whether an attacker who already holds valid credentials can use the history (for example by logging in once from a chosen range) to hide later logins.
+8. Is a switch to turn off login recording (not only the alert) wanted for privacy-sensitive sites? Owner decision 2 does not say.
+9. Which `ACTION_*` value or rule key do login rows use, and does that change how existing filters, exports, the dashboard widget and WPB-11 count rows?
+
+---
+
 ## WPB-11: Activity Log: threat hotspot map by country
 Owner request (verbatim): "Add a map to the activity log showing the hotspots for where threats are coming from. The dots should highlight the country where the threat is coming from and get more and more bright red the more attacks are seen from that country. The mouseover for the threat dots should give the country name and abbreviation, as well the total number of detected threats."
 
@@ -265,6 +315,7 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 - **2026-10-24: Activity Log / Traffic column overlap and resizable columns.** Owner reported long Request and User-Agent text printing over the next field and asked for drag-resizable columns on both tabs. Triaged the overlap as a cosmetic bug (WPB-10a, P2, 1.2.1, needs a repro because the code already clips with an ellipsis) and the Traffic tab as having the same exposure; the resize request is a feature (WPB-10b, P3, 1.3.0).
 - **2026-10-24: Threat hotspot map request.** Owner asked for a map on the Activity Log with dots per country, brighter red for more attacks, and a hover tooltip with name, code and total. Triaged as a feature (not a bug, no severity class), tracked as WPB-11, P3, effort L, target 1.3.0. Constraints recorded: no remote calls (map ships in the zip, GPL-compatible source), aggregate cached and admin-only, aggregated counts only (no new personal data), non-colour alternative required.
 - **2026-10-24: Owner decisions on WPB-9, WPB-10b and WPB-11.** WPB-9 caps at three columns on very wide screens and category headings are 1.3 times their current size. WPB-10b moves from 1.3.0 to 1.2.1 (owner chose new JS in a patch release), with per-browser `localStorage` widths, separate per table, keyed per column. WPB-11 accepted all proposed defaults (log scale, follows filters with 30-day default, centroid dots, blocking actions only, asset up to about 100 KB, panel open by default and remembered per browser). See "Owner decisions (2026-10-24, UI items)".
+- **2026-10-26: Admin login tracking request.** Owner asked to record admin logins and alert on new locations. Triaged as a security detection feature (no severity class), tracked as WPB-13, P2, effort M, target 1.3.0, built before WPB-11. Owner decisions recorded in the story; seen-history, "recently", "IP range", retention and flood questions are open for the architect and security-blue.
 
 No other open bugs are recorded.
 

@@ -524,4 +524,20 @@ final class SettingsTest extends TestCase {
 		$this->assertSame( 1440, $ok['rules']['login_lockout']['lockout_minutes'] );
 		$this->assertSame( 120, $ok['rules']['sensitive_files']['ban_minutes'] );
 	}
+
+	public function test_admin_login_settings_default_on_and_sanitize_as_booleans(): void {
+		$d = Settings::defaults();
+		$this->assertTrue( $d['alerts']['record_admin_logins'] );
+		$this->assertTrue( $d['alerts']['admin_login_location'] );
+
+		$out = Settings::sanitize( array( 'alerts' => array( 'record_admin_logins' => '0', 'admin_login_location' => '1' ) ) );
+		$this->assertFalse( $out['alerts']['record_admin_logins'] );
+		$this->assertTrue( $out['alerts']['admin_login_location'] );
+	}
+
+	public function test_a_stored_1_2_option_without_the_login_keys_merges_to_on(): void {
+		$s = new Settings( array( 'alerts' => array( 'enabled' => true, 'new_admin' => true ) ) );
+		$this->assertTrue( $s->get( 'alerts' )['record_admin_logins'] );
+		$this->assertTrue( $s->get( 'alerts' )['admin_login_location'] );
+	}
 }

@@ -321,10 +321,12 @@ final class ConfigurationAuditTest extends IntegrationTestCase {
 		return array_merge(
 			array(
 				'alerts' => array(
-					'enabled'          => '1',
-					'new_admin'        => '1',
-					'plugin_changes'   => '1',
-					'firewall_changes' => '1',
+					'enabled'              => '1',
+					'new_admin'            => '1',
+					'plugin_changes'       => '1',
+					'firewall_changes'     => '1',
+					'record_admin_logins'  => '1',
+					'admin_login_location' => '1',
 				),
 			),
 			$extra

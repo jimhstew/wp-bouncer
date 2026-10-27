@@ -27,10 +27,11 @@ Also included:
 - **Traffic log.** Optional: every request that reaches WordPress, with IP, client type, URL, response code, referrer, User-Agent and user, for 1 to 7 days. Secrets are removed from URLs first.
 - **Email alerts.** An email when an administrator account is created or promoted, or a plugin is installed, activated, deactivated (WP Bouncer included) or deleted; optionally on plugin updates; and on risky firewall setting changes, the Activity Log being cleared, and a daily reminder while `WP_BOUNCER_DISABLE` is set (`firewall_changes`, on by default). One email per request, at most 20 an hour, each also in the Activity Log.
 - **Environment checks.** PHP and database versions against their support end dates, and PHP and WordPress settings with security effects. Shown on the Dashboard tab and in Site Health. Read-only.
-- **Privacy tools.** Traffic-log exporter and eraser, block-log eraser, and privacy-policy text, for WordPress's Export and Erase Personal Data tools. Erasure is by user account; there is no IP-based export.
+- **Privacy tools.** Traffic-log exporter and eraser, block-log eraser, administrator-login exporter and eraser (login history and `admin_login` rows), and privacy-policy text, for WordPress's Export and Erase Personal Data tools. Erasure is by user account; there is no IP-based export.
+- **Administrator logins.** Each successful administrator login is an Activity Log row (action `login`, rule `admin_login`). A login from a new range or country sends one email. Both are controlled by the `record_admin_logins` and `admin_login_location` alert settings (see [rules.md](rules.md)).
 
-- **Activity log.** Every block, lockout and monitored match, with time, IP, country, rule, reason, request and User-Agent. You can search and filter it, export it to CSV, and block an IP straight from a log row. For an IPv6 row, **Block /64** blocks the whole network. Entries are kept for a set number of days.
-- **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries.
+- **Activity log.** Every block, lockout and monitored match, every administrator login (action `login`), with time, IP, country, rule, reason, request and User-Agent. You can search and filter it, export it to CSV, and block an IP straight from a log row. For an IPv6 row, **Block /64** blocks the whole network. Entries are kept for a set number of days.
+- **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries. Alert and administrator-login rows are left out of these counts (`BlockLog::NON_THREAT_ACTIONS`).
 - **Dashboard widget.** A WP Bouncer box on the WordPress Dashboard for users with `manage_options`, one per site (none on the network Dashboard). It shows 24-hour and 7-day block counts with trends, the top rules, IPs and countries for 7 days, and the latest blocks. Cached for 5 minutes, or an hour while the log is flooded.
 - **Monitor mode.** Logs what *would* be blocked without blocking it. Use it for a few days after setup.
 - **Allowlist.** IPs and ranges that skip every rule. Loopback requests (WP-Cron, same-host proxies) skip every rule only when they carry no forwarding header. Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored and dropped on save.
@@ -187,6 +188,7 @@ This is the public surface. WP Bouncer has no REST routes, shortcodes, blocks or
 | `wp_bouncer_rules` | `apply_filters( 'wp_bouncer_rules', RuleInterface[] $rules, Plugin $plugin ): RuleInterface[]` | built-in chain | Add, remove or reorder rules. Entries that aren't `RuleInterface` are dropped. Runs on `plugins_loaded` priority 1. See [adding-a-rule.md](adding-a-rule.md). |
 | `wp_bouncer_log_budget_per_minute` | `(int) apply_filters( …, 120 ): int` | 120 | Block-log rows written per minute, site-wide. Minimum 10. The firewall reads it at `plugins_loaded` priority 1, so add it from a mu-plugin or a plugin's main file. |
 | `wp_bouncer_log_priority_budget_per_minute` | `(int) apply_filters( …, 30 ): int` | 30 | Separate allowance per minute for lockout and uploads-block rows. Minimum 5. Same timing as above. |
+| `wp_bouncer_log_login_budget_per_minute` | `(int) apply_filters( …, 20 ): int` | 20 | Separate allowance per minute for administrator-login rows (WPB-13). Minimum 5. Logins over the limit are counted in the `suppressed` summary under `admin_login`. Add it from a mu-plugin or the plugin's main file. |
 | `wp_bouncer_atomic_object_cache` | `(bool) apply_filters( …, false ): bool` | `false` | Keep login counters in the object cache (`wp_cache_incr()`). Only for a persistent cache shared by every web server (Redis or Memcached). Ignored unless an external object cache is in use. |
 | `wp_bouncer_ipv6_wide_multiplier` | `(int) apply_filters( …, 8 ): int` | 8 | Login attempts allowed from one IPv6 /48 equal the per-/64 limit times this. Minimum 1. Read when the login guard is built. |
 | `wp_bouncer_cross_site_probe_limit` | `(int) apply_filters( …, 5 ): int` | 5 | Sensitive-file probes caused by another site's page needed for a ban. Minimum 2. |
@@ -203,6 +205,10 @@ This is the public surface. WP Bouncer has no REST routes, shortcodes, blocks or
 | `wp_bouncer_waf_json_max_fields` | `(int) apply_filters( …, 5000 ): int` | 5000 | Most nodes (values and containers together) in one JSON body the WAF inspects. Minimum 1. A body with more gets a 403. |
 | `wp_bouncer_widget_cache_ttl` | `(int) apply_filters( …, 300 ): int` | 300 (5 minutes) | Seconds the Dashboard widget's numbers are cached, kept between 60 and 3600. A log with more than 100,000 rows in the last 14 days is always cached for an hour. |
 | `wp_bouncer_rule_info` | `apply_filters( …, array(), string[] $ids ): array` | `array()` | Describes third-party rules for the Rules and Dashboard tabs: `id => array( 'category' => slug, 'title' => string )`. Built-in ids are ignored. Runs only when those tabs are built. See [adding-a-rule.md](adding-a-rule.md#give-the-rule-a-category-and-a-title-optional). |
+| `wp_bouncer_admin_login_is_admin` | `(bool) apply_filters( …, $is_admin, WP_User $user ): bool` | role or `manage_options` test | Widens or narrows who counts as an administrator for login recording (for example, editors). Runs at login time. Don't call `current_user_can()`, `wp_get_current_user()` or `is_user_logged_in()` in a callback: the application-password path runs inside user authentication. On a network, site admins are pre-filtered by the capabilities stored for each site, so widening to a role only works on the sites where that role has the capability. |
+| `wp_bouncer_admin_login_window_days` | `(int) apply_filters( …, 90 ): int` | 90 | Days of location history kept per administrator. Clamped to 30–365. Read at each login and by the daily cron. |
+| `wp_bouncer_admin_login_defer` | `(bool) apply_filters( …, $defer, WP_User $user, string $method ): bool` | true only for Two Factor users whose challenge runs after priority 20 | Return true to hold back recording of an interactive password login until a second factor passes. Nothing is recorded or saved while held back. Then fire `wp_bouncer_record_admin_login`. |
+| `wp_bouncer_admin_login_alert` | `(bool) apply_filters( …, true, array $event, array $flags ): bool` | `true` | Return false to skip the new-location email for one login. The Activity Log row is still written. `$event` and `$flags` are described under the `wp_bouncer_admin_login_recorded` action. |
 
 Example: allow a headless front end to log in (in a mu-plugin, so it loads before the firewall):
 
@@ -220,12 +226,44 @@ add_filter( 'wp_bouncer_login_allowed_origins', static function ( $origins ) {
 | `wp_bouncer_settings_changed` | `do_action( 'wp_bouncer_settings_changed', string[] $changes, array $old, array $new, string $actor )` | After every real change to the settings, from any source: the admin screen, WP-CLI, cron or code calling `update_option()`. Not fired when nothing changed. `$changes` are dotted key paths such as `rules.xmlrpc.enabled`; a list setting (allowlist, countries) counts as one path. `$old` and `$new` are the full settings before and after, and hold values, so listeners must not log them. `$actor` is who made the change, as written in the Activity Log: `login #ID (context)` (for example `jim #1 (cli)`), or `cli`, `cron`, `rest`, `ajax` or `upgrade` when no user is signed in, or `unknown`. The hook does no capability check, so firing it doesn't mean the actor was allowed to change anything. Fired from `WPBouncer\Audit\SettingsAuditor`, after the row is written and any alert is queued. |
 | `wp_bouncer_log_cleared` | `do_action( 'wp_bouncer_log_cleared' )` | After the Activity Log is emptied from its screen. The Dashboard widget drops its cached numbers. The handler then writes one audit row and sends the `firewall_changes` email when that alert is on. No arguments. |
 
+| `wp_bouncer_admin_login_recorded` | `do_action( 'wp_bouncer_admin_login_recorded', array $event, array $flags )` | After an administrator login is written to the Activity Log and its history is saved (WPB-13). Not fired when recording is off, the user isn't an administrator, or the login was deduplicated. `$event` has the keys `user_id`, `login` (control characters removed, at most 60 characters), `ip`, `range`, `country` (empty if unknown), `method` (the label, such as `interactive password` or `application password (REST)`) and `time` (Unix time). `$flags` has `first` (no history existed), `new_range`, `new_country` and `reliable` (false when the client IP can't be trusted, in which case no history was read or saved). Runs inside the login request, so keep listeners quick. |
+| `wp_bouncer_record_admin_login` | `do_action( 'wp_bouncer_record_admin_login', WP_User $user )` (WP Bouncer listens; fire it from your code) | Record an administrator's login now. Fire it after a second factor passes, when another two-factor plugin deferred the record through `wp_bouncer_admin_login_defer`. WP Bouncer runs its handler at priority 10. Records only if the user is an administrator, and the login was not already recorded in this request. |
+
 Example: log every settings change, with who made it, to a site's own audit trail. The listener logs only the key paths, never `$old` or `$new`:
 
 ```php
 add_action( 'wp_bouncer_settings_changed', static function ( array $changes, array $old, array $new, string $actor ) {
 	error_log( 'WP Bouncer settings changed by ' . $actor . ': ' . implode( ', ', $changes ) );
 }, 10, 4 );
+```
+
+Example: send administrator logins to your own SIEM. The listener gets the same fields as the Activity Log row, never a password or token:
+
+```php
+add_action( 'wp_bouncer_admin_login_recorded', static function ( array $event, array $flags ) {
+	if ( $flags['new_range'] || $flags['new_country'] ) {
+		error_log( sprintf( 'admin login: user %d (%s) from %s %s via %s', $event['user_id'], $event['login'], $event['range'], $event['country'], $event['method'] ) );
+	}
+}, 10, 2 );
+```
+
+Example: stop the new-location email for an office range. The row and history are still recorded. The range check uses `$event['range']`, which is `a.b.c.0/24` for IPv4 or the `/64` network for IPv6:
+
+```php
+add_filter( 'wp_bouncer_admin_login_alert', static function ( bool $send, array $event ): bool {
+	return '203.0.113.0/24' === $event['range'] ? false : $send;
+}, 10, 2 );
+```
+
+Example: hold back a login until a custom second factor passes. The callback is a placeholder for your plugin's own check:
+
+```php
+add_filter( 'wp_bouncer_admin_login_defer', static function ( bool $defer, WP_User $user ): bool {
+	return my_plugin_second_factor_pending( $user->ID ) || $defer; // placeholder check
+}, 10, 2 );
+
+// Later, once your plugin has verified the second factor:
+do_action( 'wp_bouncer_record_admin_login', $user );
 ```
 
 ### Constants (wp-config.php)
@@ -252,6 +290,11 @@ Useful when ordering your own callbacks. Priority is given where it isn't the de
 | `authenticate` | 1 | Reserves a login attempt before the password is checked |
 | `authenticate` | 999 | Lockouts, generic errors, country refusal backstop |
 | `wp_login` | -1 | Releases a reservation for a successful login |
+| `wp_login` | 20 | Records an administrator's interactive login (`AdminLoginRecorder`) |
+| `application_password_did_authenticate` | 20 | Records an administrator's application-password login. Flushed at `rest_pre_dispatch` 0, `xmlrpc_call` 0 or `wp_loaded` 20 (`shutdown` 0 as fallback) |
+| `two_factor_user_authenticated` | 20 | Records a login after the Two Factor plugin's second step |
+| `authenticate` | PHP_INT_MAX | XML-RPC only: notes which user passed password checks, so `xmlrpc_call` can record it |
+| `xmlrpc_call` | 0 and 20 | XML-RPC only: flushes pending logins, then records a password login not already recorded |
 | `rest_authentication_errors` | 100 | Refuses application-password requests from another site, and checks lockouts and countries |
 | `shutdown` | 100 | Writes the traffic-log row (`TrafficRecorder`) |
 | `shutdown` | default | Sends the queued alert email (`AlertNotifier::flush`) |

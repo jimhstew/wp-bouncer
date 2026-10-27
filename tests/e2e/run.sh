@@ -1394,6 +1394,71 @@ check "log eraser redacts the login"  '1 5 failed logins (last username "[erased
 check "traffic eraser deletes rows"  "3 0" "${PRIV[2]:-}"
 
 fi
+if want "Admin logins (WPB-13)"; then
+# Interactive logins by real HTTP, the Activity Log filter, the new-location mail, and the personal-data eraser on the real database.
+admin_login
+ADMIN_ID=$(dbq "SELECT ID FROM wp_users WHERE user_login = 'admin_e2e'")
+$WP eval 'delete_user_option(get_user_by("login", "admin_e2e")->ID, "wpb_login_seen");' > /dev/null
+dbq "DELETE FROM wp_bouncer_log WHERE rule = 'admin_login'" > /dev/null
+rm -f "$MAILLOG"
+check "admin login works"                      302 "$(login 198.18.7.71 admin_e2e e2e-pass-123)"
+check "  ...writes one login row"              1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'admin_login' AND action = 'login' AND ip = '198.18.7.71'")"
+check "  ...naming the user and the method"    1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE ip = '198.18.7.71' AND reason LIKE 'User ID $ADMIN_ID: admin_e2e — interactive password%'")"
+check "  ...first login starts the history"    1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE ip = '198.18.7.71' AND reason LIKE '%first recorded login%'")"
+check "  ...and sends no mail"                 0 "$(mail_count)"
+check "second login, same range: another row"  2 "$( login 198.18.7.99 admin_e2e e2e-pass-123 > /dev/null; dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'admin_login'")"
+check "  ...no mail"                           0 "$(mail_count)"
+check "login from a new range"                 302 "$(login 198.18.8.71 admin_e2e e2e-pass-123)"
+check "  ...sends one mail"                    1 "$(mail_count)"
+check "  ...with the alert subject"            1 "$(count_in 'Administrator login from a new location' "$MAILLOG")"
+check "  ...naming the user and the range"     1 "$(count_in 'User: admin_e2e (user ID' "$MAILLOG")"
+check "  ...and the IP"                        1 "$( [ "$(count_in '198.18.8.71' "$MAILLOG")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...without any password"              0 "$(count_in 'e2e-pass-123' "$MAILLOG")"
+check "  ...row says new location"             1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE ip = '198.18.8.71' AND reason LIKE '%new location: IP range 198.18.8.0/24%'")"
+rm -f "$MAILLOG"
+login 198.18.8.88 admin_e2e e2e-pass-123 > /dev/null
+check "  ...the range is now known: no mail"   0 "$(mail_count)"
+check "wrong password writes no login row"     0 "$(login 198.18.8.131 admin_e2e wrong-pass > /dev/null; dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'admin_login' AND ip = '198.18.8.131'")"
+$WP user create sub13_e2e sub13@example.test --role=subscriber --user_pass=e2e-pass-sub13 > /dev/null
+check "subscriber login works"                 302 "$(login 198.18.8.141 sub13_e2e e2e-pass-sub13)"
+check "  ...writes no login row"               0 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'admin_login' AND ip = '198.18.8.141'")"
+check "  ...and no login mail"                 0 "$(count_in 'Administrator login from a new location' "$MAILLOG")"
+# Activity Log: the Action filter selects login rows alone; the badge is text.
+check "log filtered to logins loads"           200 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=log&log_action=login")"
+check "  ...lists login badges"                1 "$( [ "$(grep -o 'wpb-badge-login' "$WORK/admin.html" | wc -l)" -ge 3 ] && echo 1 || echo 0 )"
+check "  ...with the text label"               1 "$( [ "$(grep -c '>Admin login</span>' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and no blocked rows"               0 "$(grep -c 'wpb-badge-blocked' "$WORK/admin.html")"
+check "  ...offers the filter option"          1 "$( [ "$(grep -c '<option value="login"' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "unfiltered log has no PHP errors"       0 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=log" > /dev/null; grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
+# Eraser: user ID 12 loses its rows and history; ID 1 (the admin) and ID 120 keep theirs.
+mapfile -t ERASE < <($WP eval '
+	global $wpdb;
+	$wpdb->query("DELETE FROM {$wpdb->users} WHERE ID IN (12, 120)");
+	$wpdb->insert($wpdb->users, array("ID" => 12, "user_login" => "twelve_e2e", "user_pass" => "x", "user_nicename" => "twelve", "user_email" => "twelve@example.test", "user_registered" => "2026-01-01 00:00:00", "display_name" => "Twelve"));
+	clean_user_cache(12);
+	$one = (int) get_user_by("login", "admin_e2e")->ID;
+	$wpdb->delete($wpdb->prefix . "bouncer_log", array("rule" => "admin_login"));
+	foreach (array(array($one, 2), array(12, 3), array(120, 1)) as $p) { for ($i = 0; $i < $p[1]; $i++) { $wpdb->insert($wpdb->prefix . "bouncer_log", array("created_at" => gmdate("Y-m-d H:i:s"), "ip" => "192.0.2.150", "rule" => "admin_login", "action" => "login", "reason" => "User ID " . $p[0] . ": u — interactive password")); } }
+	update_user_option(12, "wpb_login_seen", array("since" => time() - 10, "e" => array(array("r" => "192.0.2.0/24", "c" => "", "t" => time() - 5))));
+	$e = apply_filters("wp_privacy_personal_data_exporters", array())["wp-bouncer-admin-logins"]["callback"]("twelve@example.test", 1); echo count($e["data"]), " ", (int) $e["done"], "\n";
+	$r = apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-admin-logins"]["callback"]("twelve@example.test", 1); echo $r["items_removed"], " ", (int) $r["done"], "\n";
+	echo (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE reason LIKE \"User ID 12:%\""), " ", (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE reason LIKE \"User ID $one:%\""), " ", (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log WHERE reason LIKE \"User ID 120:%\""), "\n";
+	$h = get_user_option("wpb_login_seen", 12); echo json_encode($h["e"] ?? null), "\n";
+	$wpdb->query("DELETE FROM {$wpdb->users} WHERE ID = 12");
+	$wpdb->delete($wpdb->prefix . "bouncer_log", array("ip" => "192.0.2.150"));
+')
+check "exporter: history, since and 3 rows"    "5 1" "${ERASE[0]:-}"
+check "eraser removes ID 12's three rows"      "3 1" "${ERASE[1]:-}"
+check "  ...keeps ID 1's (2) and ID 120's (1)" "0 2 1" "${ERASE[2]:-}"
+check "  ...and empties the stored history (a tombstone, not 'never recorded')" "[]" "${ERASE[3]:-}"
+# After an erase the next login from a new range still alerts (RT-02), and the erase leaves an audit row.
+$WP eval 'apply_filters("wp_privacy_personal_data_erasers", array())["wp-bouncer-admin-logins"]["callback"](get_user_by("login", "admin_e2e")->user_email, 1);' > /dev/null
+check "  ...the erase leaves an Activity Log row" 1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE action = 'alert' AND reason LIKE 'Administrator login data erased for user ID $ADMIN_ID %'")"
+rm -f "$MAILLOG"
+check "login after an erase works"             302 "$(login 198.18.9.71 admin_e2e e2e-pass-123)"
+check "  ...from a new range still alerts"     1 "$(mail_count)"
+
+fi
 if want "PHP debug log"; then
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'

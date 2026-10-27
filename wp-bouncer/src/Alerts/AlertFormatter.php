@@ -14,7 +14,8 @@ defined( 'ABSPATH' ) || exit;
  *
  * An event is array{type: string, title: string, detail: string}. type is
  * 'admin' (a new or promoted administrator), 'plugin' (a plugin change) or
- * 'firewall' (a change to the firewall's own settings, or the emergency switch).
+ * 'firewall' (a change to the firewall's own settings, or the emergency switch) or
+ * 'login' (an administrator logged in from a new location).
  */
 final class AlertFormatter {
 
@@ -50,9 +51,19 @@ final class AlertFormatter {
 					}
 				)
 			);
+			$logins   = count(
+				array_filter(
+					$events,
+					static function ( $e ) {
+						return 'login' === $e['type'];
+					}
+				)
+			);
 			$extra    = '';
 			if ( $admins > 0 ) {
 				$extra = ' including a new administrator';
+			} elseif ( $logins > 0 ) {
+				$extra = ' including an administrator login from a new location';
 			} elseif ( $firewall > 0 ) {
 				$extra = ' including firewall changes';
 			}
@@ -84,11 +95,23 @@ final class AlertFormatter {
 		if ( '' !== ( $context['user_agent'] ?? '' ) ) {
 			$lines[] = 'Browser:    ' . self::clean( $context['user_agent'] );
 		}
-		$lines[] = '';
-		$lines[] = 'If you made ' . ( 1 === count( $events ) ? 'this change' : 'these changes' ) . ', there is nothing to do.';
-		$lines[] = 'If not, someone else may have access to your site. Log in, check';
-		$lines[] = 'Users and Plugins, change your passwords, and look at the WP Bouncer';
-		$lines[] = 'Activity Log for this IP.';
+		$lines[]     = '';
+		$only_logins = count(
+			array_filter(
+				$events,
+				static function ( $e ) {
+					return 'login' === $e['type'];
+				}
+			)
+		) === count( $events );
+		if ( $only_logins ) {
+			$lines[] = 'If this was you, there is nothing to do. If not, change this account\'s password, revoke its application passwords and log out its other sessions (Users → Profile), then check the Activity Log.';
+		} else {
+			$lines[] = 'If you made ' . ( 1 === count( $events ) ? 'this change' : 'these changes' ) . ', there is nothing to do.';
+			$lines[] = 'If not, someone else may have access to your site. Log in, check';
+			$lines[] = 'Users and Plugins, change your passwords, and look at the WP Bouncer';
+			$lines[] = 'Activity Log for this IP.';
+		}
 		if ( '' !== ( $context['settings_url'] ?? '' ) ) {
 			$lines[] = '';
 			$lines[] = 'Alert settings: ' . self::clean( $context['settings_url'] );
@@ -116,8 +139,8 @@ final class AlertFormatter {
 	 * Merge duplicates. Creating an administrator fires both "user registered"
 	 * and "role set" hooks; only one line should appear.
 	 *
-	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, ctx?: array<string, string>}> $events Events.
-	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, ctx?: array<string, string>}>
+	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}> $events Events.
+	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}>
 	 */
 	public static function dedupe( array $events ): array {
 		$out = array();
@@ -146,6 +169,9 @@ final class AlertFormatter {
 			}
 			if ( ! empty( $event['logged'] ) ) {
 				$out[ $key ]['logged'] = true;
+			}
+			if ( ! empty( $event['capped'] ) ) {
+				$out[ $key ]['capped'] = true;
 			}
 		}
 		return array_values( $out );

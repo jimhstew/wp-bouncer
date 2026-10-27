@@ -143,4 +143,49 @@ final class AlertFormatterTest extends TestCase {
 		$this->assertTrue( $out[0]['logged'] );
 		$this->assertSame( array( 'a@example.org' ), $out[0]['recipients'] );
 	}
+
+	public function test_a_login_only_mail_has_the_login_closing_text(): void {
+		$mail = AlertFormatter::format(
+			array( array( 'type' => 'login', 'title' => 'Administrator login from a new location', 'detail' => 'User: jim (user ID 12). Method: interactive password. New: IP range 203.0.113.0/24.' ) ),
+			$this->context()
+		);
+		$this->assertSame( '[My Blog] WP Bouncer alert: Administrator login from a new location', $mail['subject'] );
+		$this->assertStringContainsString( 'If this was you, there is nothing to do. If not, change this account\'s password, revoke its application passwords and log out its other sessions', $mail['body'] );
+		$this->assertStringNotContainsString( 'If you made', $mail['body'] );
+	}
+
+	public function test_two_login_events_are_still_login_only(): void {
+		$events = array(
+			array( 'type' => 'login', 'title' => 'Administrator login from a new location', 'detail' => 'a' ),
+			array( 'type' => 'login', 'title' => 'Administrator login from a new location', 'detail' => 'b' ),
+		);
+		$mail   = AlertFormatter::format( $events, $this->context() );
+		$this->assertStringContainsString( 'If this was you', $mail['body'] );
+		$this->assertStringContainsString( 'including an administrator login from a new location', $mail['subject'] );
+	}
+
+	public function test_a_mixed_mail_keeps_the_generic_closing_and_names_the_login_in_the_subject(): void {
+		$events = array(
+			array( 'type' => 'plugin', 'title' => 'Plugin installed: X', 'detail' => '' ),
+			array( 'type' => 'login', 'title' => 'Administrator login from a new location', 'detail' => 'd' ),
+		);
+		$mail   = AlertFormatter::format( $events, $this->context() );
+		$this->assertSame( '[My Blog] WP Bouncer alert: 2 security events including an administrator login from a new location', $mail['subject'] );
+		$this->assertStringContainsString( 'these changes', $mail['body'] );
+		$this->assertStringNotContainsString( 'If this was you', $mail['body'] );
+
+		$events[0]['type'] = 'admin';
+		$this->assertStringContainsString( 'including a new administrator', AlertFormatter::format( $events, $this->context() )['subject'], 'an admin event wins the subject' );
+	}
+
+	public function test_dedupe_keeps_the_capped_flag(): void {
+		$out = AlertFormatter::dedupe(
+			array(
+				array( 'type' => 'login', 'title' => 't', 'detail' => 'd', 'key' => 'login|3', 'capped' => true ),
+				array( 'type' => 'login', 'title' => 't', 'detail' => 'd', 'key' => 'login|3' ),
+			)
+		);
+		$this->assertCount( 1, $out );
+		$this->assertTrue( $out[0]['capped'] );
+	}
 }

@@ -16,7 +16,7 @@ A self-contained firewall for WordPress. Like a bouncer at a club door, it check
 
 It can also keep a **traffic log** of every request that reaches WordPress (who, what kind of client, which URL, the response code and where they came from) for up to a week.
 
-It also emails you when an administrator account appears, a plugin is installed, activated, deactivated or deleted, or the firewall's own settings change, so you hear about a break-in the same day.
+It also emails you when an administrator account appears, when an administrator signs in from a country or network not seen for that account recently, a plugin is installed, activated, deactivated or deleted, or the firewall's own settings change, so you hear about a break-in the same day. Every administrator login is recorded in the Activity Log.
 
 The Dashboard tab and Site Health also report whether your PHP and database versions still get security fixes, and flag PHP and WordPress settings that weaken security.
 
@@ -94,13 +94,13 @@ A new **Bouncer** item appears in the wp-admin menu. Most protection is on from 
 | **General** | Enforce or monitor mode, IP detection and trusted proxies, the allowlist, how long to keep the log, the message blocked visitors see, and email alerts. |
 | **Rules** | Each blocking rule, with its own on/off switch and settings, in four groups: Block lists, Login and accounts, Scanners and floods, and Attack payloads and hardening. A rule that needs attention is flagged, and rate limiting shows a "Before switching on" note. Rules that other plugins add appear under Other. |
 | **Countries** | Pick countries from the list of 249, grouped by continent and searchable. |
-| **Activity Log** | Everything that was blocked or would have been (in monitor mode): when, which IP and country, which rule and why. Email alerts are listed too. Filter, search, export to CSV, or **Block IP** from any row. For an IPv6 row, **Block /64** blocks its whole network, which is how the firewall counts that client. |
+| **Activity Log** | Everything that was blocked or would have been (in monitor mode): when, which IP and country, which rule and why. Email alerts and administrator logins (action **Admin login**) are listed too. Filter, search, export to CSV, or **Block IP** from any row. For an IPv6 row, **Block /64** blocks its whole network, which is how the firewall counts that client. |
 | **Traffic** | Optional. Every request that reached WordPress for the last 1 to 7 days: time, IP, client type (browser, mobile, search engine, bot, uptime monitor, script, attack tool…), method and URL, response code, referrer, User-Agent and logged-in user. Filter by client, response class or IP, search, export to CSV, **Block IP** from any row. |
 | **Tools** | Import or refresh the geo database, unlock an IP that is locked out or banned, and the emergency instructions below. |
 
 Out of the box every rule is on except **country blocking** and **rate limiting**, which need setting up first. The **traffic log** is off until you switch it on (Traffic tab), because it adds one database write per request.
 
-**Privacy.** WordPress's Export and Erase Personal Data tools include the traffic log (by user account) and the block log. Erasing a user keeps the block-log rows but clears the URL and reason of the rows that name that account. The privacy policy guide gets a suggested paragraph. Exports and erasure are by account, not by IP address.
+**Privacy.** WordPress's Export and Erase Personal Data tools include the traffic log (by user account), the block log and the administrator-login history and rows. Erasing an administrator deletes their login history and login rows; the block-log rows are kept. Erasing a user keeps the block-log rows but clears the URL and reason of the rows that name that account. The privacy policy guide gets a suggested paragraph. Exports and erasure are by account, not by IP address.
 
 **Environment checks** appear on the Dashboard tab and in Site Health: PHP and database versions against their security support end dates, and PHP and WordPress settings that weaken security (for example `allow_url_include`, `display_errors`, `DISALLOW_FILE_EDIT`, a web-readable `debug.log`). Each check says why it matters and how to fix it. WP Bouncer never changes those settings itself.
 

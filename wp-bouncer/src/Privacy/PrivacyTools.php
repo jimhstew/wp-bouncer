@@ -7,6 +7,7 @@
 
 namespace WPBouncer\Privacy;
 
+use WPBouncer\AdminLogins\AdminLoginRecorder;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Login\LoginGuard;
@@ -476,6 +477,16 @@ final class PrivacyTools {
 			) . '</p>';
 		}
 		$html .= '<p>' . esc_html__( 'An activity log also records changes to administrator accounts and to the site (for example a new administrator, a role change or a plugin change): the account\'s username and user ID, the username of the administrator who made the change, and that person\'s IP address and browser details.', 'wp-bouncer' ) . '</p>';
+		if ( ! empty( ( (array) $settings->get( 'alerts' ) )['record_admin_logins'] ) ) {
+			$html .= '<p>' . esc_html(
+				sprintf(
+					/* translators: 1: days login rows are kept, 2: days the location history is kept. */
+					__( 'When an administrator logs in, we record the account\'s username and user ID, the IP address, approximate country, browser, time and login method, kept for %1$d days. To spot logins from unusual places we keep, for each administrator, the network ranges (not full addresses) and countries used in the last %2$d days.', 'wp-bouncer' ),
+					$days,
+					AdminLoginRecorder::window_days()
+				)
+			) . '</p>';
+		}
 		$html .= '<p>' . esc_html__( 'Your IP address may be held for a short time (minutes to days) to count failed logins and temporary bans.', 'wp-bouncer' ) . '</p>';
 		$html .= '<p>' . esc_html__( 'This information is not shared with anyone. Country lookups use a database stored on this site, and the plugin does not contact any outside service about visitors. Site administrators may receive email alerts about security events (for example a new administrator account), which include the IP address and browser details of the person who triggered them, the username and email address of the affected account, and the login of the administrator who made the change.', 'wp-bouncer' ) . '</p>';
 		$html .= '<p>' . esc_html__( 'We process this information on the basis of our legitimate interest in keeping the site and its users secure.', 'wp-bouncer' ) . '</p>';

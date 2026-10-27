@@ -130,6 +130,7 @@ final class AdminController {
 		}
 		$out[ AlertNotifier::LOG_RULE ] = __( 'Email alerts', 'wp-bouncer' );
 		$out[ self::SETTINGS_LOG_RULE ] = __( 'Settings changes', 'wp-bouncer' );
+		$out['admin_login']             = __( 'Admin logins', 'wp-bouncer' );
 		return $out;
 	}
 
@@ -1348,6 +1349,8 @@ final class AdminController {
 				return __( 'Lockout', 'wp-bouncer' );
 			case BlockLogInterface::ACTION_ALERT:
 				return __( 'Alert', 'wp-bouncer' );
+			case BlockLogInterface::ACTION_LOGIN:
+				return __( 'Admin login', 'wp-bouncer' );
 			case BlockLogInterface::ACTION_SUPPRESSED:
 				return __( 'Suppressed', 'wp-bouncer' );
 			default:

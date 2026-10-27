@@ -30,11 +30,13 @@ WP Bouncer checks every request before WordPress does any real work and refuses 
 
 **Email alerts** tell you when an administrator account is created or promoted, or a plugin is installed, activated, deactivated or deleted, the usual signs that someone else has got in. Changes to the firewall's own settings are emailed too.
 
+**Administrator logins**: every successful login by an administrator is recorded in the Activity Log, with the user, IP address, country, time and login method. You are emailed when an administrator logs in from a country or network (IPv4 /24, IPv6 /64) not seen for that account in the last 90 days. Both can be switched off on the General tab.
+
 **Site health**: the Dashboard tab and Site Health show whether your PHP and database versions still get security fixes, and flag PHP and WordPress settings that weaken security.
 
-**Privacy**: the WordPress Export and Erase Personal Data tools cover the traffic log and the block log.
+**Privacy**: the WordPress Export and Erase Personal Data tools cover the traffic log, the block log and administrator logins.
 
-You also get an Activity Log of everything refused (searchable, filterable, CSV export, one-click "Block IP"), a dashboard with 24-hour, 7-day and 30-day stats, a WP Bouncer box on the WordPress Dashboard for administrators, a monitor (log-only) mode for trying rules safely, an allowlist, and proxy/CDN-aware IP detection.
+You also get an Activity Log of everything refused and every administrator login (searchable, filterable, CSV export, one-click "Block IP"), a dashboard with 24-hour, 7-day and 30-day stats, a WP Bouncer box on the WordPress Dashboard for administrators, a monitor (log-only) mode for trying rules safely, an allowlist, and proxy/CDN-aware IP detection.
 
 Country lookups are done locally against a free database you import (DB-IP Lite or IP2Location LITE), or read from your CDN's country header. No visitor data leaves your server.
 
@@ -86,7 +88,7 @@ Requests with JSON bodies are checked for attack patterns, like form fields, unl
 
 = Does WP Bouncer hold personal data? =
 
-It logs IP addresses, requested URLs, referrers and User-Agents: the Activity Log for blocked requests, and the Traffic log if you switch it on. Secret values in URLs are removed before saving. The WordPress Export and Erase Personal Data tools cover the traffic log by user account. For the block log, erasing a user keeps the rows, but clears the URL and reason of rows that name that account. The privacy policy guide gets a suggested paragraph.
+It logs IP addresses, requested URLs, referrers and User-Agents: the Activity Log for blocked requests, and the Traffic log if you switch it on. Secret values in URLs are removed before saving. For each administrator, it also records successful logins (user name, IP address, approximate country, browser, time and login method) in the Activity Log, and keeps the IP ranges and countries each administrator logged in from for 90 days, to spot a new location. It stores ranges and countries, not full IP addresses, in that history. The WordPress Export and Erase Personal Data tools cover the traffic log by user account and the administrator-login history and rows. For the block log, erasing a user keeps the rows, but clears the URL and reason of rows that name that account. The privacy policy guide gets a suggested paragraph. Administrator logins can be switched off with "Record administrator logins" on the General tab.
 
 = Does it replace Wordfence? =
 

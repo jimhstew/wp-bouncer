@@ -7,7 +7,10 @@
 
 namespace WPBouncer\Admin;
 
+use WPBouncer\AdminLogins\AdminLoginRecorder;
+use WPBouncer\AdminLogins\LoginEvent;
 use WPBouncer\Geo\Countries;
+use WPBouncer\Privacy\AdminLoginPrivacy;
 use WPBouncer\Log\BlockLog;
 use WPBouncer\Log\BlockLogInterface;
 use WPBouncer\Support\CounterSubject;
@@ -155,7 +158,7 @@ final class LogListTable extends \WP_List_Table {
 
 		echo '<label class="screen-reader-text" for="wpb-filter-action">' . esc_html__( 'Filter by action', 'wp-bouncer' ) . '</label>';
 		echo '<select name="log_action" id="wpb-filter-action"><option value="">' . esc_html__( 'All actions', 'wp-bouncer' ) . '</option>';
-		foreach ( array( BlockLogInterface::ACTION_BLOCKED, BlockLogInterface::ACTION_LOCKOUT, BlockLogInterface::ACTION_MONITORED, BlockLogInterface::ACTION_ALERT ) as $action ) {
+		foreach ( array( BlockLogInterface::ACTION_BLOCKED, BlockLogInterface::ACTION_LOCKOUT, BlockLogInterface::ACTION_MONITORED, BlockLogInterface::ACTION_ALERT, BlockLogInterface::ACTION_LOGIN ) as $action ) {
 			printf( '<option value="%s" %s>%s</option>', esc_attr( $action ), selected( $filters['action'] ?? '', $action, false ), esc_html( AdminController::action_label( $action ) ) );
 		}
 		echo '</select>';
@@ -233,6 +236,41 @@ final class LogListTable extends \WP_List_Table {
 			return '<span aria-hidden="true">—</span>';
 		}
 		return sprintf( '<span title="%s">%s %s</span>', esc_attr( Countries::name( $item['country'] ) ), esc_html( AdminController::flag( $item['country'] ) ), esc_html( $item['country'] ) );
+	}
+
+	/**
+	 * Reason. Administrator login rows store the English method name; show it translated.
+	 *
+	 * @param array<string, string> $item Row.
+	 * @return string
+	 */
+	protected function column_reason( $item ) {
+		$reason = (string) ( $item['reason'] ?? '' );
+		if ( AdminLoginRecorder::LOG_RULE !== ( $item['rule'] ?? '' ) || BlockLogInterface::ACTION_LOGIN !== ( $item['action'] ?? '' ) ) {
+			return esc_html( $reason );
+		}
+		$method = AdminLoginPrivacy::method_from_reason( $reason );
+		$labels = self::method_labels();
+		$pos    = '' === $method ? false : strpos( $reason, ' — ' . $method );
+		if ( false === $pos || ! isset( $labels[ $method ] ) ) {
+			return esc_html( $reason );
+		}
+		return esc_html( substr_replace( $reason, ' — ' . $labels[ $method ], $pos, strlen( ' — ' . $method ) ) );
+	}
+
+	/**
+	 * Translated labels for the stored English login methods.
+	 *
+	 * @return array<string, string>
+	 */
+	public static function method_labels(): array {
+		return array(
+			LoginEvent::METHOD_INTERACTIVE     => __( 'interactive password', 'wp-bouncer' ),
+			LoginEvent::METHOD_INTERACTIVE_2FA => __( 'interactive password + two-factor', 'wp-bouncer' ),
+			LoginEvent::METHOD_APP_REST        => __( 'application password (REST)', 'wp-bouncer' ),
+			LoginEvent::METHOD_APP_XMLRPC      => __( 'application password (XML-RPC)', 'wp-bouncer' ),
+			LoginEvent::METHOD_XMLRPC_PASSWORD => __( 'password (XML-RPC)', 'wp-bouncer' ),
+		);
 	}
 
 	/**

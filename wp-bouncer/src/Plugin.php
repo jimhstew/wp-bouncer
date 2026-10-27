@@ -12,6 +12,8 @@ use WPBouncer\Admin\DashboardWidget;
 use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
+use WPBouncer\AdminLogins\AdminLoginRecorder;
+use WPBouncer\AdminLogins\LoginHistoryRepository;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Audit\SettingsAuditor;
 use WPBouncer\Environment\EnvironmentAdmin;
@@ -32,6 +34,7 @@ use WPBouncer\Log\BudgetedBlockLog;
 use WPBouncer\Log\WriteBudget;
 use WPBouncer\Login\BasicAuthEditor;
 use WPBouncer\Login\LoginGuard;
+use WPBouncer\Privacy\AdminLoginPrivacy;
 use WPBouncer\Privacy\PrivacyTools;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
@@ -343,6 +346,8 @@ final class Plugin {
 		( new SettingsAuditor( $this ) )->register();
 		( new TrafficRecorder( $this ) )->register();
 		( new PrivacyTools( $this ) )->register();
+		( new AdminLoginPrivacy( null, $this ) )->register();
+		( new AdminLoginRecorder( $this ) )->register();
 		FirewallCapability::register();
 
 		// Updates are not affected by WP_BOUNCER_DISABLE: updating is one way out of a bad version.
@@ -397,6 +402,34 @@ final class Plugin {
 		$this->request   = null;
 	}
 
+	/**
+	 * Run code as another site of a multisite network: that site's settings, Activity Log
+	 * and log write budget. The services are put back afterwards, even on an exception.
+	 *
+	 * Only what login recording needs is swapped; the firewall's own objects are untouched.
+	 *
+	 * @param int      $blog_id Site ID.
+	 * @param callable $callback Code to run.
+	 */
+	public function run_on_site( int $blog_id, callable $callback ): void {
+		if ( ! is_multisite() || get_current_blog_id() === $blog_id ) {
+			$callback();
+			return;
+		}
+		$saved = array( $this->settings, $this->log, $this->log_writer, $this->write_budget );
+		switch_to_blog( $blog_id );
+		try {
+			$this->settings     = Settings::load();
+			$this->log          = null;
+			$this->log_writer   = null;
+			$this->write_budget = null;
+			$callback();
+		} finally {
+			list( $this->settings, $this->log, $this->log_writer, $this->write_budget ) = $saved;
+			restore_current_blog();
+		}
+	}
+
 	/** Main plugin file path. */
 	public function file(): string {
 		return $this->file;
@@ -445,8 +478,14 @@ final class Plugin {
 			 *
 			 * @param int $per_minute Default 30.
 			 */
-			$priority           = max( 5, (int) apply_filters( 'wp_bouncer_log_priority_budget_per_minute', 30 ) );
-			$this->write_budget = new WriteBudget( $this->store(), new Clock(), $per_minute, $priority );
+			$priority = max( 5, (int) apply_filters( 'wp_bouncer_log_priority_budget_per_minute', 30 ) );
+			/**
+			 * Filters the separate per-minute allowance for administrator login rows (at least 5).
+			 *
+			 * @param int $per_minute Default 20.
+			 */
+			$login              = max( 5, (int) apply_filters( 'wp_bouncer_log_login_budget_per_minute', 20 ) );
+			$this->write_budget = new WriteBudget( $this->store(), new Clock(), $per_minute, $priority, $login );
 		}
 		return $this->write_budget;
 	}
@@ -642,6 +681,20 @@ final class Plugin {
 	 */
 	public function client_is_allowlisted(): bool {
 		return $this->client_is_exempt();
+	}
+
+	/**
+	 * Can the client IP be trusted enough to compare logins by location?
+	 *
+	 * False for no address, loopback, trusted-proxy addresses, a refused
+	 * forwarding header, and a header IP source with no trusted proxies.
+	 */
+	public function client_ip_is_reliable(): bool {
+		$ip = $this->client_ip();
+		return '' !== $ip
+			&& IpUtils::is_valid( $ip )
+			&& '' === $this->ip_resolver()->rejected_subject( wp_unslash( $_SERVER ) )
+			&& $this->client_can_be_banned();
 	}
 
 	/**
@@ -900,6 +953,7 @@ final class Plugin {
 		$this->log_writer()->flush_summary();
 		$this->alerts()->maybe_remind_disabled();
 		$this->purge_logs();
+		( new LoginHistoryRepository() )->prune_expired( AdminLoginRecorder::window_days() * DAY_IN_SECONDS );
 		// Safety net: an interrupted upgrade must not leave the data migration unscheduled.
 		RedactionMigration::schedule();
 	}
@@ -921,6 +975,7 @@ final class Plugin {
 			// Claim the slot first so concurrent admin requests don't all purge.
 			update_option( self::LAST_PURGE_OPTION, time(), true );
 			$this->purge_logs();
+			( new LoginHistoryRepository() )->prune_expired( AdminLoginRecorder::window_days() * DAY_IN_SECONDS );
 			( new TrafficRecorder( $this ) )->purge();
 		}
 	}

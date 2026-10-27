@@ -54,9 +54,8 @@ final class BudgetedBlockLog implements BlockLogInterface {
 
 		$this->flush_summary();
 
-		$rule     = (string) ( $entry['rule'] ?? '' );
-		$priority = WriteBudget::is_priority( $entry );
-		if ( ! $this->budget->consume( $rule, $priority ) ) {
+		$rule = (string) ( $entry['rule'] ?? '' );
+		if ( ! $this->budget->consume_lane( $rule, WriteBudget::lane( $entry ) ) ) {
 			return 0;
 		}
 		return $this->inner->record( $entry );

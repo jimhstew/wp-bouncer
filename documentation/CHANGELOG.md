@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Administrator logins are recorded (WPB-13).** Each successful login by an administrator (the administrator role, `manage_options`, or a network super admin) adds one Activity Log row with action "Admin login", the user, IP, country, time and method: interactive password, application password (REST), application password (XML-RPC), or password (XML-RPC). Filter the log by action to see only these. Application-password and XML-RPC logins are recorded once per user, range and method each hour. Login rows are not counted as threats on the Dashboard.
+- **Email alert for a login from a new location (WPB-13).** An administrator who logs in from an IP range (IPv4 /24, IPv6 /64) or a country not seen for that account in the last 90 days gets one email. The first login after the update starts the history without an email. Each administrator gets at most 3 of these emails an hour, and the site at most 10 an hour; further logins are still recorded, and one "throttled" notice is sent per hour. The window can be changed with the `wp_bouncer_admin_login_window_days` filter.
+- **Settings for admin logins (WPB-13).** "Record administrator logins in the Activity Log" (`alerts.record_admin_logins`) and "an administrator logs in from a new location" (`alerts.admin_login_location`) are on the General tab, both on by default, including on upgraded sites. Switching either one off sends a risky-change alert.
+- **Privacy (WPB-13).** The WordPress Export and Erase Personal Data tools cover each administrator's login history and login rows ("Site security: administrator logins"). Erasing deletes the rows and the history, and the next login from a known location still alerts. The privacy policy suggestion describes the login record.
+- **Developer hooks (WPB-13).** `wp_bouncer_admin_login_recorded`, `wp_bouncer_admin_login_alert`, `wp_bouncer_admin_login_is_admin`, `wp_bouncer_admin_login_window_days`, `wp_bouncer_admin_login_defer`, `wp_bouncer_record_admin_login` and `wp_bouncer_log_login_budget_per_minute`. See the developer guide.
+
+### Changed
+
+- The Dashboard and dashboard widget counts of threats, the 14-day chart and the top rules, IPs and countries now leave out login rows, as they already left out alerts.
+- Uninstalling WP Bouncer removes each site's administrator login history.
+
 ## [1.2.1] - 2026-10-24
 
 ### Security

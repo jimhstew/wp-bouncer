@@ -19,6 +19,10 @@ defined( 'ABSPATH' ) || exit;
  */
 final class WriteBudget {
 
+	public const LANE_NORMAL   = '';
+	public const LANE_PRIORITY = 'p';
+	public const LANE_LOGIN    = 'l';
+
 	/** Counters and the pending marker live for two days, so a quiet site still reports. */
 	private const TTL         = 172800;
 	private const PENDING_KEY = 'log_budget_pending';
@@ -51,6 +55,12 @@ final class WriteBudget {
 	 * @var int
 	 */
 	private int $priority_per_minute;
+	/**
+	 * Writes allowed per minute for administrator login rows.
+	 *
+	 * @var int
+	 */
+	private int $login_per_minute;
 
 	/**
 	 * Set up the WriteBudget.
@@ -59,12 +69,27 @@ final class WriteBudget {
 	 * @param Clock                 $clock               Time source.
 	 * @param int                   $per_minute          Writes allowed per minute.
 	 * @param int                   $priority_per_minute Separate allowance for lockouts and uploads blocks (at least 5).
+	 * @param int                   $login_per_minute    Separate allowance for administrator login rows (at least 5).
 	 */
-	public function __construct( CounterStoreInterface $store, Clock $clock, int $per_minute, int $priority_per_minute = 30 ) {
+	public function __construct( CounterStoreInterface $store, Clock $clock, int $per_minute, int $priority_per_minute = 30, int $login_per_minute = 20 ) {
 		$this->store               = $store;
 		$this->clock               = $clock;
 		$this->per_minute          = max( 1, $per_minute );
 		$this->priority_per_minute = max( 5, $priority_per_minute );
+		$this->login_per_minute    = max( 5, $login_per_minute );
+	}
+
+	/**
+	 * Which allowance does this entry use?
+	 *
+	 * @param array<string, string> $entry Log entry.
+	 * @return string One of the LANE_* constants.
+	 */
+	public static function lane( array $entry ): string {
+		if ( BlockLogInterface::ACTION_LOGIN === ( $entry['action'] ?? '' ) ) {
+			return self::LANE_LOGIN;
+		}
+		return self::is_priority( $entry ) ? self::LANE_PRIORITY : self::LANE_NORMAL;
 	}
 
 	/**
@@ -93,11 +118,23 @@ final class WriteBudget {
 	/**
 	 * Counter key for the current minute's used allowance.
 	 *
-	 * @param string $minute   Minute key.
-	 * @param bool   $priority Priority allowance.
+	 * @param string $minute Minute key.
+	 * @param string $lane   LANE_* constant.
 	 */
-	private function used_key( string $minute, bool $priority ): string {
-		return ( $priority ? 'log_budget_p:' : 'log_budget:' ) . $minute;
+	private function used_key( string $minute, string $lane ): string {
+		return 'log_budget' . ( '' === $lane ? '' : '_' . $lane ) . ':' . $minute;
+	}
+
+	/**
+	 * Size of a lane's per-minute allowance.
+	 *
+	 * @param string $lane LANE_* constant.
+	 */
+	private function limit( string $lane ): int {
+		if ( self::LANE_LOGIN === $lane ) {
+			return $this->login_per_minute;
+		}
+		return self::LANE_PRIORITY === $lane ? $this->priority_per_minute : $this->per_minute;
 	}
 
 	/**
@@ -110,9 +147,10 @@ final class WriteBudget {
 	 * @param bool   $priority Use the priority allowance.
 	 */
 	public function peek( string $rule = '', bool $priority = false ): bool {
+		$lane   = $priority ? self::LANE_PRIORITY : self::LANE_NORMAL;
 		$minute = $this->minute( $this->clock->now() );
-		$used   = (int) $this->store->get( $this->used_key( $minute, $priority ) );
-		if ( $used < ( $priority ? $this->priority_per_minute : $this->per_minute ) ) {
+		$used   = (int) $this->store->get( $this->used_key( $minute, $lane ) );
+		if ( $used < $this->limit( $lane ) ) {
 			return true;
 		}
 		$this->count_dropped( $minute, $rule );
@@ -127,9 +165,20 @@ final class WriteBudget {
 	 * @return bool True if the write is within the budget.
 	 */
 	public function consume( string $rule = '', bool $priority = false ): bool {
+		return $this->consume_lane( $rule, $priority ? self::LANE_PRIORITY : self::LANE_NORMAL );
+	}
+
+	/**
+	 * Use one write from a lane's allowance for the current minute.
+	 *
+	 * @param string $rule Rule id of the event, for the summary.
+	 * @param string $lane LANE_* constant.
+	 * @return bool True if the write is within the budget.
+	 */
+	public function consume_lane( string $rule, string $lane ): bool {
 		$minute = $this->minute( $this->clock->now() );
-		$used   = $this->store->increment( $this->used_key( $minute, $priority ), self::TTL );
-		if ( $used <= ( $priority ? $this->priority_per_minute : $this->per_minute ) ) {
+		$used   = $this->store->increment( $this->used_key( $minute, $lane ), self::TTL );
+		if ( $used <= $this->limit( $lane ) ) {
 			return true;
 		}
 		$this->count_dropped( $minute, $rule );
