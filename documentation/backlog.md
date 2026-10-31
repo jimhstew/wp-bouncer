@@ -1,6 +1,6 @@
 # WP Bouncer backlog
 
-Owner: product-manager. Last updated 2026-10-26, against released version 1.2.0.
+Owner: product-manager. Last updated 2026-10-30, against released version 1.2.1 (1.3.0 in progress).
 Minimum supported: PHP 8.3, WordPress 7.0. Distribution: GitHub releases (not wp.org), so wp.org review does not gate a release, but the wp.org plugin guidelines (GPL, no tracking, escaped output, no remote calls without disclosure) are still the quality bar.
 
 ## Owner decisions (2026-10-23)
@@ -41,7 +41,7 @@ Method: **RICE** (Reach x Impact x Confidence / Effort), with one override: **se
 | WPB-9 | Rules tab: category blocks in columns, larger headings | P3 | RICE: Reach 8 x Impact 0.25 x Confidence 0.8 / Effort 0.5 = 3.2. Cosmetic, UI-only, so it ranks below all security and functional work. |
 | WPB-10a | Activity Log and Traffic tab: long Request / User-Agent values overlap the next column (bug) | P2 | Severity: cosmetic, top of its class (values are unreadable, though still reachable via the title tooltip). RICE: Reach 6 x Impact 0.5 x Confidence 0.5 / Effort 0.5 = 3.0, with low confidence until reproduced. Ranked above WPB-9 because it hides data rather than just looking plain. |
 | WPB-10b | Resizable columns (drag) on Activity Log and Traffic tab | P3 | RICE: Reach 5 x Impact 0.5 x Confidence 0.8 / Effort 1.5 = 1.3. Owner-requested convenience; the bug fix removes most of the pain first. |
-| WPB-12 | Detect settings changes made while the plugin wasn't loaded | P2 | Security detection gap (WPB8-RT-02). Not yet RICE-scored; target 1.2.2 or 1.3.0. |
+| WPB-12 | Detect settings changes made while the plugin wasn't loaded | P2 | RICE: Reach 5 x Impact 1 x Confidence 0.5 / Effort 1.5 = 1.7. Security detection gap (WPB8-RT-02), a feature rather than a bug, so no override. Ranks below WPB-13 (2.3) and above WPB-11 (0.75). Scheduled for 1.3.0 by owner decision (2026-10-30). Confidence is low until the threat model shows what a fingerprint can and cannot catch. |
 | WPB-13 | Track admin logins (log every admin login, alert on a new location) | P2 | RICE: Reach 7 x Impact 1 x Confidence 0.5 / Effort 1.5 = 2.3. Security detection feature, not a bug, so no override. Ranks above WPB-11 (0.75) and is built first (owner decision). Confidence is low until the open questions are answered. |
 | WPB-11 | Activity Log: threat hotspot map by country | P3 | RICE: Reach 6 x Impact 1 x Confidence 0.5 / Effort 4 = 0.75. Owner-requested, new capability with an asset-licence and accessibility cost (hence the low confidence and L effort). Ranks last: nothing is broken without it, and it needs a new minor release. |
 
@@ -52,10 +52,8 @@ No other open items are scored. "Later" items are unscored candidates.
 | Release | Status | Contents | Why this number |
 |---|---|---|---|
 | **1.2.0** (minor) | Released 2026-10-24 (tag v1.2.0, commit 072805e) | See "Done" | New backwards-compatible features, plus the 1.1.2 and 1.1.3 work, which was never released separately. |
-| **1.2.1** (patch) | Ready to tag 2026-10-24 (WPB-8, WPB-9, WPB-10a, WPB-10b) | WPB-8, WPB-9 | WPB-8 is a security fix to existing behaviour; WPB-9 is a presentation-only change. No new settings keys or breaking change in either. |
-| **1.2.1** (patch), addition | Proposed | WPB-10a | CSS-only bug fix (no new JS, settings or storage). Goes with WPB-8 and WPB-9; if 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
-| **1.2.1** (patch), addition | Owner decision 2026-10-24 | WPB-10b | New JS and a new capability would normally be a minor bump; the owner chose to ship it in the patch release. It is backwards compatible, with no settings keys or storage change (browser `localStorage` only). If 1.2.1 is cut early for WPB-8, it moves to 1.2.2. |
-| **1.3.0** (minor) | Proposed | WPB-13 (built first), then WPB-11 | WPB-13: new logged event type, new alert setting and possibly per-user seen-history storage. WPB-11: new user-facing capability (map, new JS and bundled map asset, one cache transient, no schema change). Both backwards compatible, so a minor bump. |
+| **1.2.1** (patch) | Released 2026-10-24 (tag v1.2.1, commit 6755e2f) | WPB-8, WPB-9, WPB-10a, WPB-10b | WPB-8 is a security fix to existing behaviour; WPB-9 is a presentation-only change; WPB-10a is a CSS-only bug fix. WPB-10b adds new JS and a new capability, which would normally be a minor bump; the owner chose to ship it in the patch release (owner decision 2026-10-24). It is backwards compatible, with no settings keys or storage change (browser `localStorage` only). |
+| **1.3.0** (minor) | In progress on release/1.3.0 (cut from main 8ad7540 on 2026-10-26) | WPB-13 (built first, done), WPB-11 (in progress), WPB-12 (added 2026-10-30, not started) | WPB-13: new logged event type, new alert setting and possibly per-user seen-history storage. WPB-11: new user-facing capability (map, new JS and bundled map asset, one cache transient, no schema change). WPB-12: new detection capability (a stored settings fingerprint in one new option, a new kind of log row, an existing alert channel), no schema change. All backwards compatible, so a minor bump. |
 | **Hotfix** (out of band) | As needed | Any Critical or High finding | Do not wait for a planned release. Triage first, patch, tag. |
 
 Every release: bump `wp-bouncer.php` header and `Plugin::VERSION`, `readme.txt` Stable tag plus its Changelog and Upgrade Notice, and `documentation/CHANGELOG.md` together. Final security-red delta audit on the diff since the last tag before tagging.
@@ -72,16 +70,15 @@ Every release: bump `wp-bouncer.php` header and `Plugin::VERSION`, `readme.txt` 
 - WPB-5: Raise minimum versions to PHP 8.3 and WordPress 7.0. Shipped in 1.2.0.
 - WPB-6: Warn about unsupported PHP and database versions. Shipped in 1.2.0.
 - WPB-7: Check PHP settings with security implications. Shipped in 1.2.0.
+- WPB-8, WPB-9, WPB-10a, WPB-10b: Shipped in 1.2.1 (2026-10-24). Full entries below.
 
 Accepted open risk: RT-01 (unsigned updates), because release signing (SB-07 / ADR 002) is deferred by owner decision.
 
----
+## Released in 1.2.1 (2026-10-24)
 
-# Now
-
-## WPB-8: Audit settings changes made outside the admin UI (S13 gap)
+### WPB-8: Audit settings changes made outside the admin UI (S13 gap)
 - **Type:** bug (security, incomplete control)
-- **Status:** done, awaiting release in 1.2.1.
+- **Status:** released in 1.2.1 (2026-10-24).
 - **Priority:** P1. Security work jumps the queue. Not Critical or High: it needs an already-privileged actor, and the logging is a detection control, not a protection. So it goes in the next patch release, not a hotfix.
 - **Effort:** S
 - **Risk:** Low to medium. Option hooks fire on every update of the option, including our own saves, so a naive hook would log twice. Hooks must not slow the firewall path (register them only where settings are written, not at `plugins_loaded` priority 1 on every front-end request if avoidable).
@@ -100,12 +97,8 @@ Accepted open risk: RT-01 (unsigned updates), because release signing (SB-07 / A
 7. Integration tests cover a CLI-style `update_option()` save, a UI save (one row) and a no-change save. No measurable cost on requests that do not write the option.
 8. Changelog **Security** entry (severity only, no exploit detail) and readme Upgrade Notice.
 
----
-
-# Next
-
-## WPB-9: Rules tab: category blocks in columns, with larger headings
-- **Status:** done, awaiting release in 1.2.1. Owner confirmed the layout on 2026-10-24 with the 1.2.1-dev test package ("looks a lot better").
+### WPB-9: Rules tab: category blocks in columns, with larger headings
+- **Status:** released in 1.2.1 (2026-10-24). Owner confirmed the layout on 2026-10-24 with the 1.2.1-dev test package ("looks a lot better").
 - **Type:** feature (UI-only; follow-up to WPB-2)
 - **Priority:** P3 (low). Cosmetic and presentation-only; ranked by RICE in the table above. It never displaces WPB-8.
 - **Effort:** S
@@ -135,15 +128,15 @@ Accepted open risk: RT-01 (unsigned updates), because release signing (SB-07 / A
 
 (Closed 2026-10-24: column cap on very wide screens is three, and headings are 1.3 times their current size; see criteria 1 and 3.)
 
-## WPB-10: Activity Log and Traffic tab: fix column overlap, then make columns resizable
+### WPB-10: Activity Log and Traffic tab: fix column overlap, then make columns resizable
 Owner request (verbatim): "On the activity page the Request and User-Agent fields are fixed width and when the Request or User-Agent is a longer string then the string visually is printed on top of the next field. The column width in the activity log should be adjustable to fix this. The same adjustable column width should be applied to the traffic tab. When I say adjustable I mean the user should be able to click and drag the column wider or narrower."
 
 Split into two deliverables so the fix does not wait for the feature.
 
 **Current state (1.2.0).** Request and User-Agent cells (`LogListTable::column_request()` and `column_user_agent()`) are wrapped in `.wpb-trunc`: `display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap` (180px at 782px and below), with the full value in a `title` attribute. `admin.css` fixes widths only for `.column-created_at` (150px), `.column-country` (80px) and `.column-action` (90px); Request, User-Agent and the rest are auto width. There is no `table-layout: fixed` and no per-column rule for them. `admin.js` is enqueued on all plugin admin screens and has no table code. **The Traffic tab (`TrafficListTable`) uses the same `.wpb-trunc` for Request, Client (user-agent line) and Referrer, with no width rules at all, so it is exposed to the same defect.** From the code alone the 320px clip should already prevent text from running over a neighbour, so the exact trigger is not understood (candidates: an inline-block `<code>` with `vertical-align: bottom` in a narrow auto-layout cell, a theme or browser-specific rendering, or a screen width where the table is wider than the content area). It must be reproduced first (browser, width, locale, sample string) before the fix is designed.
 
-### WPB-10a: Long Request / User-Agent values overlap the next column (bug)
-- **Status:** fixed, awaiting release in 1.2.1. Owner reproduced it in Firefox on macOS and confirmed the fix on 2026-10-24 with the 1.2.1-dev test package. Cause: `.wpb-trunc` had a fixed 320px cap wider than the cell; it is now block-level and capped at 100% of the cell, with `overflow: hidden` on the long-text cells (CSS only, plus a regression test in `tests/Integration/Admin/ListTableTruncationTest.php`).
+#### WPB-10a: Long Request / User-Agent values overlap the next column (bug)
+- **Status:** released in 1.2.1 (2026-10-24). Owner reproduced it in Firefox on macOS and confirmed the fix on 2026-10-24 with the 1.2.1-dev test package. Cause: `.wpb-trunc` had a fixed 320px cap wider than the cell; it is now block-level and capped at 100% of the cell, with `overflow: hidden` on the long-text cells (CSS only, plus a regression test in `tests/Integration/Admin/ListTableTruncationTest.php`).
 - **Type:** bug
 - **Severity:** cosmetic (lowest class), upper end: data is visually corrupted and hard to read, but nothing is lost, the full value is in the `title`, and there is no security or data impact. Not a hotfix.
 - **Priority:** P2. See the table above.
@@ -163,8 +156,8 @@ Split into two deliverables so the fix does not wait for the feature.
 6. Tests: markup assertions that the long-value cells keep the clipping class, plus a fixture-driven e2e or recorded manual screenshot at desktop and 782px for both tables.
 7. Changelog **Fixed** entry. No readme Upgrade Notice.
 
-### WPB-10b: Drag-to-resize columns on Activity Log and Traffic tab (feature)
-- **Status:** done, awaiting release in 1.2.1. Owner tested the resizing in a browser on 2026-10-24 ("works well").
+#### WPB-10b: Drag-to-resize columns on Activity Log and Traffic tab (feature)
+- **Status:** released in 1.2.1 (2026-10-24). Owner tested the resizing in a browser on 2026-10-24 ("works well").
 - **Type:** feature
 - **Priority:** P3. See the table above.
 - **Effort:** M
@@ -193,20 +186,55 @@ Split into two deliverables so the fix does not wait for the feature.
 
 (Closed 2026-10-24: persistence is per-browser `localStorage`; ships in 1.2.1; the two tables keep separate widths, stored per column.)
 
-## WPB-12: Detect settings changes made while the plugin wasn't loaded
-- **Type:** feature (security detection, follow-up to WPB-8)
-- **Priority:** P2. Not yet RICE-scored, so it sits outside the table's ranking until it is.
-- **Target:** 1.2.2 or 1.3.0. Not in 1.2.1.
-- **Source:** WPB8-RT-02 (the WPB-8 review). The finding is not in `documentation/security/` in this repository, so its text is not checked here.
-- **Effort:** not yet sized.
+---
 
-**Gap.** WPB-8 audits settings writes only while WP Bouncer is loaded. A change made while the plugin isn't loaded (for example `wp --skip-plugins`), or by editing the database directly, is not logged (see the 1.2.1 Known limits in `documentation/CHANGELOG.md`).
+# Now
 
-**Proposed approach.** After each audited write, store a fingerprint of the settings. In daily maintenance and on `admin_init`, compare the current settings with the stored fingerprint and log any difference. The fingerprint and the comparison are for the developer to design; no acceptance criteria are set yet.
+1.3.0 is in progress on `release/1.3.0` (cut from main 8ad7540 on 2026-10-26). WPB-13 is done on the branch; WPB-11 is in progress; WPB-12 was added on 2026-10-30 (owner decision) and has not started. After WPB-11 and WPB-12 are verified, the 1.3.0 release steps follow: version bump (`wp-bouncer.php` header and `Plugin::VERSION`, `readme.txt` Stable tag, `documentation/CHANGELOG.md`), tester `make test`, `make analyse`, `make check`, security-red delta audit, docs-writer pass, devops build. The owner decides when to tag.
+
+## WPB-11: Activity Log: threat hotspot map by country
+Owner request (verbatim): "Add a map to the activity log showing the hotspots for where threats are coming from. The dots should highlight the country where the threat is coming from and get more and more bright red the more attacks are seen from that country. The mouseover for the threat dots should give the country name and abbreviation, as well the total number of detected threats."
+
+- **Status:** in progress on `release/1.3.0`. The implementation is in the working tree, not committed. The design is in `documentation/architecture/threat-map.md`. Verification against the acceptance criteria has not happened yet.
+- **Type:** feature
+- **Priority:** P3. See the table above.
+- **Effort:** L (map asset sourcing and licence check, aggregate query and cache, SVG/JS rendering, accessibility alternative, tests).
+- **Risk:** Medium. (1) Asset licence: the map data must be GPL-compatible (Natural Earth is public domain; verify any simplified SVG derived from it and record the source in `documentation/`). (2) Zip size: a world SVG or centroid table adds tens of KB; the owner accepts up to about 100 KB uncompressed (centroids plus a simplified base map) and the zip size change is reported in the release notes. (3) Aggregate cost on a large `bouncer_log`: must be cached and never run on the front end. (4) Accessibility: colour alone fails WCAG 1.4.1, so a text alternative is required. (5) Data quality: rows with an empty country (no geo database installed, or private/unresolvable IPs) cannot be plotted.
+- **Dependencies:** Geolocation (`documentation/geolocation.md`); the stored `bouncer_log.country` 2-letter column; `Countries::name()`; the `LogListTable` screen; the transient-caching approach of `DashboardWidget` (`FLOOD_ROWS` = 100000, 1-hour TTL on very large logs). Shares the Activity Log screen and script-loading rules with WPB-10b, so build after WPB-10a and WPB-10b. No schema change expected; the developer and data-engineer confirm with `EXPLAIN` whether an index on `country` is needed.
+- **Release:** 1.3.0 (minor: new capability, new JS and bundled asset, one transient; backwards compatible).
+
+**User story.** As a site admin, I want a map on the Activity Log that shows which countries threats come from, with brighter red for countries that attack more, so that I can see at a glance where attacks originate and decide whether to block a country.
+
+**Acceptance criteria** (all defaults decided by the owner on 2026-10-24)
+1. Placement: the map appears on the Activity Log screen above the table, in a collapsible panel that is **open by default**. The open/closed state is **remembered per browser** in `localStorage` (no PHP, no request). The panel has a heading and does not push the table's filters out of view on first load.
+2. One dot per country with at least one detected threat in the selected window, placed at the country's centroid on a world map that ships inside the plugin. **Dots only**: countries are not tinted or filled. Countries with no threats show no dot. Dots for very small or adjacent countries must stay distinguishable (a minimum dot size, and no dot hidden under another without a way to reach it by keyboard).
+3. Colour intensity runs from a light tint to bright red as the country's count rises, on a **logarithmic scale** normalised between the smallest and the largest count in view (so one dominant country does not wash out the rest). With a single country, or all counts equal, the dot uses the brightest red.
+4. Tooltip on mouse hover and on keyboard focus (each dot is focusable, in a logical order, for example by descending count), showing the country name (from `Countries::name()`), the ISO 3166-1 alpha-2 code, and the total number of detected threats for the window. Esc dismisses it; it is also reachable by touch tap. Tooltip text is escaped and translated (`__()` / `_n()`).
+5. A visible legend explains the scale: a light-to-red gradient with the lowest and highest counts labelled, and the scale type named as logarithmic.
+6. Non-colour alternative (WCAG 1.4.1): a "Top countries" table or list under or beside the map, with country name, code and count, sorted by count descending, showing the top 10 with a "show all" control. Dot size or a label may also vary, but the table is the required alternative. The map itself has an accessible name and a short description; decorative map shapes are hidden from assistive technology.
+7. Scope of the data: the map **follows the table's current date range and filters**, including country and action. With **no date filter it uses the last 30 days**, and the active window is stated next to the map. A "threat" is a row with a **blocking action**; allowlisted, monitor-only and alert rows are not counted. The exact action values are mapped in the design and listed in the help text.
+8. Empty log: a helpful empty state (for example "No threats recorded in this period yet") with no broken map. No geo database: a notice explains that country data needs the geolocation database, with a link to the geolocation settings, and the map is not drawn. Partial data: rows with an empty or unknown country are counted separately and shown as "Unknown location: N threats" next to the map, never as a dot and never dropped silently.
+9. Performance: the per-country aggregate (`COUNT(*) ... GROUP BY country` over the window) is computed only in wp-admin when the Activity Log is shown, never on a front-end or firewall request. The result is cached in transients keyed by the window and filters (a capped group of at most 20, per security-blue SB11-04; revised 2026-10-26), using the `DashboardWidget` pattern (short TTL, 1 hour when the window holds more than `FLOOD_ROWS` rows), and the query uses `$wpdb->prepare()`, works on MySQL, MariaDB and SQLite, and is checked with `EXPLAIN` on a large fixture. A manual "refresh" is optional.
+10. Privacy: only aggregated per-country counts are sent to the browser. No IPs, URIs, user agents or per-row data are included in the map markup or its JSON, so no new personal data is exposed and the privacy-policy text needs no change. The data is passed with `wp_localize_script`/inline JSON, escaped, and capped at about 250 countries.
+11. No external requests: no tile servers, CDN map libraries, web fonts or remote images. The map asset, script and CSS ship in the zip, are loaded only on the Activity Log screen (not on other plugin pages or the front end), and need no jQuery. The map asset is **up to about 100 KB** uncompressed (owner-approved ceiling). Its source and GPL-compatible licence are recorded in `documentation/` and in `readme.txt` credits. The zip size change is measured and noted in the PR.
+12. Responsive: at 782px and below, and narrow containers, the map scales to the container width with no horizontal page scroll; the top-countries table remains usable and dots keep a touch target of at least 24px or fall back to the table. Works at 200% zoom and 400% reflow (WCAG 1.4.10).
+13. RTL: the layout, legend and panel controls mirror correctly (use logical properties). The map itself is not mirrored (geography is fixed); the legend direction follows the page direction.
+14. Accessibility details: legend and dot colours meet 3:1 non-text contrast against the map background (WCAG 1.4.11); visible focus ring on dots; forced-colors mode shows dots and the table; reduced motion respected (no animation required).
+15. No effect on the firewall path: nothing is added to the `plugins_loaded` priority-1 request path, and no new hook runs on front-end requests. Multisite: shows the current site's log only, unchanged permissions (same capability as the Activity Log).
+16. Translation ready: all strings in the `wp-bouncer` text domain; country names come from `Countries::name()`.
+17. Tests: unit tests for the pure-PHP aggregation and scale/bucketing (empty, one country, one dominant country, unknown-country row); integration tests for the query on MySQL/MariaDB, the cache and flood TTL, the empty-state and no-geo-database states, and that the script is enqueued only on the Activity Log screen; an e2e or recorded manual check of hover and keyboard focus tooltips, legend, table, RTL and 782px.
+18. Docs and release: `documentation/CHANGELOG.md` and `readme.txt` Changelog **Added** entry, `documentation/geolocation.md` updated, readme.txt credits for the map data, screenshots updated, and the asset licence noted. No readme Upgrade Notice needed (no behaviour change for existing sites).
+
+**Open questions for the owner (not guessed):** none.
+
+(Closed 2026-10-24: log scale; follows filters and date range, 30 days by default; centroid dots only; blocking actions only; asset up to about 100 KB; panel open by default and remembered per browser.)
+
+(Owner, 2026-10-26, on security-blue SB11 advice) The map follows the date range, country and action filters but **ignores the free-text search and the single-IP filter**, so its query stays cheap and cacheable. A note next to the map says so. This narrows AC 7.
 
 ---
 
 ## WPB-13: Track admin logins
+- **Status:** done on `release/1.3.0` (commit 28856be), awaiting the 1.3.0 release. All CI jobs green; red-team findings RT-01 to RT-17 fixed. Design in `documentation/architecture/admin-logins.md`. Still to do: a test against the real Two Factor plugin (only a stub has been tested).
 - **Type:** feature (security detection)
 - **Priority:** P2. See the table above (RICE 2.3).
 - **Effort:** M (provisional; depends on where the seen-history lives).
@@ -255,41 +283,50 @@ Split into two deliverables so the fix does not wait for the feature.
 
 ---
 
-## WPB-11: Activity Log: threat hotspot map by country
-Owner request (verbatim): "Add a map to the activity log showing the hotspots for where threats are coming from. The dots should highlight the country where the threat is coming from and get more and more bright red the more attacks are seen from that country. The mouseover for the threat dots should give the country name and abbreviation, as well the total number of detected threats."
+## WPB-12: Detect settings changes made while the plugin wasn't loaded
+- **Type:** feature (security detection, follow-up to WPB-8)
+- **Priority:** P2. RICE: Reach 5 x Impact 1 x Confidence 0.5 / Effort 1.5 = 1.7. See the table above. Reach is 5 because every install gets the check but it only matters after a bypass; confidence is low because a fingerprint stored in the same database cannot catch an attacker who can write the database freely (see Risk 1).
+- **Target / Release:** 1.3.0 (owner decision 2026-10-30, alongside WPB-11 and WPB-13). Minor release: new detection capability, one new option, no schema change, backwards compatible.
+- **Status:** not started. Needs security-blue (threat model) and then the architect (design in `documentation/architecture/`) before development. It is independent of WPB-11, so design can run while WPB-11 is verified.
+- **Source:** WPB8-RT-02 (the WPB-8 review). The finding is not in `documentation/security/` in this repository, so its text is not checked here.
+- **Effort:** M. Small core (a fingerprint and a comparison), but it needs a baseline and upgrade path, a throttle, multisite handling, privacy review and a careful no-double-logging test matrix with WPB-8.
+- **Risk:** Medium. (1) Limits of detection: someone who can write the database directly can also rewrite the fingerprint, so this catches `--skip-plugins` edits, other plugins and careless direct edits, not a determined attacker with full database access. The documentation must say so and must not oversell it. (2) False positives: a legitimate change that bypasses the audit (a migration in `Installer`, a settings import, a restore from backup, a staging copy) must not raise an alert. (3) Double logging with WPB-8: a normal audited save must not also be reported as drift. (4) Log flooding: a plugin that rewrites the option on every request must produce a bounded number of rows. (5) Cost: the check must stay off the front end and the firewall path. (6) Privacy: a fingerprint of small values, such as one allowlisted IP, could be guessed offline if it is a plain unsalted hash of that value alone. (7) Schedule: this adds work and a test and audit cycle to a 1.3.0 that is already carrying WPB-11.
+- **Dependencies:** WPB-8 (`Audit\SettingsAuditor`, `Audit\SettingsChange`, `Audit\AuditActor`, `SettingsDiff`; the fingerprint is written from the same place as the audited write); `AlertNotifier` (existing `firewall_changes` alert channel) and `BlockLogInterface` (`ACTION_ALERT` rows, rule `settings`); `Installer` (baseline on upgrade or activation, and `Installer::DB_VERSION` untouched unless the architect decides a schema change is needed); `Plugin` (hook registration for `admin_init` and the existing daily maintenance task); `uninstall.php` (removal of the new option, also per site on multisite); `Privacy\PrivacyTools` (reviewed; expected to need no change). Shares the Activity Log row type with WPB-13 and WPB-11, so the drift row must not count as a threat on the map or the dashboard widget.
 
-- **Type:** feature
-- **Priority:** P3. See the table above.
-- **Effort:** L (map asset sourcing and licence check, aggregate query and cache, SVG/JS rendering, accessibility alternative, tests).
-- **Risk:** Medium. (1) Asset licence: the map data must be GPL-compatible (Natural Earth is public domain; verify any simplified SVG derived from it and record the source in `documentation/`). (2) Zip size: a world SVG or centroid table adds tens of KB; the owner accepts up to about 100 KB uncompressed (centroids plus a simplified base map) and the zip size change is reported in the release notes. (3) Aggregate cost on a large `bouncer_log`: must be cached and never run on the front end. (4) Accessibility: colour alone fails WCAG 1.4.1, so a text alternative is required. (5) Data quality: rows with an empty country (no geo database installed, or private/unresolvable IPs) cannot be plotted.
-- **Dependencies:** Geolocation (`documentation/geolocation.md`); the stored `bouncer_log.country` 2-letter column; `Countries::name()`; the `LogListTable` screen; the transient-caching approach of `DashboardWidget` (`FLOOD_ROWS` = 100000, 1-hour TTL on very large logs). Shares the Activity Log screen and script-loading rules with WPB-10b, so build after WPB-10a and WPB-10b. No schema change expected; the developer and data-engineer confirm with `EXPLAIN` whether an index on `country` is needed.
-- **Release:** 1.3.0 (minor: new capability, new JS and bundled asset, one transient; backwards compatible).
+**User story.** As a site admin, I want WP Bouncer to notice, and tell me, when its settings were changed while the plugin was not running (for example with `wp --skip-plugins` or by editing the database), so that a quiet weakening of my firewall does not stay hidden just because the change bypassed the live audit.
 
-**User story.** As a site admin, I want a map on the Activity Log that shows which countries threats come from, with brighter red for countries that attack more, so that I can see at a glance where attacks originate and decide whether to block a country.
+**Gap.** WPB-8 audits settings writes only while WP Bouncer is loaded. A change made while the plugin isn't loaded (for example `wp --skip-plugins`), or by editing the database directly, is not logged (see the 1.2.1 Known limits in `documentation/CHANGELOG.md`).
 
-**Acceptance criteria** (all defaults decided by the owner on 2026-10-24)
-1. Placement: the map appears on the Activity Log screen above the table, in a collapsible panel that is **open by default**. The open/closed state is **remembered per browser** in `localStorage` (no PHP, no request). The panel has a heading and does not push the table's filters out of view on first load.
-2. One dot per country with at least one detected threat in the selected window, placed at the country's centroid on a world map that ships inside the plugin. **Dots only**: countries are not tinted or filled. Countries with no threats show no dot. Dots for very small or adjacent countries must stay distinguishable (a minimum dot size, and no dot hidden under another without a way to reach it by keyboard).
-3. Colour intensity runs from a light tint to bright red as the country's count rises, on a **logarithmic scale** normalised between the smallest and the largest count in view (so one dominant country does not wash out the rest). With a single country, or all counts equal, the dot uses the brightest red.
-4. Tooltip on mouse hover and on keyboard focus (each dot is focusable, in a logical order, for example by descending count), showing the country name (from `Countries::name()`), the ISO 3166-1 alpha-2 code, and the total number of detected threats for the window. Esc dismisses it; it is also reachable by touch tap. Tooltip text is escaped and translated (`__()` / `_n()`).
-5. A visible legend explains the scale: a light-to-red gradient with the lowest and highest counts labelled, and the scale type named as logarithmic.
-6. Non-colour alternative (WCAG 1.4.1): a "Top countries" table or list under or beside the map, with country name, code and count, sorted by count descending, showing the top 10 with a "show all" control. Dot size or a label may also vary, but the table is the required alternative. The map itself has an accessible name and a short description; decorative map shapes are hidden from assistive technology.
-7. Scope of the data: the map **follows the table's current date range and filters**, including country and action. With **no date filter it uses the last 30 days**, and the active window is stated next to the map. A "threat" is a row with a **blocking action**; allowlisted, monitor-only and alert rows are not counted. The exact action values are mapped in the design and listed in the help text.
-8. Empty log: a helpful empty state (for example "No threats recorded in this period yet") with no broken map. No geo database: a notice explains that country data needs the geolocation database, with a link to the geolocation settings, and the map is not drawn. Partial data: rows with an empty or unknown country are counted separately and shown as "Unknown location: N threats" next to the map, never as a dot and never dropped silently.
-9. Performance: the per-country aggregate (`COUNT(*) ... GROUP BY country` over the window) is computed only in wp-admin when the Activity Log is shown, never on a front-end or firewall request. The result is cached in a transient keyed by the window and filters, using the `DashboardWidget` pattern (short TTL, 1 hour when the window holds more than `FLOOD_ROWS` rows), and the query uses `$wpdb->prepare()`, works on MySQL, MariaDB and SQLite, and is checked with `EXPLAIN` on a large fixture. A manual "refresh" is optional.
-10. Privacy: only aggregated per-country counts are sent to the browser. No IPs, URIs, user agents or per-row data are included in the map markup or its JSON, so no new personal data is exposed and the privacy-policy text needs no change. The data is passed with `wp_localize_script`/inline JSON, escaped, and capped at about 250 countries.
-11. No external requests: no tile servers, CDN map libraries, web fonts or remote images. The map asset, script and CSS ship in the zip, are loaded only on the Activity Log screen (not on other plugin pages or the front end), and need no jQuery. The map asset is **up to about 100 KB** uncompressed (owner-approved ceiling). Its source and GPL-compatible licence are recorded in `documentation/` and in `readme.txt` credits. The zip size change is measured and noted in the PR.
-12. Responsive: at 782px and below, and narrow containers, the map scales to the container width with no horizontal page scroll; the top-countries table remains usable and dots keep a touch target of at least 24px or fall back to the table. Works at 200% zoom and 400% reflow (WCAG 1.4.10).
-13. RTL: the layout, legend and panel controls mirror correctly (use logical properties). The map itself is not mirrored (geography is fixed); the legend direction follows the page direction.
-14. Accessibility details: legend and dot colours meet 3:1 non-text contrast against the map background (WCAG 1.4.11); visible focus ring on dots; forced-colors mode shows dots and the table; reduced motion respected (no animation required).
-15. No effect on the firewall path: nothing is added to the `plugins_loaded` priority-1 request path, and no new hook runs on front-end requests. Multisite: shows the current site's log only, unchanged permissions (same capability as the Activity Log).
-16. Translation ready: all strings in the `wp-bouncer` text domain; country names come from `Countries::name()`.
-17. Tests: unit tests for the pure-PHP aggregation and scale/bucketing (empty, one country, one dominant country, unknown-country row); integration tests for the query on MySQL/MariaDB, the cache and flood TTL, the empty-state and no-geo-database states, and that the script is enqueued only on the Activity Log screen; an e2e or recorded manual check of hover and keyboard focus tooltips, legend, table, RTL and 782px.
-18. Docs and release: `documentation/CHANGELOG.md` and `readme.txt` Changelog **Added** entry, `documentation/geolocation.md` updated, readme.txt credits for the map data, screenshots updated, and the asset licence noted. No readme Upgrade Notice needed (no behaviour change for existing sites).
+**Proposed approach (from the owner's review, not binding).** After each audited write, store a fingerprint of the settings. In daily maintenance and on `admin_init`, compare the current settings with the stored fingerprint and log any difference. The hash type, where the fingerprint is stored and how the comparison works are for the architect; the behaviour below is required whichever design is chosen.
 
-**Open questions for the owner (not guessed):** none.
+**Acceptance criteria**
+1. Baseline: after every audited write to the settings (a UI save, and a WPB-8 `update_option()` write), a fingerprint of the current settings is stored. The fingerprint is updated in the same request as the write, so a normal audited change never looks like drift.
+2. Detection: when the current settings no longer match the stored fingerprint, one `alert` Activity Log row is written (rule `settings`, a clear "changed outside WP Bouncer" label, translated, and the time it was detected). The row states that the change was found on a check, not when it was made, and shows the actor as unknown, never blank. A drift where the settings option has been deleted counts as drift.
+3. Checks run in two places only: the existing daily maintenance task, and `admin_init` for users who can manage WP Bouncer settings. The `admin_init` check is throttled (at most once an hour per site, using a `wp_bouncer`-prefixed transient or equivalent). Nothing is added to the `plugins_loaded` priority-1 firewall path, no hook runs on front-end requests, and requests that are not admin or cron requests do no new work or database query.
+4. One row per detected drift, not one per request: after a drift is logged, the stored fingerprint is replaced with the current one, so the same change is not reported again. Concurrent requests (two admin pages open, or cron and admin together) produce one row, not two. If a throttle holds a check back, the drift stays detectable and is logged by the next allowed check, never dropped.
+5. A bounded rate: a plugin that rewrites the option on every request produces at most one drift row per hour per site. Further drifts inside that hour stay detectable (the fingerprint is not replaced until the row is written), so the log stays truthful and does not flood.
+6. No double logging with WPB-8: a UI save, or an `update_option()` write while the plugin is loaded, produces exactly the WPB-8 row and no drift row. Writing the fingerprint itself must not trigger the settings audit or recurse.
+7. First run and upgrade: with no stored fingerprint (a fresh install, or an upgrade from 1.2.1 or earlier), the first check records a baseline silently: no row, no alert. Changes made before that baseline cannot be detected; this is documented. Plugin-driven rewrites of the settings, such as an `Installer` upgrade step, re-baseline without a row. A deactivate and reactivate cycle keeps the stored fingerprint, so a change made while the plugin was deactivated is detected on the next check.
+8. Alert: a detected drift queues the existing `firewall_changes` alert through `AlertNotifier`, honouring the existing alert switch and throttling, and fires `wp_bouncer_settings_changed` where WPB-8 does (the actor is unknown). When key-level detail is not available from the fingerprint, the alert says that something changed, not what (see Open question 1). If alerts are off, the row is still written.
+9. No values are ever written to the log, the alert or the stored fingerprint in a form that exposes them: only key paths where known, as in S13 and WPB-8. The fingerprint must not let a reader recover small or low-entropy values such as an allowlisted IP (the architect decides on salting or hashing the whole value, with security-blue). It adds no personal data.
+10. Storage: any new option is prefixed `wp_bouncer_`, is not autoloaded, and is written only on audited saves, drift handling and the baseline, never on a normal request. It is stored per site. Removing the plugin through `uninstall.php` deletes it on single sites and on every site of a multisite network, and an integration test proves it.
+11. Multisite: the fingerprint, the check and the row are per site (each site's own settings option and Activity Log). A drift on one site does not report on, or change the fingerprint of, another. Network-level settings, if the plugin has any, are out of scope unless the architect shows otherwise. The daily check covers every site that has the plugin active, without loading all sites in one request (architect to decide how).
+12. Works on MySQL, MariaDB and SQLite. The fingerprint uses the options API, so no new SQL is expected; if the architect adds a query it uses `$wpdb->prepare()`. No schema change unless the architect decides otherwise (then `Installer::DB_VERSION` and the upgrade path are covered).
+13. A check must never break a page load or a cron run: failures are swallowed and reported to the debug log only, and a failed check leaves the stored fingerprint unchanged so the next check tries again.
+14. Detection only: the plugin does not revert the change and does not block anything because of a drift.
+15. Tests: unit tests for the pure-PHP fingerprint and comparison (same settings, one key changed, key added, key removed, option missing, no baseline, key order differing but content the same, non-scalar values); integration tests that simulate a change with the audit hooks absent (for example a direct write, or `update_option()` with the WPB-8 hook removed) and assert one row and one alert, a normal audited save producing no drift row, silent baseline on first run and on an upgrade from 1.2.1 data, the hourly row limit, the `admin_init` throttle, concurrent checks producing one row, and removal on uninstall (single site and multisite). A test shows that a front-end request performs no fingerprint read or write.
+16. Docs and release: `documentation/CHANGELOG.md` and `readme.txt` Changelog **Added** entry, and the 1.2.1 "Known limits" statement is replaced with the remaining limits (a determined attacker with database write access can also rewrite the fingerprint; changes before the baseline are not seen). Settings or alert documentation is updated. An Upgrade Notice is needed if the new alert is on by default for existing sites. `documentation/security/` and `documentation/architecture/` hold the threat model and design.
 
-(Closed 2026-10-24: log scale; follows filters and date range, 30 days by default; centroid dots only; blocking actions only; asset up to about 100 KB; panel open by default and remembered per browser.)
+**Owner decisions (2026-10-30)** (all three defaults accepted)
+1. **Detail in the alert.** A single fingerprint cannot say which settings changed. Options: (a) one overall fingerprint, so the row and email say only that the settings changed outside WP Bouncer; (b) a fingerprint per top-level key or rule, so the row can list the changed key paths, at the cost of more stored data and the guessing risk in Risk 6. **Decided: (b) per-key fingerprints if the architect and security-blue are satisfied that they leak nothing, otherwise (a).** Under (a) every drift is treated as risky and alerts, because it cannot be classified.
+2. **Email on every drift.** Should a drift send the `firewall_changes` email, or write the Activity Log row only? **Decided: send the email** (honouring the existing alert switch), because a bypass of the audit is exactly the event the owner wants to hear about.
+3. **Acknowledging a drift.** After the row is written the new settings become the baseline automatically (AC 4). The alternative is to keep warning until an admin acknowledges it on the Dashboard tab. **Decided: re-baseline automatically, with no acknowledge screen**, to keep the log from flooding and to avoid new UI in 1.3.0.
+
+---
+
+# Next
+
+(Nothing queued. WPB-12 moved to Now on 2026-10-30.)
 
 ---
 
@@ -312,10 +349,11 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 - **2026-10-24: 1.1.2 and 1.1.3 not released (owner decision).** Their fixes shipped in 1.2.0. Sites below PHP 8.3 / WordPress 7.0 stay on 1.1.1.
 - **2026-10-24: S13 audit gap.** Accepted for 1.2.0, tracked as WPB-8 for 1.2.1.
 - **2026-10-24: Rules tab layout request.** Owner asked for columnar category blocks and larger headings. Triaged as cosmetic (lowest severity), tracked as WPB-9 for 1.2.1.
-- **2026-10-24: Activity Log / Traffic column overlap and resizable columns.** Owner reported long Request and User-Agent text printing over the next field and asked for drag-resizable columns on both tabs. Triaged the overlap as a cosmetic bug (WPB-10a, P2, 1.2.1, needs a repro because the code already clips with an ellipsis) and the Traffic tab as having the same exposure; the resize request is a feature (WPB-10b, P3, 1.3.0).
+- **2026-10-24: Activity Log / Traffic tab column overlap and resizable columns.** Owner reported long Request and User-Agent text printing over the next field and asked for drag-resizable columns on both tabs. Triaged the overlap as a cosmetic bug (WPB-10a, P2, 1.2.1, needs a repro because the code already clips with an ellipsis) and the Traffic tab as having the same exposure; the resize request is a feature (WPB-10b, P3, 1.3.0).
 - **2026-10-24: Threat hotspot map request.** Owner asked for a map on the Activity Log with dots per country, brighter red for more attacks, and a hover tooltip with name, code and total. Triaged as a feature (not a bug, no severity class), tracked as WPB-11, P3, effort L, target 1.3.0. Constraints recorded: no remote calls (map ships in the zip, GPL-compatible source), aggregate cached and admin-only, aggregated counts only (no new personal data), non-colour alternative required.
 - **2026-10-24: Owner decisions on WPB-9, WPB-10b and WPB-11.** WPB-9 caps at three columns on very wide screens and category headings are 1.3 times their current size. WPB-10b moves from 1.3.0 to 1.2.1 (owner chose new JS in a patch release), with per-browser `localStorage` widths, separate per table, keyed per column. WPB-11 accepted all proposed defaults (log scale, follows filters with 30-day default, centroid dots, blocking actions only, asset up to about 100 KB, panel open by default and remembered per browser). See "Owner decisions (2026-10-24, UI items)".
 - **2026-10-26: Admin login tracking request.** Owner asked to record admin logins and alert on new locations. Triaged as a security detection feature (no severity class), tracked as WPB-13, P2, effort M, target 1.3.0, built before WPB-11. Owner decisions recorded in the story; seen-history, "recently", "IP range", retention and flood questions are open for the architect and security-blue.
+- **2026-10-30: WPB-12 scheduled for 1.3.0 (owner decision).** Detection of settings changes made while the plugin wasn't loaded (WPB8-RT-02) moves from unscheduled to Now, alongside WPB-11 and WPB-13. Scored RICE 1.7, effort M, P2, no severity override (detection feature, not a bug). Story and acceptance criteria written; three open questions for the owner with defaults marked.
 
 No other open bugs are recorded.
 
@@ -325,10 +363,7 @@ No other open bugs are recorded.
 
 All earlier questions were answered by later decisions; see the "Owner decisions" sections. Open:
 
-1. **Lint scope.** Should `make check` also run lint and analyse, and should phpcs cover `tests/` (today `wp-bouncer/` only)? No recorded decision found.
-2. **WPB-9 layout details.** Decided: three-column cap and 1.3 times heading size. Nothing open.
-3. **WPB-10a column overlap.** Fixed and confirmed by the owner (Firefox on macOS, 2026-10-24). Resizing questions (persistence, release, shared or separate widths) are decided. Nothing open.
-4. **WPB-11 threat map.** All six questions decided by the owner on 2026-10-24. Nothing open.
+1. **Lint scope.** Partly decided (owner, 2026-10-30): `make lint` runs before every commit. Still open: should `make check` also run lint and analyse, and should phpcs cover `tests/` (today `wp-bouncer/` only)?
 
 ### Owner decisions on the security-fix plan (2026-10-24)
 
