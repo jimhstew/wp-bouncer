@@ -843,19 +843,11 @@ BEFORE=$(settings_json)
 submit_rules 'wp_bouncer[rules][not_found][max_404]' > /dev/null
 check "one field left out changes only that field" rules.not_found.max_404 "$(changed_paths "$BEFORE" "$(settings_json)")"
 
-# Dashboard: same categories, same switches.
+# Dashboard: no rules list; rules are switched on the Rules tab.
 rules_state defaults
 admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=dashboard" > /dev/null
-for name in 'Block lists' 'Login and accounts' 'Scanners and floods' 'Attack payloads and hardening'; do
-	check "dashboard shows category '$name'" 1 "$( [ "$(grep -cF "$name" "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
-done
-check "dashboard has a Turn on/off button per rule" 11 "$(grep -c 'name="action" value="wp_bouncer_toggle_rule"' "$WORK/admin.html")"
-xmlrpc_on() { dbq_opt wp_bouncer_settings 'echo $o["rules"]["xmlrpc"]["enabled"] ? "on" : "off";'; }
-check "xmlrpc starts on"               on "$(xmlrpc_on)"
-admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_toggle_rule dashboard)&action=wp_bouncer_toggle_rule&rule=xmlrpc" > /dev/null
-check "dashboard button turns it off"  off "$(xmlrpc_on)"
-admin "$U/wp-admin/admin-post.php" -d "_wpnonce=$(nonce_for wp_bouncer_toggle_rule dashboard)&action=wp_bouncer_toggle_rule&rule=xmlrpc" > /dev/null
-check "  ...and back on"               on "$(xmlrpc_on)"
+check "dashboard has no rules list"            0 "$(grep -c 'wpb-overview' "$WORK/admin.html")"
+check "  ...and no Turn on/off buttons"        0 "$(grep -c 'name="action" value="wp_bouncer_toggle_rule"' "$WORK/admin.html")"
 
 # Put everything back, including the audit rows and mail the saves above caused.
 $WP eval 'update_option("wp_bouncer_settings", json_decode(file_get_contents("'"$RT_BAK"'"), true));'

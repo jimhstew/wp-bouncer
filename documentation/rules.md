@@ -27,7 +27,7 @@ Each rule has one state, **On** or **Off**, which is its saved switch. A flag ca
 - **Needs attention** (counted in the category's "needs attention" total): the rule is on but isn't fully working. Country blocking shows this when no geo database is loaded, when the country header can't be trusted (the rule is then paused), when block mode has no countries chosen (unless "block unknown" is on), or when allow mode has none (so the rule isn't applied). The uploads rule shows it when the server broke uploads and the block was removed, when the block couldn't be written, or when the last **Test now** found that scripts still run.
 - **Before switching on** (a neutral hint, not counted): the rule is off and needs setting up first. Rate limiting shows this, because without a persistent object cache every counted request writes to the database. Country blocking shows it while the rule is off and no geo database is loaded.
 
-Some of these reasons also appear as a notice across WP Bouncer's screens. The Rules tab, the Dashboard tab, the notices and the Dashboard widget all use one status calculation, so they agree. Categories and status are display only: they never change how the firewall decides.
+Some of these reasons also appear as a notice across WP Bouncer's screens. The Rules tab, the notices and the Dashboard widget all use one status calculation, so they agree. Categories and status are display only: they never change how the firewall decides.
 
 ---
 

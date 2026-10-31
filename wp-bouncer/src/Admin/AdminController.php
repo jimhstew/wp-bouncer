@@ -703,7 +703,12 @@ final class AdminController {
 		return null;
 	}
 
-	/** Flip a single rule on or off from the dashboard. */
+	/**
+	 * Flip a single rule on or off.
+	 *
+	 * The Dashboard no longer shows these buttons (1.3.0); the handler is kept, guarded as before,
+	 * because the audit and capability tests drive settings changes through it. Removal is in the backlog.
+	 */
 	public function handle_toggle_rule(): void {
 		$this->guard( 'wp_bouncer_toggle_rule' );
 		$id     = isset( $_POST['rule'] ) ? sanitize_key( wp_unslash( $_POST['rule'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce and capability checked in $this->guard() at the top of this handler.
@@ -1372,6 +1377,28 @@ final class AdminController {
 			'' !== $title ? esc_html( $title ) : esc_html__( 'Enabled', 'wp-bouncer' ),
 			disabled( $disabled, true, false )
 		);
+	}
+
+	/**
+	 * Badge saying the country rule blocks a country, for the top-country lists. Empty when it doesn't.
+	 *
+	 * @param CountryRule $rule    The country rule built from the current settings.
+	 * @param bool        $monitor True in monitor mode, where nothing is refused.
+	 * @param string      $code    ISO alpha-2 code.
+	 * @return string Escaped HTML.
+	 */
+	public static function country_block_badge( CountryRule $rule, bool $monitor, string $code ): string {
+		if ( '' === $code || ! $rule->blocks_country( $code ) ) {
+			return '';
+		}
+		if ( $monitor ) {
+			$text  = $rule->login_only() ? __( 'Would be blocked at login', 'wp-bouncer' ) : __( 'Would be blocked', 'wp-bouncer' );
+			$class = 'wpb-badge wpb-badge-monitored';
+		} else {
+			$text  = $rule->login_only() ? __( 'Blocked at login', 'wp-bouncer' ) : __( 'Blocked', 'wp-bouncer' );
+			$class = 'wpb-badge wpb-badge-blocked';
+		}
+		return '<span class="' . esc_attr( $class . ' wpb-country-blocked' ) . '">' . esc_html( $text ) . '</span>';
 	}
 
 	/**

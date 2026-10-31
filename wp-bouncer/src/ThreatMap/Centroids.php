@@ -55,7 +55,7 @@ final class Centroids {
 		'AR' => array( 337.4, 363.8 ),
 		'AS' => array( 36.5, 296.1 ),
 		'AT' => array( 532.8, 78.0 ),
-		'AU' => array( 836.7, 289.2 ),
+		'AU' => array( 853.9, 331.4 ),
 		'AW' => array( 309.4, 196.9 ),
 		'AX' => array( 541.2, 43.4 ),
 		'AZ' => array( 615.0, 100.0 ),

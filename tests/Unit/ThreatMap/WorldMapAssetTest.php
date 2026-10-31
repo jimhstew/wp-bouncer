@@ -18,7 +18,7 @@ require_once dirname( __DIR__, 3 ) . '/scripts/map/SvgAllowlist.php';
 final class WorldMapAssetTest extends TestCase {
 
 	private const SVG_SHA256       = '0c6accca693e8cd4bc8d2194d7e936494543ef4164f9584b0b6c54ab6d67310f';
-	private const CENTROIDS_SHA256 = '9c73b99eb3eb0af7eea36188e0b52ef11927048d30e9c8c853c8bfdb5c3042a0';
+	private const CENTROIDS_SHA256 = '26ff986cf00f8c78d66158c8849a6375c70805ef6a578486b659b9ae23f8a61f';
 
 	private function svg_path(): string {
 		return dirname( __DIR__, 3 ) . '/wp-bouncer/assets/map/world.svg';

@@ -1236,8 +1236,8 @@ final class Plugin {
 		return $rule->guards_authentication() ? $rule->decide( $this->current_request() ) : null;
 	}
 
-	/** The country rule built from the current settings. */
-	private function country_rule(): CountryRule {
+	/** The country rule built from the current settings (also used by the admin's "Blocked" badges). */
+	public function country_rule(): CountryRule {
 		$settings = $this->settings->rule( CountryRule::ID );
 		return new CountryRule( $settings, $this->geo(), ! empty( $settings['enabled'] ) && $this->country_paused() );
 	}

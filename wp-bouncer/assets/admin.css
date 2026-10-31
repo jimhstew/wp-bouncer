@@ -37,6 +37,7 @@
 .wpb-badge-monitored { background: #72aee6; color: #1d2327; }
 .wpb-badge-alert { background: #8c5cc4; color: #fff; }
 .wpb-badge-login { background: #50575e; color: #fff; }
+.wpb-country-blocked { margin-inline-start: 6px; }
 .wpb-status-2xx { background: #00a32a; color: #fff; }
 .wpb-status-3xx { background: #72aee6; color: #1d2327; }
 .wpb-status-4xx { background: #dba617; color: #1d2327; }
@@ -134,9 +135,6 @@
 .wpb-category [tabindex="-1"]:focus { outline: none; }
 .wpb-category [tabindex="-1"]:focus-visible { outline: 2px solid #2271b1; outline-offset: 2px; }
 .wpb-rule-settings > summary:focus-visible { outline: 2px solid #2271b1; outline-offset: 2px; }
-.wpb-overview h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.wpb-overview h3 .description { font-weight: normal; }
-.wpb-overview .wpb-rule-flag { margin-top: 4px; }
 .wpb-savebar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 4px 16px; background: #fff; border-block-start: 1px solid #c3c4c7; z-index: 2; }
 .wpb-savebar .submit { margin: 8px 0; padding: 0; }
 .wpb-unsaved { font-weight: 600; color: #8a5a00; }

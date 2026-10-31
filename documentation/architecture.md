@@ -57,7 +57,7 @@ Collaborators reach the core through four interfaces, each with a test double in
 
 ## Key decisions
 
-**Why `plugins_loaded`?** It's the earliest hook where `is_user_logged_in()` and `current_user_can()` exist. Some rules need them, because admins skip the WAF and rate limit and logged-in users skip the user-enumeration checks. It still runs before the theme, most plugin logic, the main query and any output. A stricter alternative is PHP's `auto_prepend_file`, which Wordfence calls "extended protection". It runs before WordPress loads, but needs server configuration and can't use WordPress APIs, so it isn't done here.
+**Why `plugins_loaded`?** It's the earliest hook where `is_user_logged_in()` and `current_user_can()` exist. Some rules need them, because admins skip the WAF and rate limit and logged-in users skip the user-enumeration checks. It still runs before the theme, most plugin logic, the main query and any output. A stricter alternative is PHP's `auto_prepend_file`. It runs before WordPress loads, but needs server configuration and can't use WordPress APIs, so it isn't done here.
 
 **Lazy request data.** `Request` takes closures for login state, admin state and the raw body. The rules ask for them only when they need them. For example, `UserEnumerationRule` checks login state only *after* it sees `?author=N`. Ordinary page views never pay for those lookups.
 

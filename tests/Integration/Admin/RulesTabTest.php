@@ -779,7 +779,6 @@ final class RulesTabTest extends IntegrationTestCase {
 		$this->assertSame( 'Removed by a plugin', trim( $state->textContent ) );
 		$this->assertFalse( $state->hasAttribute( 'data-saved' ) );
 		$this->assertStringContainsString( '2 of 3 rules on', $x->query( "//section[@id='wpb-cat-login-accounts']/p[contains(@class,'wpb-cat-summary')]" )->item( 0 )->textContent );
-		$this->assertStringContainsString( 'Removed by a plugin', $this->xpath( $this->render( 'dashboard' ) )->query( "//tr[.//input[@name='rule' and @value='xmlrpc']]" )->item( 0 )->textContent );
 
 		$this->submit( $html );
 		$this->assertSame( $before, $this->stored(), 'the stored switch is not lost' );
@@ -852,55 +851,44 @@ final class RulesTabTest extends IntegrationTestCase {
 		$this->assertFalse( $enabled['xmlrpc'] );
 	}
 
-	/* ---------------- Dashboard overview ---------------- */
+	/* ---------------- Dashboard ---------------- */
 
-	public function test_the_dashboard_groups_rules_by_the_same_categories_and_still_toggles(): void {
-		$this->login( true );
-		$html = $this->render( 'dashboard' );
-		$x    = $this->xpath( $html );
-
-		$names = array();
-		foreach ( $x->query( '//section[contains(@class,"wpb-overview")]/h3' ) as $h3 ) {
-			$names[] = trim( explode( "\n", trim( $h3->textContent ) )[0] );
-		}
-		$this->assertSame( array( 'Block lists', 'Login and accounts', 'Scanners and floods', 'Attack payloads and hardening' ), $names );
-
-		$forms = $x->query( '//form[.//input[@name="action" and @value="wp_bouncer_toggle_rule"]]' );
-		$this->assertSame( 11, $forms->length );
-		$ids = array();
-		foreach ( $x->query( '//input[@name="rule"]' ) as $input ) {
-			$ids[] = $input->getAttribute( 'value' );
-		}
-		sort( $ids );
-		$expected = RuleCatalog::builtin_ids();
-		sort( $expected );
-		$this->assertSame( $expected, $ids );
-	}
-
-	public function test_the_dashboard_and_the_rules_tab_agree_on_every_state(): void {
-		$this->login( true );
-		$this->store( $this->non_default() );
-
-		$rules = $this->xpath( $this->render() );
-		$dash  = $this->xpath( $this->render( 'dashboard' ) );
-		foreach ( RuleCatalog::builtin_ids() as $id ) {
-			$here  = trim( $rules->query( "//div[@id='rule-$id']//span[contains(@class,'wpb-state')]" )->item( 0 )->textContent );
-			$there = trim( $dash->query( "//tr[.//input[@name='rule' and @value='$id']]//span[contains(@class,'wpb-badge')]" )->item( 0 )->textContent );
-			$this->assertSame( $here, $there, $id );
-			$this->assertSame( $this->stored()['rules'][ $id ]['enabled'] ? 'On' : 'Off', $here, $id );
-		}
-	}
-
-	public function test_dashboard_third_party_rows_have_no_toggle(): void {
+	public function test_the_dashboard_has_no_rules_list_or_switches(): void {
 		$this->login( true );
 		$this->add_third_party( 'scanners-floods', 'Bots' );
 		$x = $this->xpath( $this->render( 'dashboard' ) );
 
-		$this->assertStringContainsString( 'Bots', $x->query( '//section[contains(@class,"wpb-overview")]' )->item( 0 )->textContent );
-		$this->assertSame( 0, $x->query( '//input[@name="rule" and @value="my_rule"]' )->length );
+		$this->assertSame( 0, $x->query( '//section[contains(@class,"wpb-overview")]' )->length );
+		$this->assertSame( 0, $x->query( '//form[.//input[@name="action" and @value="wp_bouncer_toggle_rule"]]' )->length );
+		$this->assertSame( 0, $x->query( '//input[@name="rule"]' )->length );
 	}
 
-	public function test_toggling_a_rule_from_the_dashboard_still_works_and_keeps_the_others(): void {
+	public function test_dashboard_top_countries_mark_blocked_countries(): void {
+		global $wpdb;
+		$this->login( true );
+		$this->store( array( 'rules' => array( 'country' => array( 'enabled' => true, 'mode' => 'block', 'countries' => array( 'RU' ) ) ) ) );
+		foreach ( array( 'RU', 'US' ) as $code ) {
+			$wpdb->insert(
+				$wpdb->prefix . 'bouncer_log',
+				array(
+					'ip'         => '203.0.113.5',
+					'rule'       => 'waf',
+					'action'     => 'blocked',
+					'country'    => $code,
+					'created_at' => gmdate( 'Y-m-d H:i:s', time() - 60 ),
+				)
+			);
+		}
+		$x    = $this->xpath( $this->render( 'dashboard' ) );
+		$rows = $x->query( '//section[h2[contains(.,"Top countries")]]//tr' );
+		$this->assertSame( 2, $rows->length );
+		$badges = $x->query( '//section[h2[contains(.,"Top countries")]]//span[contains(@class,"wpb-country-blocked")]' );
+		$this->assertSame( 1, $badges->length, 'only the blocked country has a badge' );
+		$this->assertSame( 'Blocked', trim( $badges->item( 0 )->textContent ) );
+		$this->assertStringContainsString( \WPBouncer\Geo\Countries::name( 'RU' ), $badges->item( 0 )->parentNode->textContent );
+	}
+
+	public function test_the_toggle_handler_flips_one_rule_and_keeps_the_others(): void {
 		$this->login( true );
 		$this->store( array() );
 		$before = $this->stored();

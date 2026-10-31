@@ -14,6 +14,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - **Privacy (WPB-13).** The WordPress Export and Erase Personal Data tools cover each administrator's login history and login rows ("Site security: administrator logins"). Erasing deletes the rows and resets the history, so the next login from any location is treated as new and alerts. The privacy policy suggestion describes the login record.
 - **Developer hooks (WPB-13).** `wp_bouncer_admin_login_recorded`, `wp_bouncer_admin_login_alert`, `wp_bouncer_admin_login_is_admin`, `wp_bouncer_admin_login_window_days`, `wp_bouncer_admin_login_defer`, `wp_bouncer_record_admin_login` and `wp_bouncer_log_login_budget_per_minute`. See the developer guide.
 - **Threat map on the Activity Log (WPB-11).** A world map shows where blocked requests and lockouts came from, by country, with a **Top countries** table beside it. Monitor-only matches, alerts and admin logins are not counted. The map follows the date range, rule, action and country filters, and ignores the search box and the IP filter (the panel says so). Without dates it covers the last 30 days. Countries are taken from the stored country of each row; rows with no known country count as unknown location. Codes that have no place on the map (such as Tor exit nodes) are listed in the table. The map is drawn from a bundled SVG, `world.svg` (64,277 bytes), with no network request. The panel can be hidden, and that choice is remembered in the browser. The plugin zip is about 397 KB, up from 313,771 bytes in 1.2.0.
+- **Blocked countries are marked in the Top countries lists.** On the Activity Log and the Dashboard, a country the country rule refuses shows a "Blocked" badge ("Blocked at login" when the rule covers login pages only, "Would be blocked" in monitor mode). The badge uses the same test as the firewall, including allow-list mode.
 - **From and To date filters on the Activity Log (WPB-11).** Two date fields (`log_from`, `log_to`) limit the table, its paging and the CSV export to whole days in the site's time zone. A range that ends before it starts is ignored, and a range longer than 365 days is cut to 365. Without dates the table is unchanged.
 - **Activity Log index (WPB-11, database schema version 4).** The log table gets an index on action, time and country, which keeps the map fast on large logs. Upgrading adds it: it took 1.7 seconds on MariaDB with a million rows, and longer on larger logs.
 
@@ -21,6 +22,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - The Dashboard and dashboard widget counts of threats, the 14-day chart and the top rules, IPs and countries now leave out login rows, as they already left out alerts.
 - Uninstalling WP Bouncer removes each site's administrator login history.
+- The Dashboard tab no longer lists the rules with on/off buttons. Rules are switched on and off on the Rules tab.
 
 ### Known limits
 

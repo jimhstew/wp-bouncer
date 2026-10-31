@@ -195,14 +195,24 @@ foreach ( $countries_geo['features'] as $f ) {
 ksort( $rings, SORT_STRING );
 
 // 2. Points: 50m label points, then the supplement.
+// Dependencies can share a code with their country (Ashmore and Cartier Is. is AU through
+// ISO_A2_EH), so the feature whose own ISO_A2 is the code wins; otherwise the first one.
 $points = array(); // code => [lon, lat].
+$own    = array(); // code => true when the point came from a feature whose ISO_A2 is the code.
 foreach ( $labels_geo['features'] as $f ) {
 	$p    = $f['properties'] ?? array();
 	$code = wpb_feature_code( $p );
 	if ( '' === $code || ! in_array( $code, $list, true ) || ! isset( $p['LABEL_X'], $p['LABEL_Y'] ) ) {
 		continue;
 	}
+	$is_own = ( $p['ISO_A2'] ?? '' ) === $code;
+	if ( isset( $points[ $code ] ) && ( isset( $own[ $code ] ) || ! $is_own ) ) {
+		continue;
+	}
 	$points[ $code ] = array( (float) $p['LABEL_X'], (float) $p['LABEL_Y'] );
+	if ( $is_own ) {
+		$own[ $code ] = true;
+	}
 }
 $supp = json_decode( (string) file_get_contents( __DIR__ . '/map/centroid-supplement.json' ), true );
 foreach ( $supp as $code => $entry ) {

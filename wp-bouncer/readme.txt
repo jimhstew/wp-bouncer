@@ -94,9 +94,9 @@ Requests with JSON bodies are checked for attack patterns, like form fields, unl
 
 It logs IP addresses, requested URLs, referrers and User-Agents: the Activity Log for blocked requests, and the Traffic log if you switch it on. Secret values in URLs are removed before saving. For each administrator, it also records successful logins (user name, IP address, approximate country, browser, time and login method) in the Activity Log, and keeps the IP ranges and countries each administrator logged in from for 90 days, to spot a new location. It stores ranges and countries, not full IP addresses, in that history. The WordPress Export and Erase Personal Data tools cover the traffic log by user account and the administrator-login history and rows. For the block log, erasing a user keeps the rows, but clears the URL and reason of rows that name that account. The privacy policy guide gets a suggested paragraph. Administrator logins can be switched off with "Record administrator logins" on the General tab.
 
-= Does it replace Wordfence? =
+= What doesn't it do? =
 
-It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
+It is a firewall with brute-force protection, country blocking and rate limiting. It has no malware scanner, no two-factor authentication and no cloud threat feed; use a dedicated plugin for those.
 
 = Why is the threat map empty, or showing "Unknown location"? =
 
@@ -130,7 +130,8 @@ The threat map's base map and country positions come from Natural Earth 5.1.2 (h
 * New: threat map on the Activity Log, by country, with a Top countries table. Date filters From and To on the Activity Log.
 * New: settings changed while WP Bouncer wasn't loaded (for example with wp --skip-plugins or in the database) are detected, logged and emailed. Nothing is reverted.
 * Activity Log index added on upgrade (database schema version 4).
-* Dashboard counts leave out login rows.
+* Top countries on the Activity Log and Dashboard mark countries the country rule blocks.
+* Dashboard counts leave out login rows. The Dashboard no longer lists the rules; switch them on the Rules tab.
 * Privacy tools cover administrator logins.
 
 = 1.2.1 =

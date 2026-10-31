@@ -77,7 +77,7 @@ final class CountryRule extends AbstractRule {
 		if ( $this->paused ) {
 			return null;
 		}
-		if ( 'login' === $this->setting( 'scope', 'site' ) && ! ( $request->is_login() || $request->is_xmlrpc() || $request->is_admin_area() ) ) {
+		if ( $this->login_only() && ! ( $request->is_login() || $request->is_xmlrpc() || $request->is_admin_area() ) ) {
 			return null;
 		}
 		return $this->decide( $request );
@@ -90,7 +90,7 @@ final class CountryRule extends AbstractRule {
 	 * (REST application passwords, custom login URLs).
 	 */
 	public function guards_authentication(): bool {
-		return ! $this->paused && $this->is_enabled() && 'login' === $this->setting( 'scope', 'site' );
+		return ! $this->paused && $this->is_enabled() && $this->login_only();
 	}
 
 	/**
@@ -116,11 +116,39 @@ final class CountryRule extends AbstractRule {
 			return $this->setting( 'block_unknown', false ) ? $this->deny( 'Country could not be determined' ) : null;
 		}
 
-		$listed = in_array( $country, (array) $this->setting( 'countries', array() ), true );
-
-		if ( 'allow' === $this->setting( 'mode', 'block' ) ) {
-			return $listed ? null : $this->deny( sprintf( 'Country %s is not on the allow list', $country ) );
+		if ( ! $this->refuses( $country ) ) {
+			return null;
 		}
-		return $listed ? $this->deny( sprintf( 'Country %s is blocked', $country ) ) : null;
+		if ( 'allow' === $this->setting( 'mode', 'block' ) ) {
+			return $this->deny( sprintf( 'Country %s is not on the allow list', $country ) );
+		}
+		return $this->deny( sprintf( 'Country %s is blocked', $country ) );
+	}
+
+	/**
+	 * Would visitors from this country be refused (rule on and not paused)?
+	 *
+	 * The same test the firewall uses. Ignores monitor mode, the IP allowlist and the scope;
+	 * see login_only() for the scope.
+	 *
+	 * @param string $country ISO 3166-1 alpha-2 code.
+	 */
+	public function blocks_country( string $country ): bool {
+		return ! $this->paused && $this->is_enabled() && $this->refuses( $country );
+	}
+
+	/** Does the rule apply to the login and admin paths only? */
+	public function login_only(): bool {
+		return 'login' === $this->setting( 'scope', 'site' );
+	}
+
+	/**
+	 * Is the country refused by the list and mode?
+	 *
+	 * @param string $country ISO 3166-1 alpha-2 code.
+	 */
+	private function refuses( string $country ): bool {
+		$listed = in_array( $country, (array) $this->setting( 'countries', array() ), true );
+		return 'allow' === $this->setting( 'mode', 'block' ) ? ! $listed : $listed;
 	}
 }

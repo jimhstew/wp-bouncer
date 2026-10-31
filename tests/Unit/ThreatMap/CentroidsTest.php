@@ -48,6 +48,14 @@ final class CentroidsTest extends TestCase {
 		$this->assertGreaterThan( $p[1], Centroids::point( 'AU' )[1] );
 	}
 
+	public function test_australia_uses_its_own_label_point_not_a_dependency(): void {
+		// Ashmore and Cartier Is. (lat -12.4, y 289.2) also maps to AU; the dot must be on the mainland.
+		$p = Centroids::point( 'AU' );
+		$this->assertIsArray( $p );
+		$this->assertEqualsWithDelta( 853.9, $p[0], 0.5 );
+		$this->assertEqualsWithDelta( 331.4, $p[1], 0.5 );
+	}
+
 	public function test_height_matches_the_svg(): void {
 		$svg = (string) file_get_contents( dirname( __DIR__, 3 ) . '/wp-bouncer/assets/map/world.svg' );
 		$this->assertStringContainsString( 'viewBox="0 0 ' . Centroids::WIDTH . ' ' . Centroids::HEIGHT . '"', $svg );

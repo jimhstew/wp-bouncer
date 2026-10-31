@@ -1,11 +1,10 @@
 <?php
 /**
- * Dashboard tab: rule switches and what's been blocked recently.
+ * Dashboard tab: what's been blocked recently. Rules are switched on and off on the Rules tab.
  *
  * @package WPBouncer
  * @var \WPBouncer\Plugin             $plugin
  * @var array<string, mixed>          $settings
- * @var \WPBouncer\Admin\RuleOverview $overview
  */
 
 use WPBouncer\Admin\AdminController;
@@ -14,16 +13,18 @@ use WPBouncer\Log\BlockLogInterface;
 
 defined( 'ABSPATH' ) || exit;
 
-$log      = $plugin->log();
-$since24  = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
-$since7   = gmdate( 'Y-m-d H:i:s', time() - 7 * DAY_IN_SECONDS );
-$since30  = gmdate( 'Y-m-d H:i:s', time() - 30 * DAY_IN_SECONDS );
-$per_day  = $log->per_day( 14 );
-$max_day  = max( 1, max( $per_day ) );
-$by_rule  = $log->top( 'rule', $since7, 10 );
-$top_ips  = $log->top( 'ip', $since7, 10 );
-$top_ctry = $log->top( 'country', $since7, 10 );
-$stats    = array(
+$log       = $plugin->log();
+$since24   = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
+$since7    = gmdate( 'Y-m-d H:i:s', time() - 7 * DAY_IN_SECONDS );
+$since30   = gmdate( 'Y-m-d H:i:s', time() - 30 * DAY_IN_SECONDS );
+$per_day   = $log->per_day( 14 );
+$max_day   = max( 1, max( $per_day ) );
+$by_rule   = $log->top( 'rule', $since7, 10 );
+$top_ips   = $log->top( 'ip', $since7, 10 );
+$top_ctry  = $log->top( 'country', $since7, 10 );
+$ctry_rule = $plugin->country_rule();
+$monitor   = $plugin->settings()->is_monitor_mode();
+$stats     = array(
 	__( 'Blocked, last 24 hours', 'wp-bouncer' ) => $log->count(
 		array(
 			'since'  => $since24,
@@ -60,8 +61,6 @@ $stats    = array(
 </div>
 
 <div class="wpb-grid">
-	<?php require __DIR__ . '/partials/rule-overview.php'; ?>
-
 	<?php \WPBouncer\Environment\EnvironmentAdmin::shared()->render_dashboard_section(); ?>
 
 	<section class="wpb-card">
@@ -120,7 +119,10 @@ $stats    = array(
 			<table class="widefat striped">
 				<?php foreach ( $top_ctry as $code => $n ) : ?>
 					<tr>
-						<td><?php echo esc_html( AdminController::flag( $code ) . ' ' . Countries::name( $code ) ); ?></td>
+						<td>
+							<?php echo esc_html( AdminController::flag( $code ) . ' ' . Countries::name( $code ) ); ?>
+							<?php echo AdminController::country_block_badge( $ctry_rule, $monitor, (string) $code ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in country_block_badge(). ?>
+						</td>
 						<td class="num"><?php echo esc_html( number_format_i18n( $n ) ); ?></td>
 					</tr>
 				<?php endforeach; ?>

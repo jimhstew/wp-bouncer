@@ -16,6 +16,8 @@
  * @var string                                         $base_url    URL of the base map.
  * @var int                                            $width       Map width in viewBox units.
  * @var int                                            $height      Map height in viewBox units.
+ * @var \WPBouncer\Rules\CountryRule                    $country_rule The country rule, for the "Blocked" badges.
+ * @var bool                                           $monitor     Is the firewall in monitor mode?
  */
 
 use WPBouncer\Admin\AdminController;
@@ -93,7 +95,7 @@ $wpb_clear   = AdminController::url( 'log', AdminController::log_filters_to_args
 			?>
 			<div class="wpb-map-grid">
 				<figure class="wpb-map-figure">
-					<div class="wpb-map-canvas">
+					<div class="wpb-map-canvas" style="--wpb-map-w: <?php echo (int) $width; ?>; --wpb-map-h: <?php echo (int) $height; ?>;">
 						<?php if ( $show_base ) : ?>
 							<img class="wpb-map-base" src="<?php echo esc_url( $base_url . '?ver=' . rawurlencode( \WPBouncer\Plugin::VERSION ) ); ?>" alt="" width="<?php echo (int) $width; ?>" height="<?php echo (int) $height; ?>" decoding="async">
 						<?php endif; ?>
@@ -159,6 +161,7 @@ $wpb_clear   = AdminController::url( 'log', AdminController::log_filters_to_args
 									<td>
 										<span aria-hidden="true"><?php echo esc_html( AdminController::flag( $wpb_code ) ); ?></span>
 										<a href="<?php echo esc_url( $wpb_url ); ?>"><?php echo esc_html( Countries::name( $wpb_code ) ); ?></a>
+										<?php echo AdminController::country_block_badge( $country_rule, $monitor, $wpb_code ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- escaped in country_block_badge(). ?>
 										<?php if ( $wpb_off ) : ?>
 											<span class="wpb-map-off"><?php esc_html_e( '(not on the map)', 'wp-bouncer' ); ?></span>
 										<?php endif; ?>

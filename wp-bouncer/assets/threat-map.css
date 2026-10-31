@@ -8,9 +8,10 @@
 @container (max-width: 900px) { .wpb-map-grid { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 782px) { .wpb-map-grid { grid-template-columns: minmax(0, 1fr); } }
 .wpb-map-figure { margin: 0; }
-.wpb-map-canvas { position: relative; display: inline-block; max-inline-size: 100%; background: #f0f6fc; }
-.wpb-map-base { display: block; inline-size: auto; block-size: auto; max-inline-size: min(100%, 720px); max-block-size: 45vh; }
-.wpb-map-dots { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
+/* The canvas sets the size from the map's aspect ratio; the base image and the dots layer both fill it exactly, so they stay aligned at any width. */
+.wpb-map-canvas { position: relative; display: block; aspect-ratio: var(--wpb-map-w, 1000) / var(--wpb-map-h, 436); inline-size: min(720px, calc(45vh * var(--wpb-map-w, 1000) / var(--wpb-map-h, 436))); max-inline-size: 100%; background: #f0f6fc; }
+.wpb-map-base, .wpb-map-dots { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
+.wpb-map-base { display: block; }
 .wpb-map-dots circle { stroke: #1d2327; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: default; }
 .wpb-map-dots circle:focus-visible { stroke: #2271b1; stroke-width: 3; outline: none; }
 .wpb-heat-0 { fill: #fde2dd; background: #fde2dd; }

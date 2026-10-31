@@ -337,6 +337,7 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 - **Raise PHPStan level** beyond what WPB-1 reached (level 7).
 - **Remove the v1 fingerprint read path** (WPB12-RT-09): v1 records only existed during 1.3.0 development and never shipped, so set `FingerprintRecord::MIN_VERSION = 2` and drop the v1 tests. Clean-up only; there is no risk on released sites.
 - **Atomic install lock** (found in WPB11-RT-03): `Installer.php:169-178` uses the non-atomic `add_option()` upsert and a delete-then-add takeover. Move it to `Storage\OptionLock`.
+- **Remove the `wp_bouncer_toggle_rule` endpoint** (left from the Dashboard rules list, removed 2026-10-31). It has no UI any more but is guarded. Move the audit and capability tests that use it (`ConfigurationAuditTest`, `FirewallCapabilityTest`, `SettingsAuditorTest`, `AdminControllerTest`) to the Rules tab save, then delete it.
 - **Live count of active bans** (needs an index of bans; see the dashboard widget design).
 - **Screen Options column toggles on the Log and Traffic tabs** (found during WPB-10b). None are shown today (see `documentation/architecture/column-resize.md` §3). Unscored. The WPB-10b resize code already skips hidden columns, so it would work once they exist.
 - **Update-channel signing** (SB-07 / ADR 002, deferred; likely a separate L item).
@@ -356,6 +357,8 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 - **2026-10-24: Owner decisions on WPB-9, WPB-10b and WPB-11.** WPB-9 caps at three columns on very wide screens and category headings are 1.3 times their current size. WPB-10b moves from 1.3.0 to 1.2.1 (owner chose new JS in a patch release), with per-browser `localStorage` widths, separate per table, keyed per column. WPB-11 accepted all proposed defaults (log scale, follows filters with 30-day default, centroid dots, blocking actions only, asset up to about 100 KB, panel open by default and remembered per browser). See "Owner decisions (2026-10-24, UI items)".
 - **2026-10-26: Admin login tracking request.** Owner asked to record admin logins and alert on new locations. Triaged as a security detection feature (no severity class), tracked as WPB-13, P2, effort M, target 1.3.0, built before WPB-11. Owner decisions recorded in the story; seen-history, "recently", "IP range", retention and flood questions are open for the architect and security-blue.
 - **2026-10-30: WPB-12 scheduled for 1.3.0 (owner decision).** Detection of settings changes made while the plugin wasn't loaded (WPB8-RT-02) moves from unscheduled to Now, alongside WPB-11 and WPB-13. Scored RICE 1.7, effort M, P2, no severity override (detection feature, not a bug). Story and acceptance criteria written; three open questions for the owner with defaults marked.
+
+- **2026-10-31: 1.3.0 test-build feedback (owner).** Threat-map dots drifted off their countries on wide screens (fixed: canvas sized from the map's aspect ratio). Australia's dot sat on the north coast (fixed: map build preferred a dependency's label point). Dashboard rules list removed. Top countries lists mark blocked countries. Wordfence mentions removed from docs.
 
 No other open bugs are recorded.
 

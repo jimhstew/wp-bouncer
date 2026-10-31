@@ -13,6 +13,7 @@ use WPBouncer\Admin\DashboardWidget;
 use WPBouncer\Installer;
 use WPBouncer\Log\BlockLog;
 use WPBouncer\Plugin;
+use WPBouncer\Settings;
 use WPBouncer\Tests\Integration\IntegrationTestCase;
 use WPBouncer\Tests\Support\FakeThreatSource;
 use WPBouncer\Tests\Support\FrozenClock;
@@ -78,6 +79,65 @@ final class ThreatMapPanelTest extends IntegrationTestCase {
 				array( 'created_at' => is_int( $created ) ? gmdate( 'Y-m-d H:i:s', time() - $created ) : $created )
 			)
 		);
+	}
+
+	/**
+	 * Store settings with a country rule and general overrides.
+	 *
+	 * @param array<string, mixed> $country Country rule overrides.
+	 * @param array<string, mixed> $general Top-level overrides (mode).
+	 */
+	private function country_settings( array $country, array $general = array() ): void {
+		$values                     = array_replace( Settings::defaults(), $general );
+		$values['rules']['country'] = array_merge( $values['rules']['country'], $country );
+		update_option( Settings::OPTION, Settings::sanitize( $values ), true );
+		$this->plugin->reload_settings();
+	}
+
+	/** @return array<string, string> Country code => badge text in the top-countries table ('' when none). */
+	private function badges( string $html ): array {
+		$doc = new \DOMDocument();
+		libxml_use_internal_errors( true );
+		$doc->loadHTML( '<?xml encoding="utf-8"?>' . $html );
+		libxml_clear_errors();
+		$x   = new \DOMXPath( $doc );
+		$out = array();
+		foreach ( $x->query( '//div[contains(@class,"wpb-map-top")]//tbody/tr' ) as $tr ) {
+			$code         = trim( $x->query( './td[2]', $tr )->item( 0 )->textContent );
+			$badge        = $x->query( './/span[contains(@class,"wpb-country-blocked")]', $tr )->item( 0 );
+			$out[ $code ] = null === $badge ? '' : trim( $badge->textContent );
+		}
+		return $out;
+	}
+
+	public function test_top_countries_mark_the_countries_the_country_rule_blocks(): void {
+		$this->seed( array( 'country' => 'RU' ) );
+		$this->seed( array( 'country' => 'US' ) );
+		$this->seed( array( 'country' => 'CN' ) );
+
+		$this->country_settings( array( 'enabled' => true, 'mode' => 'block', 'countries' => array( 'RU', 'CN' ) ) );
+		$this->assertSame( array( 'CN' => 'Blocked', 'RU' => 'Blocked', 'US' => '' ), $this->sorted( $this->badges( $this->render() ) ) );
+
+		$this->country_settings( array( 'enabled' => true, 'mode' => 'allow', 'countries' => array( 'US' ) ) );
+		$this->assertSame( array( 'CN' => 'Blocked', 'RU' => 'Blocked', 'US' => '' ), $this->sorted( $this->badges( $this->render() ) ) );
+
+		$this->country_settings( array( 'enabled' => true, 'mode' => 'block', 'countries' => array( 'RU' ), 'scope' => 'login' ) );
+		$this->assertSame( array( 'CN' => '', 'RU' => 'Blocked at login', 'US' => '' ), $this->sorted( $this->badges( $this->render() ) ) );
+
+		$this->country_settings( array( 'enabled' => true, 'mode' => 'block', 'countries' => array( 'RU' ) ), array( 'mode' => Settings::MODE_MONITOR ) );
+		$this->assertSame( array( 'CN' => '', 'RU' => 'Would be blocked', 'US' => '' ), $this->sorted( $this->badges( $this->render() ) ) );
+
+		$this->country_settings( array( 'enabled' => false, 'mode' => 'block', 'countries' => array( 'RU' ) ) );
+		$this->assertSame( array( 'CN' => '', 'RU' => '', 'US' => '' ), $this->sorted( $this->badges( $this->render() ) ) );
+	}
+
+	/**
+	 * @param array<string, string> $a Map.
+	 * @return array<string, string>
+	 */
+	private function sorted( array $a ): array {
+		ksort( $a );
+		return $a;
 	}
 
 	/** Render the panel with the request's filters, as views/log.php does. */

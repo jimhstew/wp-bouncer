@@ -149,6 +149,9 @@ final class ThreatMapPanel {
 		$show_base = is_readable( $base_file );
 		$base_url  = plugin_dir_url( $this->plugin->file() ) . 'assets/map/world.svg';
 
+		$country_rule = $this->plugin->country_rule();
+		$monitor      = $this->plugin->settings()->is_monitor_mode();
+
 		$height = (int) Centroids::HEIGHT;
 		$width  = (int) Centroids::WIDTH;
 

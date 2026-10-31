@@ -94,7 +94,7 @@ A new **Bouncer** item appears in the wp-admin menu. Most protection is on from 
 
 | Tab | What you do there |
 |---|---|
-| **Dashboard** | Blocks in the last 24 hours, 7 days and 30 days, a 14-day chart, the top rules, IPs and countries, and an on/off switch for every rule. Administrators also get a **WP Bouncer** box on the WordPress Dashboard, one per site, with the 24-hour and 7-day counts. |
+| **Dashboard** | Blocks in the last 24 hours, 7 days and 30 days, a 14-day chart, and the top rules, IPs and countries. Countries the country rule blocks are marked **Blocked**. Administrators also get a **WP Bouncer** box on the WordPress Dashboard, one per site, with the 24-hour and 7-day counts. |
 | **General** | Enforce or monitor mode, IP detection and trusted proxies, the allowlist, how long to keep the log, the message blocked visitors see, and email alerts. |
 | **Rules** | Each blocking rule, with its own on/off switch and settings, in four groups: Block lists, Login and accounts, Scanners and floods, and Attack payloads and hardening. A rule that needs attention is flagged, and rate limiting shows a "Before switching on" note. Rules that other plugins add appear under Other. |
 | **Countries** | Pick countries from the list of 249, grouped by continent and searchable. |
@@ -159,7 +159,7 @@ The full notes are in [documentation/CHANGELOG.md](documentation/CHANGELOG.md). 
 
 1. Open **Activity Log** and find the entry. It names the rule that blocked the request and why.
 2. Then fix the cause:
-   - **Switch that rule off** on the Dashboard, or adjust its settings on the Rules tab.
+   - **Switch that rule off** or adjust its settings on the Rules tab.
    - **Add the IP to the allowlist** (General).
    - For a login lockout, or a rate-limit, probe or 404-flood ban: **Tools → Unlock an IP**.
    - Nothing makes sense? Set **Mode → Monitor** while you investigate. Nothing is blocked in monitor mode.

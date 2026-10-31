@@ -2,11 +2,11 @@
 
 A self-contained firewall for WordPress. Like a bouncer at a club door, it checks every visitor before WordPress does any real work and turns away the ones that don't belong.
 
-It covers most of what people install Wordfence's firewall for, but **without a cloud service, account, licence key or subscription**. Everything runs on your server, nothing about your visitors is sent anywhere, and all the code is GPL-2.0-or-later.
+It needs **no cloud service, account, licence key or subscription**. Everything runs on your server, nothing about your visitors is sent anywhere, and all the code is GPL-2.0-or-later.
 
 ## Features
 
-Every blocking rule has its own on/off switch, on the Dashboard and on the Rules tab. The Rules tab groups the rules into four categories (block lists, login and accounts, scanners and floods, attack payloads and hardening); see [rules.md](rules.md#categories-and-status).
+Every blocking rule has its own on/off switch on the Rules tab. The Rules tab groups the rules into four categories (block lists, login and accounts, scanners and floods, attack payloads and hardening); see [rules.md](rules.md#categories-and-status).
 
 | Rule | What it stops |
 |---|---|
@@ -31,7 +31,7 @@ Also included:
 - **Administrator logins.** Each successful administrator login is an Activity Log row (action `login`, rule `admin_login`). A login from a new range or country sends one email. Both are controlled by the `record_admin_logins` and `admin_login_location` alert settings (see [rules.md](rules.md)).
 
 - **Activity log.** Every block, lockout and monitored match, every administrator login (action `login`), with time, IP, country, rule, reason, request and User-Agent. You can search and filter it, export it to CSV, and block an IP straight from a log row. For an IPv6 row, **Block /64** blocks the whole network. Entries are kept for a set number of days.
-- **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries. Alert and administrator-login rows are left out of these counts (`BlockLog::NON_THREAT_ACTIONS`).
+- **Dashboard.** Counts for the last 24 hours, 7 days and 30 days, a 14-day activity chart, and the top rules, IPs and countries. Countries the country rule blocks are marked "Blocked" ("Blocked at login" with the login scope, "Would be blocked" in monitor mode); the Activity Log's Top countries table does the same. Alert and administrator-login rows are left out of these counts (`BlockLog::NON_THREAT_ACTIONS`).
 - **Dashboard widget.** A WP Bouncer box on the WordPress Dashboard for users with `manage_options`, one per site (none on the network Dashboard). It shows 24-hour and 7-day block counts with trends, the top rules, IPs and countries for 7 days, and the latest blocks. Cached for 5 minutes, or an hour while the log is flooded.
 - **Monitor mode.** Logs what *would* be blocked without blocking it. Use it for a few days after setup.
 - **Allowlist.** IPs and ranges that skip every rule. Loopback requests (WP-Cron, same-host proxies) skip every rule only when they carry no forwarding header. Ranges wider than /8 (IPv4) or /16 (IPv6) are ignored and dropped on save.
@@ -41,7 +41,7 @@ Also included:
 
 ### What it deliberately doesn't do
 
-Wordfence features that rely on its central service are out of scope: the real-time threat-intelligence IP feed, cloud malware signatures and the paid "Premium" rule set. Malware scanning and two-factor authentication are also out of scope. Use a dedicated plugin for those.
+Anything that needs a central cloud service is out of scope: real-time threat-intelligence IP feeds, cloud malware signatures and paid rule sets. Malware scanning and two-factor authentication are also out of scope. Use a dedicated plugin for those.
 
 ## Requirements
 
@@ -147,7 +147,7 @@ The repository is split so that only the plugin itself is ever uploaded to a ser
 │   │   ├── LogListTable.php    WP_List_Table for the activity log
 │   │   ├── RuleCatalog.php     Pure: rule categories, slugs and the built-in rule ids in each
 │   │   ├── RuleStatus.php      Pure: on/off, attention and setup flags, category totals
-│   │   ├── RuleOverview.php    Assembles the grouped rule view for the Rules and Dashboard tabs
+│   │   ├── RuleOverview.php    Assembles the grouped rule view for the Rules tab, notices and widget
 │   │   ├── RuleLabels.php      Translated titles, category names, reasons and notice text
 │   │   ├── WidgetStats.php     Pure: the numbers for the Dashboard widget
 │   │   ├── DashboardWidget.php Dashboard widget: capability, cache and rendering

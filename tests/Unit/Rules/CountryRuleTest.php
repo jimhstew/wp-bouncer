@@ -50,6 +50,35 @@ final class CountryRuleTest extends TestCase {
 		$this->assertNull( $rule->inspect( Requests::make( array( 'ip' => '9.9.9.9' ) ) ) );
 	}
 
+	public function test_blocks_country_matches_the_firewall_decision(): void {
+		$block = $this->rule();
+		$this->assertTrue( $block->blocks_country( 'RU' ) );
+		$this->assertTrue( $block->blocks_country( 'T1' ) );
+		$this->assertFalse( $block->blocks_country( 'US' ) );
+
+		$allow = $this->rule( array( 'mode' => 'allow', 'countries' => array( 'US' ) ) );
+		$this->assertFalse( $allow->blocks_country( 'US' ) );
+		$this->assertTrue( $allow->blocks_country( 'RU' ) );
+
+		foreach ( array( '1.1.1.1' => 'RU', '2.2.2.2' => 'US', '3.3.3.3' => 'T1' ) as $ip => $code ) {
+			foreach ( array( $block, $allow ) as $rule ) {
+				$verdict = $rule->inspect( Requests::make( array( 'ip' => $ip ) ) );
+				$this->assertSame( null !== $verdict, $rule->blocks_country( $code ), $code );
+			}
+		}
+	}
+
+	public function test_blocks_country_is_false_when_off_paused_or_an_empty_allow_list(): void {
+		$this->assertFalse( $this->rule( array( 'enabled' => false ) )->blocks_country( 'RU' ) );
+		$this->assertFalse( $this->rule( array(), true )->blocks_country( 'RU' ) );
+		$this->assertFalse( $this->rule( array( 'mode' => 'allow', 'countries' => array() ) )->blocks_country( 'RU' ) );
+	}
+
+	public function test_login_only_follows_the_scope(): void {
+		$this->assertFalse( $this->rule()->login_only() );
+		$this->assertTrue( $this->rule( array( 'scope' => 'login' ) )->login_only() );
+	}
+
 	public function test_block_mode_blocks_listed_countries(): void {
 		$verdict = $this->rule()->inspect( Requests::make( array( 'ip' => '1.1.1.1' ) ) );
 		$this->assertNotNull( $verdict );
