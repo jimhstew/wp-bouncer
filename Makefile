@@ -87,7 +87,7 @@ $(ZIP): $(SOURCES) Makefile
 	fi
 	@if command -v sha256sum > /dev/null; then (cd $(BUILDS) && sha256sum $(notdir $@) > $(notdir $@).sha256); \
 	else (cd $(BUILDS) && shasum -a 256 $(notdir $@) > $(notdir $@).sha256); fi
-	@echo "Built $@ ($$(unzip -Z1 $@ | grep -vc '/$$') files, $$(du -k $@ | cut -f1) KB)"
+	@echo "Built $@ ($$(unzip -Z1 $@ | grep -vc '/$$') files, $$(( $$(wc -c < $@) / 1024 )) KB)"
 
 manifest: $(ZIP)
 	$(PHP) scripts/build-manifest.php --zip $(ZIP)

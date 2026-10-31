@@ -98,6 +98,13 @@ final class AlertFormatterTest extends TestCase {
 		$this->assertSame( 'with email', $out[0]['detail'] );
 	}
 
+	public function test_dedupe_keeps_the_drift_flag(): void {
+		$out = AlertFormatter::dedupe(
+			array( array( 'type' => 'settings', 'title' => 'T', 'detail' => 'd', 'drift' => true ) )
+		);
+		$this->assertTrue( $out[0]['drift'] );
+	}
+
 	public function test_dedupe_by_key_and_content(): void {
 		$events = array(
 			array( 'type' => 'admin', 'title' => 'New administrator account created', 'detail' => 'eve', 'key' => 'admin|7' ),

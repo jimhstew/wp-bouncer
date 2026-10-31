@@ -8,6 +8,7 @@
 namespace WPBouncer\Tests\Integration\Audit;
 
 use WPBouncer\Admin\AdminController;
+use WPBouncer\Audit\FingerprintKey;
 use WPBouncer\Audit\FingerprintRecord;
 use WPBouncer\Audit\FingerprintStore;
 use WPBouncer\Audit\SettingsDriftMonitor;
@@ -121,18 +122,34 @@ final class DriftRedTeamTest extends IntegrationTestCase {
 		$this->assertCount( 1, $this->rows() );
 	}
 
-	public function test_rt02_preset_throttle_transients_do_not_suppress_the_drift_mail(): void {
-		$names = array( 'wpb_alert_count', 'wpb_alert_count_critical', 'wpb_alert_count_settings', 'wpb_alert_count_login' );
-		foreach ( $names as $name ) {
-			set_transient( $name, 999, HOUR_IN_SECONDS );
-			update_option( '_transient_timeout_' . $name, time() + YEAR_IN_SECONDS );
+	/** @return array<string,array{bool}> */
+	public static function rt02_alert_states(): array {
+		return array(
+			'alerts off (forced)'     => array( false ),
+			'alerts on (not forced)'  => array( true ),
+		);
+	}
+
+	/** @dataProvider rt02_alert_states */
+	public function test_rt02_preset_throttle_transients_do_not_suppress_the_drift_mail( bool $alerts_on ): void {
+		// Each counter at its hourly maximum, which is the largest value the notifier accepts.
+		$names = array(
+			'wpb_alert_count'          => 20,
+			'wpb_alert_count_critical' => 20,
+			'wpb_alert_count_settings' => 10,
+			'wpb_alert_count_login'    => 10,
+		);
+		foreach ( $names as $name => $max ) {
+			set_transient( $name, $max, HOUR_IN_SECONDS );
+			update_option( '_transient_timeout_' . $name, time() + HOUR_IN_SECONDS );
 		}
 		set_transient( 'wpb_alert_uncapped', array( get_current_blog_id() => 50 ), HOUR_IN_SECONDS );
-		update_option( '_transient_timeout_wpb_alert_uncapped', time() + YEAR_IN_SECONDS );
+		update_option( '_transient_timeout_wpb_alert_uncapped', time() + HOUR_IN_SECONDS );
 		set_transient( 'wpb_alert_settings_notice', array( get_current_blog_id() ), HOUR_IN_SECONDS );
-		update_option( '_transient_timeout_wpb_alert_settings_notice', time() + YEAR_IN_SECONDS );
+		update_option( '_transient_timeout_wpb_alert_settings_notice', time() + HOUR_IN_SECONDS );
 
-		$this->sql_edit( array( 'alerts' => array( 'enabled' => false ) ) );
+		// Alerts on: an unrelated setting changes, so the mail is not forced. Off: the alert switch itself changes (forced).
+		$this->sql_edit( $alerts_on ? array( 'mode' => 'monitor' ) : array( 'alerts' => array( 'enabled' => false ) ) );
 		$this->check();
 		$this->assertCount( 1, $this->rows() );
 		$this->assertCount( 1, $this->mails() );
@@ -265,5 +282,97 @@ final class DriftRedTeamTest extends IntegrationTestCase {
 		$rows = $this->rows();
 		$this->assertCount( 1, $rows );
 		$this->assertStringContainsString( 'fingerprint missing', $rows[0]['reason'] );
+	}
+
+	/**
+	 * Seal a record carrying a pending drift into the store.
+	 *
+	 * @param array<string, mixed> $pending     Pending field.
+	 * @param bool                 $extra_leaf Add a leaf the current schema lacks (gives a schema verdict).
+	 */
+	private function plant_pending( array $pending, bool $extra_leaf = false ): FingerprintKey {
+		$store  = new FingerprintStore();
+		$old    = FingerprintRecord::from_stored( $store->load() );
+		$key    = new FingerprintKey( wp_salt( 'auth' ), get_current_blog_id() );
+		$leaves = $old->leaves;
+		if ( $extra_leaf ) {
+			$leaves['zz.retired_leaf'] = $key->leaf( 'zz.retired_leaf', 'x' );
+		}
+		$store->save( FingerprintRecord::sealed( $key, 0, $leaves, $pending ) );
+		return $key;
+	}
+
+	public function test_rt10_a_schema_verdict_keeps_a_pending_drift(): void {
+		$pending = array(
+			'kind'  => 'changed',
+			'paths' => array( 'allowlist' ),
+		);
+		$this->plant_pending( $pending, true );
+		$this->check();
+		$this->assertCount( 0, $this->rows(), 'a schema verdict writes no row' );
+		$record = FingerprintRecord::from_stored( ( new FingerprintStore() )->load() );
+		$this->assertNotNull( $record );
+		$this->assertSame( $pending, $record->pending, 'the pending drift survives the re-baseline' );
+		$this->assertArrayNotHasKey( 'zz.retired_leaf', $record->leaves );
+	}
+
+	public function test_rt10_a_pending_altered_kind_wins_over_a_new_changed_drift(): void {
+		$this->plant_pending(
+			array(
+				'kind'  => 'fingerprint_altered',
+				'paths' => array( 'mode' ),
+			)
+		);
+		$this->sql_edit( array( 'allowlist' => array( '198.51.100.1' ) ) );
+		$this->check();
+		$rows = $this->rows();
+		$this->assertCount( 1, $rows );
+		$this->assertStringContainsString( 'fingerprint missing or altered', strtolower( $rows[0]['reason'] ) );
+		$this->assertStringNotContainsString( 'Settings changed outside', $rows[0]['reason'] );
+		$this->assertStringContainsString( 'allowlist', $rows[0]['reason'] );
+		$this->assertStringContainsString( 'mode', $rows[0]['reason'], 'the pending paths are merged in' );
+		$this->assertCount( 1, $this->mails() );
+	}
+
+	public function test_rt10_more_than_twenty_changed_paths_still_force_the_mail_with_alerts_off(): void {
+		$over = array(
+			'alerts'  => array( 'enabled' => false ),
+			'traffic' => array(
+				'enabled'         => true,
+				'retention_days'  => 9,
+				'skip_admins'     => true,
+				'skip_background' => false,
+			),
+			'rules'   => array(
+				'login_lockout' => array(
+					'enabled'          => false,
+					'max_attempts'     => 9,
+					'window_minutes'   => 9,
+					'lockout_minutes'  => 9,
+					'banned_usernames' => array( 'x' ),
+					'generic_errors'   => false,
+				),
+				'rate_limit'    => array(
+					'enabled'        => true,
+					'max_requests'   => 9,
+					'window_seconds' => 9,
+					'ban_minutes'    => 9,
+				),
+				'waf'           => array(
+					'enabled'        => false,
+					'sqli'           => false,
+					'xss'            => false,
+					'traversal'      => false,
+					'code_injection' => false,
+					'inspect_json'   => false,
+				),
+			),
+		);
+		$this->sql_edit( $over );
+		$this->check();
+		$rows = $this->rows();
+		$this->assertCount( 1, $rows );
+		$this->assertStringContainsString( '...', $rows[0]['reason'], 'the path list was cut' );
+		$this->assertCount( 1, $this->mails(), 'forced although alerts are switched off' );
 	}
 }

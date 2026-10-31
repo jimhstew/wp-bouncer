@@ -90,7 +90,12 @@ final class SettingsDriftMonitor {
 				return;
 			}
 			// The daily check lives in cron; a deleted cron row must not switch it off for good.
-			if ( ! wp_next_scheduled( Installer::CRON_HOOK ) ) {
+			$next = wp_next_scheduled( Installer::CRON_HOOK );
+			if ( ! $next || $next > time() + DAY_IN_SECONDS + HOUR_IN_SECONDS ) {
+				// Missing, or pushed out of reach by a planted cron row: put it back.
+				if ( $next ) {
+					wp_clear_scheduled_hook( Installer::CRON_HOOK );
+				}
 				Installer::schedule();
 			}
 			if ( ! $this->store->throttle_open() ) {
@@ -265,7 +270,8 @@ final class SettingsDriftMonitor {
 				// Any other kind without a row: the record stays as it is, so the next check reports it again.
 				$report = true;
 			} else {
-				$this->store->save( $current );
+				// A schema verdict must not clear a pending drift that has no row yet.
+				$this->store->save( null !== $stored && ! empty( $stored->pending ) ? $current->with_pending( $key, $stored->pending ) : $current );
 				if ( DriftVerdict::BASELINE === $verdict->kind ) {
 					$this->store->set_marker( $now );
 				}
@@ -348,10 +354,14 @@ final class SettingsDriftMonitor {
 				$paths[] = $path;
 			}
 		}
-		return array(
+		$pending = array(
 			'kind'  => $verdict->kind,
 			'paths' => $paths,
 		);
+		if ( $verdict->silences() ) {
+			$pending['forced'] = true; // Sealed, so an alerts.* path cut from a long list still forces the mail.
+		}
+		return $pending;
 	}
 
 	/**
@@ -360,7 +370,7 @@ final class SettingsDriftMonitor {
 	 * @param FingerprintRecord $stored Record with a pending field.
 	 */
 	private static function pending_verdict( FingerprintRecord $stored ): DriftVerdict {
-		return new DriftVerdict( (string) $stored->pending['kind'], array_map( 'strval', (array) $stored->pending['paths'] ) );
+		return new DriftVerdict( (string) $stored->pending['kind'], array_map( 'strval', (array) $stored->pending['paths'] ), true === ( $stored->pending['forced'] ?? false ) );
 	}
 
 	/**
@@ -370,12 +380,13 @@ final class SettingsDriftMonitor {
 	 * @param FingerprintRecord $stored  Stored record.
 	 */
 	private static function merge_pending( DriftVerdict $verdict, FingerprintRecord $stored ): DriftVerdict {
-		if ( DriftVerdict::CHANGED !== $verdict->kind || empty( $stored->pending ) || DriftVerdict::CHANGED !== $stored->pending['kind'] ) {
+		if ( DriftVerdict::CHANGED !== $verdict->kind || empty( $stored->pending ) ) {
 			return $verdict;
 		}
 		$paths = array_values( array_unique( array_merge( $stored->pending['paths'], array_filter( $verdict->paths, static fn( $p ) => 0 !== strpos( $p, '+' ) ) ) ) );
 		sort( $paths, SORT_STRING );
-		return new DriftVerdict( DriftVerdict::CHANGED, $paths );
+		// A pending kind other than "changed" is the more serious one: keep it.
+		return new DriftVerdict( (string) $stored->pending['kind'], $paths, $verdict->silences() || true === ( $stored->pending['forced'] ?? false ) );
 	}
 
 	/**

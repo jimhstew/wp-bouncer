@@ -125,5 +125,19 @@ if ( is_multisite() ) {
 	wp_bouncer_uninstall_site();
 }
 delete_site_transient( 'wp_bouncer_update_manifest' );
+if ( is_multisite() ) {
+	// The one-hour login dedupe marks (WPB-13) are site transients: sitemeta rows named wpb_<md5>.
+	global $wpdb;
+	// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+	$wpdb->query(
+		$wpdb->prepare(
+			'DELETE FROM %i WHERE meta_key LIKE %s OR meta_key LIKE %s',
+			$wpdb->sitemeta,
+			$wpdb->esc_like( '_site_transient_wpb_' ) . '%',
+			$wpdb->esc_like( '_site_transient_timeout_wpb_' ) . '%'
+		)
+	);
+	// phpcs:enable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+}
 // The environment notice's dismissal is user meta, which is network-wide: once is enough.
 delete_metadata( 'user', 0, 'wpb_env_notice_dismissed', '', true );

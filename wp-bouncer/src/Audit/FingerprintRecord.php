@@ -214,7 +214,7 @@ final class FingerprintRecord {
 		if ( array() === $pending ) {
 			return array();
 		}
-		if ( ! is_array( $pending ) || 2 !== count( $pending ) || ! isset( $pending['kind'], $pending['paths'] ) || ! is_string( $pending['kind'] ) || ! in_array( $pending['kind'], self::PENDING_KINDS, true ) || ! is_array( $pending['paths'] ) || count( $pending['paths'] ) > 25 ) {
+		if ( ! is_array( $pending ) || ! in_array( count( $pending ), array( 2, 3 ), true ) || ! isset( $pending['kind'], $pending['paths'] ) || ! is_string( $pending['kind'] ) || ! in_array( $pending['kind'], self::PENDING_KINDS, true ) || ! is_array( $pending['paths'] ) || count( $pending['paths'] ) > 25 ) {
 			return null;
 		}
 		$paths = array();
@@ -224,10 +224,18 @@ final class FingerprintRecord {
 			}
 			$paths[] = $path;
 		}
-		return array(
+		$out = array(
 			'kind'  => $pending['kind'],
 			'paths' => $paths,
 		);
+		if ( 3 === count( $pending ) ) {
+			// Optional sealed flag: an alerts.*, mode or wp.* path was cut off the list. Only ever true.
+			if ( true !== ( $pending['forced'] ?? null ) ) {
+				return null;
+			}
+			$out['forced'] = true;
+		}
+		return $out;
 	}
 
 	/**

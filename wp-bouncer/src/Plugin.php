@@ -73,7 +73,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class Plugin {
 
-	public const VERSION = '1.2.1';
+	public const VERSION = '1.3.0';
 
 	/** Transient that limits the bad-filter log row to one a day. */
 	private const BAD_RULES_TRANSIENT = 'wp_bouncer_bad_rules_logged';
@@ -122,6 +122,14 @@ final class Plugin {
 	 * @var BudgetedBlockLog|null
 	 */
 	private ?BudgetedBlockLog $log_writer = null;
+
+	/**
+	 * The log the current log writer was built on.
+	 *
+	 * @var BlockLog|null
+	 */
+	private ?BlockLog $log_writer_log = null;
+
 	/**
 	 * Log write budget.
 	 *
@@ -473,8 +481,11 @@ final class Plugin {
 	 * Use this to record events. log() stays for reads, purging and the admin screens.
 	 */
 	public function log_writer(): BudgetedBlockLog {
-		if ( null === $this->log_writer ) {
-			$this->log_writer = new BudgetedBlockLog( $this->log(), $this->write_budget() );
+		$log = $this->log();
+		// Rebuilt when log() was, so a writer made while another plugin had switched sites does not stay there.
+		if ( null === $this->log_writer || $this->log_writer_log !== $log ) {
+			$this->log_writer_log = $log;
+			$this->log_writer     = new BudgetedBlockLog( $log, $this->write_budget() );
 		}
 		return $this->log_writer;
 	}

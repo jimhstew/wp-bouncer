@@ -61,16 +61,22 @@ final class DriftVerdict {
 	 *
 	 * @param string   $kind  One of the kind constants.
 	 * @param string[] $paths Raw differing paths (made safe here).
+	 * @param bool     $forced True when a silencing path was already cut off the list (from a pending record).
 	 */
-	public function __construct( string $kind, array $paths = array() ) {
+	public function __construct( string $kind, array $paths = array(), bool $forced = false ) {
 		$this->kind     = $kind;
-		$this->silences = false;
+		$this->silences = $forced;
 		foreach ( $paths as $path ) {
 			if ( 'mode' === $path || 'settings' === $path || 0 === strpos( (string) $path, 'alerts.' ) || 0 === strpos( (string) $path, 'wp.' ) ) {
 				$this->silences = true;
 			}
 		}
 		$this->paths = SettingsDiff::safe_paths( array_values( $paths ) );
+	}
+
+	/** Did the differing paths include one that can silence or redirect alerts (even if cut from the list)? */
+	public function silences(): bool {
+		return $this->silences;
 	}
 
 	/** Should a row and an alert be written? */

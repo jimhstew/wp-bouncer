@@ -159,7 +159,7 @@ final class AlertFormatter {
 			if ( ! empty( $event['critical'] ) ) {
 				$out[ $key ]['critical'] = true;
 			}
-			foreach ( array( 'settings', 'uncapped', 'blog', 'ctx' ) as $extra ) {
+			foreach ( array( 'settings', 'uncapped', 'blog', 'ctx', 'drift' ) as $extra ) {
 				if ( isset( $event[ $extra ] ) && ! isset( $out[ $key ][ $extra ] ) ) {
 					$out[ $key ][ $extra ] = $event[ $extra ];
 				}

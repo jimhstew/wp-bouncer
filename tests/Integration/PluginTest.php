@@ -1919,4 +1919,25 @@ final class PluginTest extends IntegrationTestCase {
 		$this->plugin->block_users_sitemap();
 		$this->assertFalse( is_404() );
 	}
+
+	public function test_a_log_writer_built_while_switched_does_not_stay_on_that_site(): void {
+		global $wpdb;
+		if ( ! is_multisite() ) {
+			$this->markTestSkipped( 'Multisite only.' );
+		}
+		$this->use_real_ddl();
+		$other = self::factory()->blog->create();
+		switch_to_blog( $other );
+		Installer::activate();
+		restore_current_blog();
+		$home = $wpdb->prefix . 'bouncer_log';
+
+		switch_to_blog( $other );
+		$this->plugin->log_writer();
+		$this->assertNotSame( $home, $this->plugin->log()->table() );
+		restore_current_blog();
+
+		$this->plugin->log_writer()->record( array( 'rule' => 'waf', 'reason' => 'stays-home' ) );
+		$this->assertSame( 1, (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE reason = %s', $home, 'stays-home' ) ) );
+	}
 }

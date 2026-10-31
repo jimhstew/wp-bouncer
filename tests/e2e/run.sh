@@ -1599,6 +1599,11 @@ admin "$DRIFT_EXPORT" > /dev/null
 check "CSV export: header row"                   "time_utc,ip,country,rule,action,reason,method,uri,user_agent" "$(head -1 "$WORK/admin.html")"
 check "  ...drift row with empty IP and country" 1 "$(grep -c '^"[0-9-]* [0-9:]*",,,settings,alert,' "$WORK/admin.html")"
 check "  ...no PHP warning in the file"          0 "$(grep -Ec '(Warning|Notice|Deprecated):' "$WORK/admin.html")"
+# WPB12-RT-11: a daily check pushed a year out from the database is put back by the next admin page load.
+$WP eval 'wp_clear_scheduled_hook( "wp_bouncer_daily_maintenance" ); wp_schedule_single_event( time() + YEAR_IN_SECONDS, "wp_bouncer_daily_maintenance" );' > /dev/null 2>&1
+$WP eval 'delete_transient( "wp_bouncer_fp_check" );' > /dev/null
+admin "$U/wp-admin/admin.php?page=wp-bouncer" > /dev/null
+check "a daily check planted a year out is rescheduled" 1 "$($WP eval 'echo ( wp_next_scheduled( WPBouncer\Installer::CRON_HOOK ) <= time() + DAY_IN_SECONDS + HOUR_IN_SECONDS ) ? 1 : 0;')"
 set_settings '$s["mode"] = "enforce"'
 # Front end: instrument every read and write of the fingerprint state with an mu-plugin.
 FPLOG="$WORK/fp-touch.log"

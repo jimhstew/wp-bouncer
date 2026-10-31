@@ -4,7 +4,7 @@ Tags: firewall, security, brute force, country blocking, waf
 Requires at least: 7.0
 Tested up to: 7.1
 Requires PHP: 8.3
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -42,7 +42,7 @@ Country lookups are done locally against a free database you import (DB-IP Lite 
 
 **Threat map**: the Activity Log shows where blocked requests and lockouts came from, on a world map and in a Top countries table, for the date range you pick. The map ignores the search box and the IP filter.
 
-**Settings drift**: WP Bouncer notices when its own settings were changed while the plugin wasn't loaded (for example with `wp --skip-plugins` or in the database). It writes an Activity Log row and emails you, but it never reverts the change.
+**Settings drift**: WP Bouncer notices when its own settings were changed while the plugin wasn't loaded (for example with `wp --skip-plugins` or in the database). It writes an Activity Log row and sends the firewall-change email (which follows your alert settings, except that a change to the alert, mode or admin-email settings is always emailed), but it never reverts the change.
 
 == Installation ==
 
@@ -124,6 +124,15 @@ The threat map's base map and country positions come from Natural Earth 5.1.2 (h
 
 == Changelog ==
 
+= 1.3.0 =
+* New: administrator logins are recorded in the Activity Log (user, IP, country, time, method). Filter by action "Admin login".
+* New: email when an administrator logs in from a new IP range (IPv4 /24, IPv6 /64) or country not seen for that account in 90 days. Both settings are on the General tab.
+* New: threat map on the Activity Log, by country, with a Top countries table. Date filters From and To on the Activity Log.
+* New: settings changed while WP Bouncer wasn't loaded (for example with wp --skip-plugins or in the database) are detected, logged and emailed. Nothing is reverted.
+* Activity Log index added on upgrade (database schema version 4).
+* Dashboard counts leave out login rows.
+* Privacy tools cover administrator logins.
+
 = 1.2.1 =
 * Security fix: settings changes made with WP-CLI or from code are now logged and alerted, as changes on the admin screen already were. Settings-change alerts are limited to 10 an hour, except changes that could silence alerts. Turning off any alert now sends an alert.
 * New: drag the edge of a column heading to resize columns on the Activity Log and Traffic tab. Widths are kept in this browser.
@@ -179,6 +188,9 @@ The threat map's base map and country positions come from Natural Earth 5.1.2 (h
 * First release.
 
 == Upgrade Notice ==
+
+= 1.3.0 =
+Adds administrator-login rows and emails for logins from a new location (both on by default; switch off on the General tab). Adds a settings-drift check, on by default, which may send one email after a legitimate restore, import, staging copy or salt rotation. On the first request after the update, adds a log index: about 1.7 seconds per million log rows.
 
 = 1.2.1 =
 Security fix: settings changes from WP-CLI or code are now logged and alerted. Adds resizable log columns.

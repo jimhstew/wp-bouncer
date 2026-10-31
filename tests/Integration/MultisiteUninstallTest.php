@@ -98,7 +98,15 @@ final class MultisiteUninstallTest extends IntegrationTestCase {
 			$this->assertTrue( $this->block_on( $id ), "site $id has the block before" );
 		}
 
+		$mark = 'wpb_' . md5( 'login|1' );
+		set_site_transient( $mark, 1, HOUR_IN_SECONDS );
+		set_site_transient( 'unrelated_keep', 1, HOUR_IN_SECONDS );
+
 		$this->uninstall();
+
+		$this->assertFalse( get_site_transient( $mark ), 'login dedupe site transient' );
+		$this->assertSame( '0', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->sitemeta} WHERE meta_key LIKE '\\_site\\_transient\\_%wpb\\_%'" ), 'sitemeta rows' ); // phpcs:ignore WordPress.DB
+		$this->assertNotFalse( get_site_transient( 'unrelated_keep' ) );
 
 		foreach ( $this->sites as $id ) {
 			switch_to_blog( $id );
