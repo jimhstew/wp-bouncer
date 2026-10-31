@@ -64,3 +64,12 @@ If the header can't be believed, the local database is used instead. If the head
 **Only use a header if clients can't reach your origin directly.** Otherwise anyone can send `CF-IPCountry: US`. With Cloudflare, firewall your origin to Cloudflare's IP ranges. Trusting a CDN's ranges as proxies also trusts the headers that CDN sets for its other customers, so lock the origin to the CDN where you can.
 
 Cloudflare reports Tor exit nodes as `T1`, which can be blocked like a country.
+
+## 3. Threat map by country
+
+The threat map on the Activity Log (`Admin\ThreatMapPanel`) does no lookups of its own. It counts blocked requests and lockouts by the **country stored on each row**, which is the country known when the row was written. The map therefore follows whichever source was in use then.
+
+- Rows with no country, or with a value that isn't a valid country code, are counted as **Unknown location**. They are shown in a line under the map and in the total, and never dropped.
+- Valid codes that have no place on the map, such as `T1` (Tor), `EU`, `AP` and `AQ`, are listed in the Top countries table as "(not on the map)".
+- **No geo database means no map.** If no database is loaded and the period has no known-country threats, the panel shows "Country data needs the geolocation database", with a link to **Tools**, and no map. If a CDN header supplies countries, the map is drawn.
+- The base map is a static SVG (`wp-bouncer/assets/map/world.svg`) built from Natural Earth 5.1.2 (public domain, credited in `readme.txt`). The plugin makes no request when it draws the map.

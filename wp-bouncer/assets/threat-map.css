@@ -1,0 +1,37 @@
+/* WP Bouncer threat map. Logical properties throughout; the map itself is not mirrored. */
+.wpb-map { margin: 0 0 16px; padding: 8px 16px 12px; background: #fff; border: 1px solid #c3c4c7; }
+.wpb-map-head { display: flex; align-items: center; gap: 12px; }
+.wpb-map-head h2 { margin: 0.5em 0; font-size: 1.15em; }
+.wpb-map-toggle[hidden], .wpb-map-more[hidden] { display: none; }
+.wpb-map-body { container-type: inline-size; }
+.wpb-map-grid { display: grid; grid-template-columns: minmax(0, auto) minmax(16rem, 1fr); gap: 1rem; }
+@container (max-width: 900px) { .wpb-map-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 782px) { .wpb-map-grid { grid-template-columns: minmax(0, 1fr); } }
+.wpb-map-figure { margin: 0; }
+.wpb-map-canvas { position: relative; display: inline-block; max-inline-size: 100%; background: #f0f6fc; }
+.wpb-map-base { display: block; inline-size: auto; block-size: auto; max-inline-size: min(100%, 720px); max-block-size: 45vh; }
+.wpb-map-dots { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
+.wpb-map-dots circle { stroke: #1d2327; stroke-width: 1; vector-effect: non-scaling-stroke; cursor: default; }
+.wpb-map-dots circle:focus-visible { stroke: #2271b1; stroke-width: 3; outline: none; }
+.wpb-heat-0 { fill: #fde2dd; background: #fde2dd; }
+.wpb-heat-1 { fill: #fbc4ba; background: #fbc4ba; }
+.wpb-heat-2 { fill: #f8a294; background: #f8a294; }
+.wpb-heat-3 { fill: #f47f6e; background: #f47f6e; }
+.wpb-heat-4 { fill: #ef5b48; background: #ef5b48; }
+.wpb-heat-5 { fill: #e83a26; background: #e83a26; }
+.wpb-heat-6 { fill: #e01e10; background: #e01e10; }
+.wpb-heat-7 { fill: #e60000; background: #e60000; }
+.wpb-map-tip { position: absolute; max-inline-size: 16rem; padding: 0.25rem 0.5rem; background: #1d2327; color: #fff; border-radius: 2px; pointer-events: auto; z-index: 2; }
+.wpb-map-tip[hidden] { display: none; }
+.wpb-map-legend { display: flex; align-items: center; gap: 6px; margin-block: 8px; }
+.wpb-map-swatches { display: inline-flex; }
+.wpb-map-swatches i { display: block; inline-size: 18px; block-size: 12px; border: 1px solid #1d2327; margin-inline-end: -1px; }
+.wpb-map-top { max-block-size: 45vh; overflow: auto; }
+.wpb-map-top caption { text-align: start; font-weight: 600; padding-block-end: 4px; }
+.wpb-map-top th, .wpb-map-top td { text-align: start; }
+.wpb-map-off { color: #646970; }
+@media (forced-colors: active) {
+	.wpb-map-dots circle { forced-color-adjust: none; stroke: CanvasText; }
+	.wpb-map-dots circle:focus-visible { stroke: Highlight; }
+	.wpb-map-swatches i { forced-color-adjust: none; border-color: CanvasText; }
+}

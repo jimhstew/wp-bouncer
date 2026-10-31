@@ -8,12 +8,24 @@
 
 use WPBouncer\Admin\AdminController;
 use WPBouncer\Admin\LogListTable;
+use WPBouncer\Admin\ThreatMapPanel;
 
 defined( 'ABSPATH' ) || exit;
 
 $plugin->log_writer()->flush_summary(); // A quiet site still records an earlier flood.
 $table = new LogListTable( $plugin->log() );
 $table->prepare_items();
+
+$wpb_range = AdminController::log_date_range();
+$wpb_notes = array(
+	'invalid'  => __( 'A date was not valid, so it was ignored. Use the date pickers or the format YYYY-MM-DD.', 'wp-bouncer' ),
+	'reversed' => __( 'The end date is before the start date, so the date filter was ignored.', 'wp-bouncer' ),
+	'capped'   => __( 'The date range is limited to 365 days, so the start date was moved.', 'wp-bouncer' ),
+);
+if ( isset( $wpb_notes[ $wpb_range->note ] ) ) {
+	echo '<div class="notice notice-warning inline"><p>' . esc_html( $wpb_notes[ $wpb_range->note ] ) . '</p></div>';
+}
+( new ThreatMapPanel( $plugin ) )->render( AdminController::log_filters_from_request(), $wpb_range );
 ?>
 <form method="get" class="wpb-log-form">
 	<input type="hidden" name="page" value="<?php echo esc_attr( AdminController::SLUG ); ?>">

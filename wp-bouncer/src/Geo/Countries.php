@@ -275,6 +275,7 @@ final class Countries {
 		'VU' => array( 'Vanuatu', 'OC' ),
 		'WF' => array( 'Wallis and Futuna', 'OC' ),
 		'WS' => array( 'Samoa', 'OC' ),
+		'XK' => array( 'Kosovo', 'EU' ),
 		'YE' => array( 'Yemen', 'AS' ),
 		'YT' => array( 'Mayotte', 'AF' ),
 		'ZA' => array( 'South Africa', 'AF' ),

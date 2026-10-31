@@ -24,11 +24,12 @@ defined( 'ABSPATH' ) || exit;
  * All tables are per site on multisite ($wpdb->prefix is the site's prefix).
  *
  * Version 3 also redacts rows written by older versions (Storage\RedactionMigration).
+ * Version 4 adds the action_created key to the log table (used by the Activity Log threat map).
  */
 final class Installer {
 
 	/** Bump when the schema changes. maybe_upgrade() re-runs dbDelta. */
-	public const DB_VERSION = '3';
+	public const DB_VERSION = '4';
 
 	public const DB_VERSION_OPTION = 'wp_bouncer_db_version';
 
@@ -220,6 +221,17 @@ final class Installer {
 		};
 	}
 
+	/**
+	 * Does an upgrade from the stored schema version have to redact old rows?
+	 *
+	 * Only versions before 3 do (a missing option counts as 0, so fresh installs still call it on empty tables).
+	 *
+	 * @param mixed $stored The stored wp_bouncer_db_version value.
+	 */
+	public static function needs_redaction( $stored ): bool {
+		return ( is_scalar( $stored ) ? (int) $stored : 0 ) < 3;
+	}
+
 	/** Create or update the tables with dbDelta. */
 	public static function create_tables(): void {
 		global $wpdb;
@@ -247,7 +259,8 @@ final class Installer {
   PRIMARY KEY  (id),
   KEY created_at (created_at),
   KEY ip (ip),
-  KEY rule (rule)
+  KEY rule (rule),
+  KEY action_created (action,created_at,country)
 ) {$charset};"
 		);
 
@@ -296,8 +309,9 @@ final class Installer {
 			return;
 		}
 
-		// Any change of version starts the redaction. On a fresh install the tables are empty, so it ends at once.
-		if ( self::DB_VERSION !== get_option( self::DB_VERSION_OPTION ) ) {
+		// Upgrades from before version 3 start the redaction (a later schema change must not restart it).
+		// On a fresh install the tables are empty, so it ends at once.
+		if ( self::needs_redaction( get_option( self::DB_VERSION_OPTION ) ) ) {
 			Storage\RedactionMigration::begin();
 		}
 		update_option( self::DB_VERSION_OPTION, self::DB_VERSION, true );

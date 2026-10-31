@@ -12,6 +12,7 @@ use WPBouncer\Admin\DashboardWidget;
 use WPBouncer\Admin\DataNotices;
 use WPBouncer\Admin\FirewallCapability;
 use WPBouncer\Admin\SetupNotices;
+use WPBouncer\Admin\ThreatMapPanel;
 use WPBouncer\AdminLogins\AdminLoginRecorder;
 use WPBouncer\AdminLogins\LoginHistoryRepository;
 use WPBouncer\Alerts\AlertNotifier;
@@ -365,6 +366,7 @@ final class Plugin {
 		if ( is_admin() || wp_doing_cron() ) {
 			( new EnvironmentAdmin() )->register();
 			( new DashboardWidget( $this ) )->register();
+			( new ThreatMapPanel( $this ) )->register();
 		}
 	}
 
@@ -975,6 +977,7 @@ final class Plugin {
 			// Claim the slot first so concurrent admin requests don't all purge.
 			update_option( self::LAST_PURGE_OPTION, time(), true );
 			$this->purge_logs();
+			ThreatMapPanel::flush();
 			( new LoginHistoryRepository() )->prune_expired( AdminLoginRecorder::window_days() * DAY_IN_SECONDS );
 			( new TrafficRecorder( $this ) )->purge();
 		}

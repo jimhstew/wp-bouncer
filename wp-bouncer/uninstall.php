@@ -61,6 +61,9 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		delete_option( 'wp_bouncer_upgrade_lock' );
 		delete_option( 'wp_bouncer_upgrade_failed' );
 		delete_option( 'wp_bouncer_login_prune_cursor' );
+		delete_option( 'wpb_map_keys' );
+		delete_option( 'wpb_map_gen' );
+		delete_option( 'wpb_map_lock' );
 		// Each administrator's login location history (per-site user option).
 		delete_metadata( 'user', 0, $wpdb->get_blog_prefix() . 'wpb_login_seen', '', true );
 		delete_transient( 'wp_bouncer_bad_rules_logged' );
@@ -77,7 +80,7 @@ if ( ! function_exists( 'wp_bouncer_uninstall_site' ) ) {
 		// Our transients (and their timeout rows): counters, lockouts and bans are wpb_<32 hex>; the rest
 		// have fixed names. Found with a loose LIKE (no escaping, so it works on SQLite too) and then
 		// matched exactly, in id order and in batches, so another plugin's wpb_* transient is left alone.
-		$wpb_exact  = '/^_transient_(?:timeout_)?(?:wpb_(?:[0-9a-f]{32}|ctrfb_.+|flash_\d+|alert_count(?:_critical|_settings|_login)?|alert_(?:settings|login)_notice|alert_uncapped|widget_stats.*)|wp_bouncer_(?:export_[0-9a-f]{32}|erase_range_\d+))$/';
+		$wpb_exact  = '/^_transient_(?:timeout_)?(?:wpb_(?:[0-9a-f]{32}|ctrfb_.+|flash_\d+|alert_count(?:_critical|_settings|_login)?|alert_(?:settings|login)_notice|alert_uncapped|widget_stats.*|map_(?:[0-9a-f]{20}|lock|thr_\d+))|wp_bouncer_(?:export_[0-9a-f]{32}|erase_range_\d+))$/';
 		$wpb_cursor = 0;
 		do {
 			$wpb_rows = (array) $wpdb->get_results(

@@ -49,6 +49,10 @@ final class MultisiteUninstallTest extends IntegrationTestCase {
 			update_option( 'wp_bouncer_counter_failed', 1 );
 			update_option( UploadsGuard::STATE_OPTION, array( 'ok' => true ) );
 			set_transient( 'wpb_' . md5( 'something' ), 1, 600 );
+			set_transient( 'wpb_map_' . str_repeat( 'b', 20 ), array( 'v' => 1 ), 600 );
+			set_transient( 'wpb_map_lock', 1, 600 );
+			update_option( 'wpb_map_keys', array( 'gen' => 1, 'keys' => array() ), false );
+			update_option( 'wpb_map_gen', 1, false );
 			global $wpdb;
 			( new BlockLog( $wpdb ) )->record( array( 'ip' => '198.51.100.1' ) );
 			UploadsGuard::write_block();
@@ -98,7 +102,7 @@ final class MultisiteUninstallTest extends IntegrationTestCase {
 			foreach ( array( 'bouncer_log', 'bouncer_geo', 'bouncer_traffic', 'bouncer_counters' ) as $t ) {
 				$this->assertFalse( $this->table_exists( $wpdb->prefix . $t ), "site $id table $t" );
 			}
-			foreach ( array( Settings::OPTION, Installer::DB_VERSION_OPTION, 'wp_bouncer_last_purge', 'wp_bouncer_migration_3', 'wp_bouncer_counter_failed', UploadsGuard::STATE_OPTION ) as $option ) {
+			foreach ( array( Settings::OPTION, Installer::DB_VERSION_OPTION, 'wp_bouncer_last_purge', 'wp_bouncer_migration_3', 'wp_bouncer_counter_failed', UploadsGuard::STATE_OPTION, 'wpb_map_keys', 'wpb_map_gen' ) as $option ) {
 				$this->assertFalse( get_option( $option ), "site $id option $option" );
 			}
 			$this->assertSame( '0', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%'" ), "site $id transients: " . implode( ',', (array) $wpdb->get_col( "SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_%wpb\\_%'" ) ) ); // phpcs:ignore WordPress.DB

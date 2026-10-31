@@ -40,6 +40,8 @@ You also get an Activity Log of everything refused and every administrator login
 
 Country lookups are done locally against a free database you import (DB-IP Lite or IP2Location LITE), or read from your CDN's country header. No visitor data leaves your server.
 
+**Threat map**: the Activity Log shows where blocked requests and lockouts came from, on a world map and in a Top countries table, for the date range you pick. The map ignores the search box and the IP filter.
+
 == Installation ==
 
 1. Upload the `wp-bouncer` folder to `/wp-content/plugins/` and activate it.
@@ -93,6 +95,14 @@ It logs IP addresses, requested URLs, referrers and User-Agents: the Activity Lo
 = Does it replace Wordfence? =
 
 It replaces the firewall, brute-force, country-blocking and rate-limiting parts. It has no malware scanner, no two-factor authentication and no cloud threat feed.
+
+= Why is the threat map empty, or showing "Unknown location"? =
+
+The map counts blocked requests and lockouts only, and needs a country for each entry. Import the geo database under Tools, or use a country header from your CDN. Entries with no known country are listed as unknown location and aren't drawn. Without a geo database and without a country header, the map isn't drawn at all.
+
+== Credits ==
+
+The threat map's base map and country positions come from Natural Earth 5.1.2 (https://github.com/nvkelso/natural-earth-vector), which is in the public domain. A few island positions come from the CIA World Factbook, also public domain.
 
 == Changelog ==
 

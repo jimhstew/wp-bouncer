@@ -17,7 +17,7 @@ defined( 'ABSPATH' ) || exit;
  * The admin Activity Log screen and the dashboard widgets read through the
  * query helpers here. The firewall only ever calls record().
  */
-final class BlockLog implements BlockLogInterface, WidgetStatsSource {
+final class BlockLog implements BlockLogInterface, WidgetStatsSource, ThreatMapSource {
 
 	/** Column length limits (match the schema in Installer). */
 	private const LIMITS = array(
@@ -33,6 +33,12 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 
 	/** Rows that are not threats: email alerts and successful administrator logins. Never counted as blocked traffic. */
 	public const NON_THREAT_ACTIONS = array( 'alert', 'login' );
+
+	/**
+	 * What the threat map counts: refused requests and lockouts. Monitor-only matches, alerts, admin logins
+	 * and per-minute summary rows are not threats. An action added later is excluded until it is listed here.
+	 */
+	public const THREAT_ACTIONS = array( self::ACTION_BLOCKED, self::ACTION_LOCKOUT );
 
 	/** Actions the dashboard widget counts (alerts are never counted). */
 	private const WIDGET_ACTIONS = array( 'blocked', 'monitored', 'lockout', 'suppressed' );
@@ -103,7 +109,7 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 	/**
 	 * Build a WHERE clause from filters.
 	 *
-	 * @param array<string, string> $filters rule, action, country, ip (exact), search, since (Y-m-d H:i:s UTC).
+	 * @param array<string, string> $filters rule, action, country, ip (exact), search, since (Y-m-d H:i:s UTC, inclusive), until (same format, exclusive).
 	 * @return array{0: string, 1: array<int, string>} SQL fragment and its arguments.
 	 */
 	private function where( array $filters ): array {
@@ -118,6 +124,10 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 		if ( ! empty( $filters['since'] ) ) {
 			$sql[]  = 'created_at >= %s';
 			$args[] = (string) $filters['since'];
+		}
+		if ( ! empty( $filters['until'] ) ) {
+			$sql[]  = 'created_at < %s';
+			$args[] = (string) $filters['until'];
 		}
 		if ( ! empty( $filters['search'] ) ) {
 			$like   = '%' . $this->db->esc_like( (string) $filters['search'] ) . '%';
@@ -196,6 +206,36 @@ final class BlockLog implements BlockLogInterface, WidgetStatsSource {
 			ARRAY_A
 		);
 		$out  = array();
+		foreach ( (array) $rows as $row ) {
+			$out[ (string) $row['k'] ] = (int) $row['n'];
+		}
+		return $out;
+	}
+
+	/**
+	 * Threats (blocked requests and lockouts) per stored country value in a window, for the threat map.
+	 *
+	 * Only rule, action and country are used from $filters; search and IP never apply. The cap keeps the
+	 * largest groups.
+	 *
+	 * @param array<string, string> $filters Filters (rule, action, country).
+	 * @param string                $since   UTC start, inclusive.
+	 * @param string                $until   UTC end, exclusive.
+	 * @return array<string, int>|null Stored value => count, largest first; null on a database error.
+	 */
+	public function threats_by_country( array $filters, string $since, string $until ): ?array {
+		$filters              = array_intersect_key( $filters, array_flip( array( 'rule', 'action', 'country' ) ) ) + array(
+			'since' => $since,
+			'until' => $until,
+		);
+		list( $where, $args ) = $this->where( $filters );
+		$in                   = implode( ', ', array_fill( 0, count( self::THREAT_ACTIONS ), '%s' ) );
+		$sql                  = "SELECT country AS k, COUNT(*) AS n FROM {$this->table} WHERE {$where} AND action IN ({$in}) GROUP BY country ORDER BY n DESC LIMIT 300";
+		$rows                 = $this->db->get_results( $this->db->prepare( $sql, array_merge( $args, self::THREAT_ACTIONS ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL -- the table name is built from $wpdb->prefix, $where is built from fixed fragments with %s placeholders in where(), $in is a list of %s placeholders, LIMIT is a literal and every value is bound.
+		if ( '' !== (string) $this->db->last_error ) {
+			return null;
+		}
+		$out = array();
 		foreach ( (array) $rows as $row ) {
 			$out[ (string) $row['k'] ] = (int) $row['n'];
 		}

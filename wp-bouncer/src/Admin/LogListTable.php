@@ -163,6 +163,18 @@ final class LogListTable extends \WP_List_Table {
 		}
 		echo '</select>';
 
+		// Date range (also drives the threat map). Days in the site's time zone; the map ends today at the latest.
+		$range = AdminController::log_date_range();
+		$today = wp_date( 'Y-m-d' );
+		echo '<label for="wpb-filter-from">' . esc_html__( 'From', 'wp-bouncer' ) . '</label> ';
+		printf( '<input type="date" name="log_from" id="wpb-filter-from" value="%s" max="%s"> ', esc_attr( (string) $range->from ), esc_attr( $today ) );
+		echo '<label for="wpb-filter-to">' . esc_html__( 'To', 'wp-bouncer' ) . '</label> ';
+		printf( '<input type="date" name="log_to" id="wpb-filter-to" value="%s" max="%s"> ', esc_attr( (string) $range->to ), esc_attr( $today ) );
+		// The toolbar has no country select, so keep an active country filter through a new submit.
+		if ( ! empty( $filters['country'] ) ) {
+			printf( '<input type="hidden" name="country" value="%s">', esc_attr( $filters['country'] ) );
+		}
+
 		submit_button( __( 'Filter', 'wp-bouncer' ), '', 'filter_action', false );
 		echo '</div>';
 

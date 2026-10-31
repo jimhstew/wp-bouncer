@@ -206,7 +206,7 @@ final class InstallerTest extends IntegrationTestCase {
 		Installer::maybe_upgrade();
 
 		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_traffic' ) );
-		$this->assertSame( '3', get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
 		$this->assertNotFalse( wp_next_scheduled( TrafficRecorder::PURGE_HOOK ), 'purge job scheduled by the upgrade' );
 		$this->assertSame( 'hourly', wp_get_schedule( TrafficRecorder::PURGE_HOOK ) );
 		$this->assertSame( '1', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" ), 'existing rows kept' ); // phpcs:ignore WordPress.DB
@@ -431,7 +431,7 @@ final class InstallerTest extends IntegrationTestCase {
 
 		Installer::maybe_upgrade();
 
-		$this->assertSame( '3', get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertSame( Installer::DB_VERSION, get_option( Installer::DB_VERSION_OPTION ) );
 		$this->assertArrayHasKey( 'user_id', $this->indexes_of( $wpdb->prefix . 'bouncer_traffic' ), 'dbDelta adds the new index to the old table' );
 		$this->assertTrue( $this->table_exists( $wpdb->prefix . 'bouncer_counters' ) );
 		$this->assertFalse( RedactionMigration::pending(), 'small tables finish within the upgrade request' );
@@ -487,5 +487,43 @@ final class InstallerTest extends IntegrationTestCase {
 		$this->assertSame( (string) $n, (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log} WHERE uri LIKE '%[removed]%'" ) ); // phpcs:ignore WordPress.DB
 		$this->assertSame( '0', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log} WHERE uri LIKE '%token=S%'" ) ); // phpcs:ignore WordPress.DB
 		$this->assertFalse( wp_next_scheduled( RedactionMigration::HOOK ) );
+	}
+
+	public function test_a_fresh_log_table_has_the_action_created_key(): void {
+		global $wpdb;
+
+		$this->assertSame( array( 'action', 'created_at', 'country' ), $this->indexes_of( $wpdb->prefix . 'bouncer_log' )['action_created'] ?? array() );
+	}
+
+	public function test_maybe_upgrade_from_version_3_adds_the_action_created_key_and_does_not_restart_redaction(): void {
+		global $wpdb;
+		$log = $wpdb->prefix . 'bouncer_log';
+		$this->use_real_ddl();
+		$wpdb->query( "ALTER TABLE {$log} DROP INDEX action_created" ); // phpcs:ignore WordPress.DB
+		$wpdb->insert(
+			$log,
+			array(
+				'created_at' => '2026-01-01 00:00:00',
+				'ip'         => '198.51.100.7',
+				'uri'        => '/?token=STAYS',
+				'action'     => 'blocked',
+				'country'    => 'DE',
+			)
+		);
+		delete_option( RedactionMigration::STATE_OPTION );
+		update_option( Installer::DB_VERSION_OPTION, '3' );
+		$this->clear_cron();
+		$this->assertArrayNotHasKey( 'action_created', $this->indexes_of( $log ) );
+
+		Installer::maybe_upgrade();
+
+		$this->assertSame( '4', get_option( Installer::DB_VERSION_OPTION ) );
+		$this->assertSame( array( 'action', 'created_at', 'country' ), $this->indexes_of( $log )['action_created'] );
+		$this->assertSame( array( 'created_at' ), $this->indexes_of( $log )['created_at'], 'the other keys are untouched' );
+		$this->assertFalse( RedactionMigration::pending(), 'the redaction is not restarted by a 3 to 4 upgrade' );
+		$this->assertFalse( get_option( RedactionMigration::STATE_OPTION ) );
+		$this->assertFalse( wp_next_scheduled( RedactionMigration::HOOK ) );
+		$this->assertSame( '/?token=STAYS', $wpdb->get_var( "SELECT uri FROM {$log}" ), 'rows are not rewritten' ); // phpcs:ignore WordPress.DB
+		$this->assertSame( '1', (string) $wpdb->get_var( "SELECT COUNT(*) FROM {$log}" ), 'rows kept' ); // phpcs:ignore WordPress.DB
 	}
 }

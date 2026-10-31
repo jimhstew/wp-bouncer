@@ -11,6 +11,8 @@
 #   make lint       WordPress Coding Standards
 #   make e2e        End-to-end tests against the wp-bouncer/ source folder
 #   make check      Unit tests, build, then end-to-end tests against the built zip
+#   make map IN=<dir>  Rebuild assets/map/world.svg and Centroids from Natural Earth files in <dir>
+#                   (outside the repo; see scripts/build-world-map.php for the inputs)
 #   make clean      Delete builds/
 #
 # Only the wp-bouncer/ folder goes into the zip. Tests (including the WAF test
@@ -44,7 +46,7 @@ SOURCES  := $(shell find $(SRC) -type f ! -name '.DS_Store')
 # Files that must never ship.
 FORBIDDEN := -e '/tests/' -e 'Test\.php$$' -e '/fixtures/' -e 'phpunit' -e '\.phar$$' -e '/\.' -e 'composer\.'
 
-.PHONY: all build manifest test test-js integration analyse lint e2e check clean version
+.PHONY: all build manifest test test-js integration analyse lint e2e map check clean version
 
 all: build
 
@@ -76,6 +78,12 @@ $(ZIP): $(SOURCES) Makefile
 	@rm -rf $(STAGE)
 	@if unzip -Z1 $@ | grep -q $(FORBIDDEN); then \
 		echo "Refusing to ship test or tooling files:"; unzip -Z1 $@ | grep $(FORBIDDEN); rm -f $@; exit 1; \
+	fi
+	@if unzip -Z1 $@ | grep '\.svg$$' | grep -vqx '$(PLUGIN)/assets/map/world.svg'; then \
+		echo "Refusing to ship unexpected .svg files:"; unzip -Z1 $@ | grep '\.svg$$' | grep -vx '$(PLUGIN)/assets/map/world.svg'; rm -f $@; exit 1; \
+	fi
+	@if unzip -Z1 $@ | grep -qx '$(PLUGIN)/assets/map/world.svg' && [ $$(unzip -p $@ $(PLUGIN)/assets/map/world.svg | wc -c) -gt 102400 ]; then \
+		echo "world.svg is over 100 KB"; rm -f $@; exit 1; \
 	fi
 	@if command -v sha256sum > /dev/null; then (cd $(BUILDS) && sha256sum $(notdir $@) > $(notdir $@).sha256); \
 	else (cd $(BUILDS) && shasum -a 256 $(notdir $@) > $(notdir $@).sha256); fi
@@ -113,6 +121,10 @@ lint: vendor/autoload.php
 
 e2e:
 	PHP=$(PHP) tests/e2e/run.sh
+
+map:
+	@test -n "$(IN)" || { echo 'Usage: make map IN=<dir>'; exit 1; }
+	$(PHP) scripts/build-world-map.php --in $(IN)
 
 check: test build
 	PHP=$(PHP) WPB_E2E_ZIP=$(CURDIR)/$(ZIP) tests/e2e/run.sh

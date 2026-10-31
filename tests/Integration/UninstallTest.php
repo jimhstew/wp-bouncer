@@ -100,8 +100,14 @@ final class UninstallTest extends IntegrationTestCase {
 			DashboardWidget::TRANSIENT,
 			'wp_bouncer_export_' . md5( 'abc' ),
 			'wp_bouncer_erase_range_5',
+			'wpb_map_' . str_repeat( 'a', 20 ),
+			'wpb_map_lock',
+			'wpb_map_thr_12',
 		);
-		$others = array( 'wpb_notours', 'wpb_' . str_repeat( 'z', 32 ), 'other_wpb_' . md5( 'y' ), 'wp_bouncer_unrelated' );
+		update_option( 'wpb_map_keys', array( 'gen' => 2, 'keys' => array() ), false );
+		update_option( 'wpb_map_gen', 2, false );
+		update_option( 'wpb_map_lock', time() . '|abc', false );
+		$others = array( 'wpb_map_' . str_repeat( 'a', 19 ), 'wpb_map_thr_x', 'wpb_notours', 'wpb_' . str_repeat( 'z', 32 ), 'other_wpb_' . md5( 'y' ), 'wp_bouncer_unrelated' );
 		foreach ( array_merge( $ours, $others ) as $name ) {
 			set_transient( $name, 'v', 600 );
 		}
@@ -129,12 +135,15 @@ final class UninstallTest extends IntegrationTestCase {
 		foreach ( array( Settings::OPTION, Installer::DB_VERSION_OPTION, Plugin::GEO_META_OPTION, GeoImport::STATE_OPTION, UploadsGuard::STATE_OPTION, UploadsGuard::PROBE_OPTION ) as $option ) {
 			$this->assertFalse( get_option( $option ), "option {$option} deleted" );
 		}
+		$this->assertFalse( get_option( 'wpb_map_keys' ), 'threat map index deleted' );
+		$this->assertFalse( get_option( 'wpb_map_gen' ), 'threat map generation deleted' );
+		$this->assertFalse( get_option( 'wpb_map_lock' ), 'threat map lock deleted' );
 		$this->assertFalse( get_site_transient( Updater::CACHE ), 'updater cache deleted' );
 		$this->assertSame( 'keep me', get_option( 'unrelated_option' ), 'unrelated option kept' );
 
 		// Transients.
-		// Only the two look-alikes below that happen to start with wpb_ (4 rows with their timeouts) may match.
-		$this->assertSame( 4, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%' OR option_name LIKE '\\_transient\\_timeout\\_wpb\\_%'" ), 'counters, lockouts and bans deleted' ); // phpcs:ignore WordPress.DB
+		// Only the four look-alikes below that happen to start with wpb_ (8 rows with their timeouts) may match.
+		$this->assertSame( 8, (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_wpb\\_%' OR option_name LIKE '\\_transient\\_timeout\\_wpb\\_%'" ), 'counters, lockouts and bans deleted' ); // phpcs:ignore WordPress.DB
 		$this->assertSame( 'keep me', get_transient( 'unrelated_transient' ), 'unrelated transient kept' );
 		$this->assertSame( 0, $count( $ours ), 'every one of ours is gone, with its timeout row' );
 		$this->assertSame( 2 * count( $others ), $count( $others ), 'other plugins\' look-alikes stay' );

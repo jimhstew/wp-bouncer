@@ -4,7 +4,8 @@ Run all of these before deploying a change.
 
 | Suite | Command | Needs | What it proves |
 |---|---|---|---|
-| Unit | `make test` | PHP 8.3+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation, uploads policy, alert wording, client types, URL redaction, rule categories and status, and widget numbers (under 1 s) |
+| Unit | `make test` | PHP 8.3+ | Rules, firewall flow, settings sanitisation, IP maths, geo parsing and chunked import, update manifest validation, uploads policy, alert wording, client types, URL redaction, rule categories and status, widget numbers, threat-map date ranges, aggregation and cache policy (under 1 s) |
+| JavaScript | `make test-js` | Node.js (CI uses 22); skipped locally when node is missing | Logic of the Activity Log threat map's panel script (`node --test`). Blocking in CI: the job fails if node is missing. |
 | Static analysis | `make analyse` | `composer install` | No undefined functions or methods and no type mistakes in the WordPress-facing code (PHPStan level 6 + WordPress stubs). Blocking in CI. |
 | Coding standards | `make lint` | `composer install` | WordPress Coding Standards. Blocking in CI. |
 | Integration | `make integration` | `composer install`, PHP with `mysqli`, a MySQL or MariaDB server | The plugin inside the WordPress test library, on a real database, single-site and multisite (CI) |
@@ -74,6 +75,8 @@ Conventions:
 - **Rules tab** (section "Rules tab"): the round trip (render, submit as a browser does without JavaScript, save: nothing changes), one field changed alters only that field, one anchor per rule and category, `wpb_rule` opens its panel, the uploads notice links to its rule, and the Dashboard still toggles a rule
 - geo import through the Tools tab, the way a browser does it: upload and URL import both start, take several AJAX steps and load every range; a file that isn't a geo CSV, a URL that fails, and uploads over `upload_max_filesize` and `post_max_size` are refused with a message and leave the old data in place; the no-JavaScript Continue button and the Stop button work; the working file is cleaned up
 - WordPress's `debug.log` is empty at the end
+
+A full run makes 461 checks.
 
 The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. OPcache is on, with timestamp validation on every request, so the update tests can swap the linked plugin folder for a copy and still see the new files. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
 

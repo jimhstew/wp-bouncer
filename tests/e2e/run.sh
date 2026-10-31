@@ -1459,6 +1459,118 @@ check "login after an erase works"             302 "$(login 198.18.9.71 admin_e2
 check "  ...from a new range still alerts"     1 "$(mail_count)"
 
 fi
+if want "Threat map (WPB-11)"; then
+# The Activity Log map on real HTTP: dots for seeded countries, the base map as a local <img>, the date filter
+# moving the table, nothing external in the panel's markup, and the schema 3 to 4 upgrade on this database.
+admin_login
+$WP eval 'update_option( "wp_bouncer_geo_meta", array( "rows" => 5, "source" => "test", "imported" => time() ) ); global $wpdb; $wpdb->query( "DELETE FROM {$wpdb->prefix}bouncer_log" ); WPBouncer\Admin\ThreatMapPanel::flush();' > /dev/null
+MAP_NOW=$(date -u +'%Y-%m-%d %H:%M:%S')
+MAP_OLD=$(date -u -d '20 days ago' +'%Y-%m-%d')
+map_page() { # map_page URL -> like admin, after clearing the per-user 5 s throttle on map cache misses
+	dbq "DELETE FROM wp_options WHERE option_name LIKE '%wpb_map_thr_%'" > /dev/null
+	admin "$@"
+}
+map_row() { # map_row IP COUNTRY ACTION 'created_at'
+	dbq "INSERT INTO wp_bouncer_log (created_at, ip, rule, action, country, reason) VALUES ('$4', '$1', 'waf', '$3', '$2', 'map e2e')" > /dev/null
+}
+for i in 1 2 3; do map_row 198.18.50.1 ZA blocked "$MAP_NOW"; done
+map_row 198.18.50.2 ZA lockout "$MAP_NOW"
+for i in 1 2; do map_row 198.18.50.3 NZ blocked "$MAP_NOW"; done
+for i in 1 2 3 4 5; do map_row 198.18.50.4 AU monitored "$MAP_NOW"; done
+map_row 198.18.50.5 JP alert "$MAP_NOW"
+map_row 198.18.50.6 CA login "$MAP_NOW"
+map_row 198.18.50.7 "" blocked "$MAP_NOW"
+map_row 198.18.50.7 "" blocked "$MAP_NOW"
+map_row 198.18.50.99 CL blocked "$MAP_OLD 12:00:00"
+MAP_URL="$U/wp-admin/admin.php?page=wp-bouncer&tab=log"
+check "Activity Log with the map loads"          200 "$(map_page "$MAP_URL")"
+check "  ...no PHP errors"                       0 "$(grep -c 'Fatal error\|Warning:\|Notice:\|Deprecated:' "$WORK/admin.html")"
+check "  ...has the panel and the dots layer"    1 "$(grep -c 'class="wpb-map-dots"' "$WORK/admin.html")"
+check "  ...a dot for ZA with its count"         1 "$(grep -c 'aria-label="South Africa (ZA): 4 threats"' "$WORK/admin.html")"
+check "  ...a dot for NZ"                        1 "$(grep -c 'data-cc="NZ"' "$WORK/admin.html")"
+check "  ...no dot for monitored, alert, login rows" 0 "$(grep -c 'data-cc="AU"\|data-cc="JP"\|data-cc="CA"' "$WORK/admin.html")"
+check "  ...a row 20 days back is inside the default window" 1 "$(grep -c 'data-cc="CL"' "$WORK/admin.html")"
+check "  ...unknown location is counted"         1 "$(grep -c 'Unknown location: 2 threats' "$WORK/admin.html")"
+check "  ...the window says last 30 days"        1 "$(grep -c 'Last 30 days' "$WORK/admin.html")"
+check "  ...base map is an <img> from the plugin" 1 "$(grep -c '<img class="wpb-map-base" src="'"$U"'/wp-content/plugins/wp-bouncer/assets/map/world.svg?ver=' "$WORK/admin.html")"
+check "  ...script and style are loaded"         2 "$(grep -c 'assets/threat-map.js?ver=\|assets/threat-map.css?ver=' "$WORK/admin.html")"
+MAP_EXT=$("$PHP" -r '
+	$h = file_get_contents($argv[1]); $o = $argv[2];
+	preg_match("#<section class=\"wpb-map\".*?</section>#s", $h, $m);
+	preg_match_all("#(?:https?:)?//[^\s\"\x27<>]+#", $m[0] ?? "", $u);
+	echo count(array_filter($u[0], fn($x) => 0 !== strpos($x, $o)));
+' "$WORK/admin.html" "$U")
+check "  ...no external URL in the map markup"   0 "$MAP_EXT"
+check "base map file is served"                  200 "$(curl -s -o "$WORK/world.svg" -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-content/plugins/wp-bouncer/assets/map/world.svg")"
+check "  ...and is an SVG without scripts"       0 "$(grep -ci '<script\|onload\|href=' "$WORK/world.svg")"
+check "map script is served"                     200 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-Real-IP: 198.51.100.50" -A "$MOZ" "$U/wp-content/plugins/wp-bouncer/assets/threat-map.js")"
+for tab in rules traffic tools dashboard; do
+	admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=$tab" > /dev/null
+	check "$tab tab has no map script or panel"  0 "$(grep -c 'threat-map\|wpb-map-dots' "$WORK/admin.html")"
+done
+check "front page has no map script"             0 "$(curl -s -H "X-Real-IP: 203.0.113.10" -A "$MOZ" "$U/" | grep -c 'threat-map')"
+# Filters: the map follows country and action, and ignores the search box and the IP filter.
+map_page "$MAP_URL&country=NZ" > /dev/null
+check "country filter: only NZ has a dot"        1 "$(grep -c 'data-cc=' "$WORK/admin.html")"
+map_page "$MAP_URL&log_action=lockout" > /dev/null
+check "action=lockout: only ZA, one threat"      1 "$(grep -c 'aria-label="South Africa (ZA): 1 threat"' "$WORK/admin.html")"
+map_page "$MAP_URL&log_action=monitored" > /dev/null
+check "action=monitored: message, no dots"       1 "$(grep -c 'nothing matches the action filter' "$WORK/admin.html")"
+map_page "$MAP_URL&s=zzz-no-such-text&log_ip=192.0.2.250" > /dev/null
+check "search and IP are ignored by the map"     1 "$(grep -c 'aria-label="South Africa (ZA): 4 threats"' "$WORK/admin.html")"
+check "  ...and the note says so"                1 "$(grep -c 'Ignores the search box and the IP filter' "$WORK/admin.html")"
+# Date range: the From/To inputs, and the table AND the map follow log_from/log_to.
+map_page "$MAP_URL" > /dev/null
+check "log toolbar has From and To date inputs"  2 "$(grep -o '<input type="date" name="log_from"\|<input type="date" name="log_to"' "$WORK/admin.html" | wc -l)"
+check "unfiltered table lists the 20-day-old row" 1 "$( [ "$(grep -c '198.18.50.99' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+map_page "$MAP_URL&log_from=$MAP_OLD&log_to=$MAP_OLD" > /dev/null
+check "range on that day: the map has the CL dot" 1 "$(grep -c 'data-cc="CL"' "$WORK/admin.html")"
+check "  ...and no ZA dot"                       0 "$(grep -c 'data-cc="ZA"' "$WORK/admin.html")"
+check "  ...the inputs are refilled"             1 "$(grep -c 'name="log_from"[^>]*value="'"$MAP_OLD"'"' "$WORK/admin.html")"
+# WPB-11 BUG while this fails: the date range is read by traffic_filters_from_request(), not log_filters_from_request().
+check "  ...and the TABLE shows the CL row"     1 "$( [ "$(grep -o '198\.18\.50\.99' "$WORK/admin.html" | wc -l)" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...and not the ZA rows"                 0 "$(grep -o '198\.18\.50\.1\b' "$WORK/admin.html" | wc -l)"
+map_page "$MAP_URL&log_from=$(date -u +%F)" > /dev/null
+# WPB-11 BUG while this fails (same cause as above).
+check "range from today: table drops the old row" 0 "$(grep -c '198.18.50.99' "$WORK/admin.html")"
+map_page "$MAP_URL&log_from=2026-03-05&log_to=2026-03-01" > /dev/null
+check "reversed range: notice shown"             1 "$(grep -c 'The end date is before the start date' "$WORK/admin.html")"
+map_page "$MAP_URL&log_from=2026-02-30" > /dev/null
+check "impossible date: notice shown"            1 "$(grep -c 'A date was not valid' "$WORK/admin.html")"
+map_page "$MAP_URL&log_from=%3Cscript%3Ealert(1)%3C/script%3E" > /dev/null
+check "hostile date: not echoed"                 0 "$(grep -c '<script>alert(1)' "$WORK/admin.html")"
+# A visitor who is not logged in gets no map.
+check "logged out: the log page redirects to login" 302 "$(curl -s -o "$WORK/anon.html" -w '%{http_code}' -H "X-Real-IP: 203.0.113.12" -A "$MOZ" "$MAP_URL")"
+check "  ...and shows no map"                    0 "$(grep -c 'wpb-map' "$WORK/anon.html")"
+# Upgrade 3 to 4: the action_created key is created and the redaction is not restarted. One eval does it all,
+# because every WP-CLI call boots the plugin, and a site on version 3 is upgraded on that boot.
+mapfile -t UPG < <($WP eval '
+	global $wpdb;
+	$idx = static function () use ( $wpdb ) { $k = array(); foreach ( $wpdb->get_results( "SHOW INDEX FROM {$wpdb->prefix}bouncer_log", ARRAY_A ) as $r ) { $k[ $r["Key_name"] ][ (int) $r["Seq_in_index"] ] = $r["Column_name"]; } return isset( $k["action_created"] ) ? implode( ",", $k["action_created"] ) : "none"; };
+	echo $idx(), "\n";
+	$wpdb->query( "ALTER TABLE {$wpdb->prefix}bouncer_log DROP INDEX action_created" );
+	delete_option( "wp_bouncer_migration_3" );
+	update_option( "wp_bouncer_db_version", "3" );
+	echo $idx(), "\n";
+	$before = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" );
+	WPBouncer\Installer::maybe_upgrade();
+	echo $idx(), "\n", get_option( "wp_bouncer_db_version" ), "\n";
+	echo false === get_option( "wp_bouncer_migration_3" ) ? "missing" : "present", "\n";
+	echo (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}bouncer_log" ) === $before ? "kept" : "lost", "\n";
+	echo false === wp_next_scheduled( "wp_bouncer_migrate_data" ) ? "unscheduled" : "scheduled", "\n";
+' 2>&1)
+check "fresh install has the action_created key" "action,created_at,country" "${UPG[0]:-}"
+check "  ...dropped for the test"                "none" "${UPG[1]:-}"
+check "upgrade from 3 recreates the key"         "action,created_at,country" "${UPG[2]:-}"
+check "  ...records version 4"                   4 "${UPG[3]:-}"
+check "  ...redaction is not restarted"          missing "${UPG[4]:-}"
+check "  ...rows are kept"                       kept "${UPG[5]:-}"
+check "  ...no redaction job scheduled"          unscheduled "${UPG[6]:-}"
+check "  ...the Activity Log still renders"      200 "$(map_page "$MAP_URL")"
+dbq "DELETE FROM wp_bouncer_log WHERE reason = 'map e2e'" > /dev/null
+$WP eval 'WPBouncer\Admin\ThreatMapPanel::flush();' > /dev/null
+
+fi
 if want "PHP debug log"; then
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'

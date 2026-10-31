@@ -15,6 +15,7 @@ use WPBouncer\Firewall\Request;
 use WPBouncer\Geo\Countries;
 use WPBouncer\Hardening\UploadsGuard;
 use WPBouncer\Log\BlockLogInterface;
+use WPBouncer\Log\DateRange;
 use WPBouncer\Plugin;
 use WPBouncer\Rules\CountryRule;
 use WPBouncer\Rules\IpBlocklistRule;
@@ -260,6 +261,32 @@ final class AdminController {
 						'resize' => __( 'Resize %s column', 'wp-bouncer' ),
 						/* translators: %d: width in pixels. */
 						'px'     => __( '%d pixels', 'wp-bouncer' ),
+					),
+				)
+			);
+		}
+
+		// The threat map (Activity Log only): a stylesheet and a small deferred script, no jQuery, no nonce.
+		if ( 'log' === $tab ) {
+			wp_enqueue_style( 'wp-bouncer-map', $url . 'assets/threat-map.css', array( 'wp-bouncer-admin' ), Plugin::VERSION );
+			wp_enqueue_script(
+				'wp-bouncer-map',
+				$url . 'assets/threat-map.js',
+				array(),
+				Plugin::VERSION,
+				array(
+					'in_footer' => true,
+					'strategy'  => 'defer',
+				)
+			);
+			wp_localize_script(
+				'wp-bouncer-map',
+				'wpBouncerMap',
+				array(
+					'i18n' => array(
+						'hide'  => __( 'Hide map', 'wp-bouncer' ),
+						'show'  => __( 'Show map', 'wp-bouncer' ),
+						'fewer' => __( 'Show top 10 only', 'wp-bouncer' ),
 					),
 				)
 			);
@@ -964,6 +991,23 @@ final class AdminController {
 	}
 
 	/**
+	 * The Activity Log date range from log_from / log_to (strict Y-m-d, site time zone).
+	 *
+	 * Parsed once per request; the memo is keyed by the raw values, so a changed request re-parses.
+	 */
+	public static function log_date_range(): DateRange {
+		static $memo = null;
+		// phpcs:disable WordPress.Security.NonceVerification -- read-only filter, strictly validated by DateRange::parse(); changes no state.
+		$from = isset( $_REQUEST['log_from'] ) && is_string( $_REQUEST['log_from'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['log_from'] ) ) : '';
+		$to   = isset( $_REQUEST['log_to'] ) && is_string( $_REQUEST['log_to'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['log_to'] ) ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification
+		if ( null === $memo || $memo[0] !== $from || $memo[1] !== $to ) {
+			$memo = array( $from, $to, DateRange::parse( $from, $to, wp_timezone(), time() ) );
+		}
+		return $memo[2];
+	}
+
+	/**
 	 * Traffic filters back to query args.
 	 *
 	 * @param array<string, string> $filters Filters.
@@ -997,7 +1041,7 @@ final class AdminController {
 	/**
 	 * Log filters from the query string.
 	 *
-	 * @return array<string, string>
+	 * @return array<string, string> Includes since, until, from and to when a date range applies.
 	 */
 	public static function log_filters_from_request(): array {
 		// phpcs:disable WordPress.Security.NonceVerification -- read-only filters, sanitised here and passed to prepared queries; change no state.
@@ -1027,6 +1071,14 @@ final class AdminController {
 			$filters['search'] = sanitize_text_field( wp_unslash( $_REQUEST['s'] ) );
 		}
 		// phpcs:enable WordPress.Security.NonceVerification
+		// The date range filters the table, the CSV export and the threat map alike.
+		$range = self::log_date_range();
+		if ( $range->explicit ) {
+			$filters['since'] = $range->since_utc;
+			$filters['until'] = $range->until_utc;
+			$filters['from']  = (string) $range->from;
+			$filters['to']    = (string) $range->to;
+		}
 		return $filters;
 	}
 
@@ -1043,6 +1095,8 @@ final class AdminController {
 			'country' => 'country',
 			'ip'      => 'log_ip',
 			'search'  => 's',
+			'from'    => 'log_from',
+			'to'      => 'log_to',
 		);
 		$args = array();
 		foreach ( $map as $column => $param ) {

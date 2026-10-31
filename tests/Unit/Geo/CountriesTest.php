@@ -15,7 +15,7 @@ final class CountriesTest extends TestCase {
 
 	public function test_contains_all_iso_3166_codes(): void {
 		$countries = array_diff_key( Countries::all(), Countries::SPECIAL );
-		$this->assertCount( 249, $countries, 'ISO 3166-1 defines 249 alpha-2 codes' );
+		$this->assertCount( 250, $countries, 'ISO 3166-1 defines 249 alpha-2 codes, plus the user-assigned XK (Kosovo)' );
 	}
 
 	public function test_codes_are_two_uppercase_chars_and_sorted(): void {
