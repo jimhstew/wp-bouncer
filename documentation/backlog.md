@@ -360,6 +360,8 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 
 - **2026-10-31: 1.3.0 test-build feedback (owner).** Threat-map dots drifted off their countries on wide screens (fixed: canvas sized from the map's aspect ratio). Australia's dot sat on the north coast (fixed: map build preferred a dependency's label point). Dashboard rules list removed. Top countries lists mark blocked countries. Wordfence mentions removed from docs.
 
+- **2026-10-31: Two Factor plugin check dropped from 1.3.0 (owner decision).** Testing with the real Two Factor plugin no longer blocks the release; the owner plans a separate two-factor plugin of their own. It should fire `wp_bouncer_record_admin_login` once the second factor passes, and may need `wp_bouncer_admin_login_defer` to stop the password step being recorded.
+
 No other open bugs are recorded.
 
 ---
