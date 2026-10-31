@@ -50,8 +50,10 @@ final class AlertNotifier {
 	/** Most new-location emails per administrator and hour. */
 	private const MAX_LOGIN_PER_USER_HOUR = 3;
 	/** Ceiling on uncapped (alert-silencing) settings alerts per blog and hour; above it the normal settings cap applies. */
-	private const MAX_UNCAPPED_PER_HOUR   = 50;
-	private const THROTTLE_KEY_UNCAPPED   = 'wpb_alert_uncapped';
+	private const MAX_UNCAPPED_PER_HOUR = 50;
+	private const THROTTLE_KEY_UNCAPPED = 'wpb_alert_uncapped';
+	/** Drift mails per request. They use no counter stored in the database (a database writer could preset it). */
+	private const MAX_DRIFT_PER_REQUEST   = 3;
 	public const DISABLED_REMINDER_OPTION = 'wpb_disabled_alerted';
 
 	/**
@@ -488,6 +490,59 @@ final class AlertNotifier {
 	}
 
 	/**
+	 * Queue the alert for settings that changed outside WP Bouncer (found by the drift check).
+	 *
+	 * Mailed whatever the direction of the change, because no old values exist. When the paths touch
+	 * the alert settings, or nobody knows what changed, the alert switch is ignored and the mail goes
+	 * to the recipients, the site admin email and (multisite) the network admin, outside the hourly cap.
+	 *
+	 * @param bool                 $forced           Ignore the alert switch (DriftVerdict::forces_alert()).
+	 * @param string               $detail           Mail detail (DriftVerdict::mail_detail()); paths only.
+	 * @param array<string, mixed> $current_settings The settings now in force, normalised.
+	 */
+	public function on_settings_drift( bool $forced, string $detail, array $current_settings ): void {
+		$alerts = isset( $current_settings['alerts'] ) && is_array( $current_settings['alerts'] ) ? $current_settings['alerts'] : array();
+		if ( ! $forced && ! $this->wants( 'firewall_changes', $alerts ) ) {
+			return;
+		}
+		$recipients = $this->firewall_recipients( array(), $alerts );
+		if ( $forced ) {
+			$recipients[] = (string) get_option( 'admin_email' );
+			$out          = array();
+			foreach ( $recipients as $address ) {
+				$address = trim( (string) $address );
+				if ( '' !== $address ) {
+					$out[ strtolower( $address ) ] = $address;
+				}
+			}
+			$recipients = array_values( $out );
+			$detail    .= ' Sent to the site admin as well because the alert settings may have changed.';
+		}
+		$this->queue(
+			'firewall',
+			'Firewall settings changed outside WP Bouncer',
+			$detail,
+			'',
+			'',
+			false,
+			true,
+			$recipients,
+			array(
+				'settings' => true,
+				'uncapped' => $forced,
+				'drift'    => true,
+				'blog'     => get_current_blog_id(),
+				'ctx'      => array(
+					'site_name'    => wp_specialchars_decode( (string) get_option( 'blogname' ), ENT_QUOTES ),
+					'site_url'     => home_url( '/' ),
+					'settings_url' => admin_url( 'admin.php?page=wp-bouncer&tab=general#wpb-alerts' ),
+					'actor'        => 'unknown',
+				),
+			)
+		);
+	}
+
+	/**
 	 * The Activity Log was emptied: tell the owner (critical). The caller writes the audit row.
 	 */
 	public function on_log_cleared(): void {
@@ -693,7 +748,7 @@ final class AlertNotifier {
 		);
 		$counts = array();
 		foreach ( $keys as $bucket => $key ) {
-			$counts[ $bucket ] = (int) get_transient( $key );
+			$counts[ $bucket ] = $this->counter( $key, $maxes[ $bucket ] + self::MAX_UNCAPPED_PER_HOUR );
 		}
 
 		// One mail per group. An event from another site than the current one (a switched blog) is
@@ -712,9 +767,15 @@ final class AlertNotifier {
 			$groups[ $gkey ]['events'][] = $event;
 		}
 
-		$uncapped      = get_transient( self::THROTTLE_KEY_UNCAPPED );
-		$uncapped      = is_array( $uncapped ) ? $uncapped : array();
+		$uncapped = $this->trusted_transient( self::THROTTLE_KEY_UNCAPPED );
+		$uncapped = is_array( $uncapped ) ? $uncapped : array();
+		foreach ( $uncapped as $blog => $n ) {
+			if ( ! is_int( $n ) || $n < 0 || $n > self::MAX_UNCAPPED_PER_HOUR ) {
+				$uncapped[ $blog ] = 0;
+			}
+		}
 		$uncapped_used = false;
+		$drift_sent    = 0;
 		$dropped       = array();
 		foreach ( $groups as $group ) {
 			$send = array();
@@ -725,6 +786,14 @@ final class AlertNotifier {
 				if ( ! empty( $event['capped'] ) ) {
 					// Over the per-administrator cap: counted in the login notice, never mailed.
 					$dropped['login'][ $blog_id ][] = $event;
+					continue;
+				}
+				if ( ! empty( $event['drift'] ) ) {
+					// Settings drift: no database counter applies (RT-02); only a per-request cap.
+					if ( $drift_sent < self::MAX_DRIFT_PER_REQUEST ) {
+						$send[] = $event;
+						++$drift_sent;
+					}
 					continue;
 				}
 				$free = ! empty( $event['uncapped'] ) && ( $uncapped[ $blog_id ] ?? 0 ) < self::MAX_UNCAPPED_PER_HOUR;
@@ -763,7 +832,7 @@ final class AlertNotifier {
 			if ( empty( $dropped[ $bucket ] ) ) {
 				continue;
 			}
-			$noticed = get_transient( $notice[0] );
+			$noticed = $this->trusted_transient( $notice[0] );
 			$noticed = is_array( $noticed ) ? $noticed : array();
 			foreach ( $dropped[ $bucket ] as $blog => $lost ) {
 				if ( in_array( $blog, $noticed, true ) ) {
@@ -788,6 +857,38 @@ final class AlertNotifier {
 			}
 			set_transient( $notice[0], $noticed, HOUR_IN_SECONDS );
 		}
+	}
+
+	/**
+	 * A throttle counter, or 0 when the stored value cannot be one this class wrote.
+	 *
+	 * @param string $key Transient name.
+	 * @param int    $max Highest legitimate value (the cap plus the uncapped sends that also count).
+	 */
+	private function counter( string $key, int $max ): int {
+		$value = $this->trusted_transient( $key );
+		// A scalar read back from the database is text ("20"), from the object cache an int.
+		$value = is_string( $value ) && ctype_digit( $value ) ? (int) $value : $value;
+		return is_int( $value ) && $value >= 0 && $value <= $max ? $value : 0;
+	}
+
+	/**
+	 * A transient, unless its stored timeout is missing or lies further ahead than an hour: this class
+	 * never sets a longer one, so such a row was planted to keep a throttle closed.
+	 *
+	 * @param string $key Transient name.
+	 * @return mixed The value, or false.
+	 */
+	private function trusted_transient( string $key ): mixed {
+		$value = get_transient( $key );
+		if ( false === $value || wp_using_ext_object_cache() ) {
+			return $value; // With an object cache the database holds no transient to plant.
+		}
+		$timeout = get_option( '_transient_timeout_' . $key );
+		if ( ! is_numeric( $timeout ) || (int) $timeout > time() + HOUR_IN_SECONDS + 60 ) {
+			return false;
+		}
+		return $value;
 	}
 
 	/**

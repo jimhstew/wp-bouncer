@@ -17,6 +17,7 @@ use WPBouncer\AdminLogins\AdminLoginRecorder;
 use WPBouncer\AdminLogins\LoginHistoryRepository;
 use WPBouncer\Alerts\AlertNotifier;
 use WPBouncer\Audit\SettingsAuditor;
+use WPBouncer\Audit\SettingsDriftMonitor;
 use WPBouncer\Environment\EnvironmentAdmin;
 use WPBouncer\Firewall\Firewall;
 use WPBouncer\Firewall\HttpResponder;
@@ -262,6 +263,13 @@ final class Plugin {
 	private ?AlertNotifier $alerts = null;
 
 	/**
+	 * Settings drift monitor.
+	 *
+	 * @var SettingsDriftMonitor|null
+	 */
+	private ?SettingsDriftMonitor $drift_monitor = null;
+
+	/**
 	 * The rule chain for this request (built once), shared by the firewall and the admin overview.
 	 *
 	 * @var RuleInterface[]|null
@@ -345,6 +353,10 @@ final class Plugin {
 		$this->alerts()->register();
 		// Outside the is_disabled() branch: a write made while the switch is on is still audited.
 		( new SettingsAuditor( $this ) )->register();
+		// Admin screens only (not admin-ajax, so not Heartbeat): the monitor is never built on the front end.
+		if ( is_admin() && ! wp_doing_ajax() ) {
+			add_action( 'admin_init', array( $this, 'check_settings_drift' ) );
+		}
 		( new TrafficRecorder( $this ) )->register();
 		( new PrivacyTools( $this ) )->register();
 		( new AdminLoginPrivacy( null, $this ) )->register();
@@ -447,8 +459,9 @@ final class Plugin {
 
 	/** Block log. */
 	public function log(): BlockLog {
-		if ( null === $this->log ) {
-			global $wpdb;
+		global $wpdb;
+		// The table name is fixed when a BlockLog is built, so after switch_to_blog() it needs a new one.
+		if ( null === $this->log || $this->log->table() !== $wpdb->prefix . 'bouncer_log' ) {
 			$this->log = new BlockLog( $wpdb );
 		}
 		return $this->log;
@@ -585,6 +598,19 @@ final class Plugin {
 			$this->uploads = new UploadsGuard( $this );
 		}
 		return $this->uploads;
+	}
+
+	/** The settings drift monitor (built on first use). */
+	public function drift_monitor(): SettingsDriftMonitor {
+		if ( null === $this->drift_monitor ) {
+			$this->drift_monitor = new SettingsDriftMonitor( $this );
+		}
+		return $this->drift_monitor;
+	}
+
+	/** Hourly admin check for settings changed outside WP Bouncer (hooked on admin_init). */
+	public function check_settings_drift(): void {
+		$this->drift_monitor()->on_admin_init();
 	}
 
 	/** Emails about new administrators and plugin changes. */
@@ -954,6 +980,7 @@ final class Plugin {
 		update_option( self::LAST_PURGE_OPTION, time(), true );
 		$this->log_writer()->flush_summary();
 		$this->alerts()->maybe_remind_disabled();
+		$this->drift_monitor()->check( SettingsDriftMonitor::TRIGGER_CRON );
 		$this->purge_logs();
 		( new LoginHistoryRepository() )->prune_expired( AdminLoginRecorder::window_days() * DAY_IN_SECONDS );
 		// Safety net: an interrupted upgrade must not leave the data migration unscheduled.

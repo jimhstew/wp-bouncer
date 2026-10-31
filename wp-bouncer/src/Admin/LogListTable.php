@@ -9,6 +9,7 @@ namespace WPBouncer\Admin;
 
 use WPBouncer\AdminLogins\AdminLoginRecorder;
 use WPBouncer\AdminLogins\LoginEvent;
+use WPBouncer\Audit\DriftVerdict;
 use WPBouncer\Geo\Countries;
 use WPBouncer\Privacy\AdminLoginPrivacy;
 use WPBouncer\Log\BlockLog;
@@ -258,6 +259,13 @@ final class LogListTable extends \WP_List_Table {
 	 */
 	protected function column_reason( $item ) {
 		$reason = (string) ( $item['reason'] ?? '' );
+		if ( AdminController::SETTINGS_LOG_RULE === ( $item['rule'] ?? '' ) ) {
+			foreach ( DriftVerdict::HEADS as $head ) {
+				if ( 0 === strpos( $reason, $head ) ) {
+					return '<strong>' . esc_html__( 'Changed outside WP Bouncer', 'wp-bouncer' ) . '</strong> ' . esc_html( $reason );
+				}
+			}
+		}
 		if ( AdminLoginRecorder::LOG_RULE !== ( $item['rule'] ?? '' ) || BlockLogInterface::ACTION_LOGIN !== ( $item['action'] ?? '' ) ) {
 			return esc_html( $reason );
 		}

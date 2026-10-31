@@ -11,6 +11,7 @@ use WPBouncer\Installer;
 use WPBouncer\Log\DateRange;
 use WPBouncer\Log\ThreatMapSource;
 use WPBouncer\Plugin;
+use WPBouncer\Storage\OptionLock;
 use WPBouncer\Support\Clock;
 use WPBouncer\ThreatMap\CachePolicy;
 use WPBouncer\ThreatMap\Centroids;
@@ -263,42 +264,19 @@ final class ThreatMapPanel {
 	}
 
 	/**
-	 * Take the build lock atomically (like AlertNotifier::claim_reminder_slot()).
+	 * Take the build lock atomically.
 	 *
-	 * With a persistent object cache it is wp_cache_add(). Otherwise the row is created with
-	 * INSERT IGNORE (core's add_option() is an upsert, so two requests could both win), and a stale
-	 * row is replaced with a compare-and-swap UPDATE on the value that was read. Plain SQL that
-	 * MySQL, MariaDB and SQLite all run.
+	 * With a persistent object cache it is wp_cache_add(). Otherwise it is the shared OptionLock
+	 * (INSERT IGNORE plus a compare-and-swap for a stale row, as in AlertNotifier::claim_reminder_slot()).
 	 *
 	 * @return string|null A token to release it with, or null when another request holds it.
 	 */
 	public static function acquire_lock(): ?string {
-		global $wpdb;
-		$token = wp_generate_password( 12, false );
 		if ( wp_using_ext_object_cache() ) {
+			$token = wp_generate_password( 12, false );
 			return wp_cache_add( self::LOCK_OPTION, $token, 'wpb_map', self::LOCK_SECONDS ) ? $token : null;
 		}
-		$value = time() . '|' . $token;
-		// Two tries: the second covers a row that vanished between the insert and the read.
-		for ( $try = 0; $try < 2; $try++ ) {
-			$inserted = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO %i (option_name, option_value, autoload) VALUES (%s, %s, 'no')", $wpdb->options, self::LOCK_OPTION, $value ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- atomic claim, see above.
-			if ( 1 === $inserted ) {
-				self::forget_lock_cache();
-				return $token;
-			}
-			$held = $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, self::LOCK_OPTION ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- read around the object cache on purpose: the claim must see the latest value.
-			if ( null === $held ) {
-				continue;
-			}
-			if ( (int) strtok( (string) $held, '|' ) > time() - self::LOCK_SECONDS ) {
-				return null;
-			}
-			// Stale: its holder is gone. Of the requests that race to replace it, only one UPDATE matches the old value.
-			$won = $wpdb->query( $wpdb->prepare( 'UPDATE %i SET option_value = %s WHERE option_name = %s AND option_value = %s', $wpdb->options, $value, self::LOCK_OPTION, (string) $held ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- compare-and-swap, see above.
-			self::forget_lock_cache();
-			return 1 === $won ? $token : null;
-		}
-		return null;
+		return self::option_lock()->claim();
 	}
 
 	/**
@@ -307,25 +285,17 @@ final class ThreatMapPanel {
 	 * @param string $token Token from acquire_lock().
 	 */
 	public static function release_lock( string $token ): void {
-		global $wpdb;
 		if ( wp_using_ext_object_cache() ) {
 			if ( wp_cache_get( self::LOCK_OPTION, 'wpb_map' ) === $token ) {
 				wp_cache_delete( self::LOCK_OPTION, 'wpb_map' );
 			}
 			return;
 		}
-		$held = $wpdb->get_var( $wpdb->prepare( 'SELECT option_value FROM %i WHERE option_name = %s', $wpdb->options, self::LOCK_OPTION ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- must see the latest value.
-		if ( null === $held || substr( (string) $held, -strlen( $token ) - 1 ) !== '|' . $token ) {
-			return;
-		}
-		// Conditional on the exact value: if another request took the lock meanwhile, nothing matches.
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM %i WHERE option_name = %s AND option_value = %s', $wpdb->options, self::LOCK_OPTION, (string) $held ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery -- conditional delete, see above.
-		self::forget_lock_cache();
+		self::option_lock()->release( $token );
 	}
 
-	/** Drop cached copies of the lock option so get_option() stays coherent after a direct write. */
-	private static function forget_lock_cache(): void {
-		wp_cache_delete( self::LOCK_OPTION, 'options' );
-		wp_cache_delete( 'notoptions', 'options' );
+	/** The option-row lock. */
+	private static function option_lock(): OptionLock {
+		return new OptionLock( self::LOCK_OPTION, self::LOCK_SECONDS );
 	}
 }

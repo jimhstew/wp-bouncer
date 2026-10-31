@@ -335,6 +335,8 @@ Owner request (verbatim): "Add a map to the activity log showing the hotspots fo
 (Nothing is queued here yet. Candidates that came out of this planning, not yet requested by the owner:)
 
 - **Raise PHPStan level** beyond what WPB-1 reached (level 7).
+- **Drop v1 settings fingerprints in 1.4.0** (WPB12-RT-09): set `FingerprintRecord::MIN_VERSION = 2`, so a pre-1.3.0 record can't be replayed to hide an admin-email change.
+- **Atomic install lock** (found in WPB11-RT-03): `Installer.php:169-178` uses the non-atomic `add_option()` upsert and a delete-then-add takeover. Move it to `Storage\OptionLock`.
 - **Live count of active bans** (needs an index of bans; see the dashboard widget design).
 - **Screen Options column toggles on the Log and Traffic tabs** (found during WPB-10b). None are shown today (see `documentation/architecture/column-resize.md` §3). Unscored. The WPB-10b resize code already skips hidden columns, so it would work once they exist.
 - **Update-channel signing** (SB-07 / ADR 002, deferred; likely a separate L item).

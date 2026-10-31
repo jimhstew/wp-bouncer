@@ -139,8 +139,8 @@ final class AlertFormatter {
 	 * Merge duplicates. Creating an administrator fires both "user registered"
 	 * and "role set" hooks; only one line should appear.
 	 *
-	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}> $events Events.
-	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}>
+	 * @param array<int, array{type: string, title: string, detail: string, key?: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, drift?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}> $events Events.
+	 * @return array<int, array{type: string, title: string, detail: string, log_detail?: string, critical?: bool, logged?: bool, recipients?: string[], settings?: bool, uncapped?: bool, drift?: bool, blog?: int, capped?: bool, ctx?: array<string, string>}>
 	 */
 	public static function dedupe( array $events ): array {
 		$out = array();

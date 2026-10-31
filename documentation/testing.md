@@ -76,7 +76,7 @@ Conventions:
 - geo import through the Tools tab, the way a browser does it: upload and URL import both start, take several AJAX steps and load every range; a file that isn't a geo CSV, a URL that fails, and uploads over `upload_max_filesize` and `post_max_size` are refused with a message and leave the old data in place; the no-JavaScript Continue button and the Stop button work; the working file is cleaned up
 - WordPress's `debug.log` is empty at the end
 
-A full run makes 461 checks.
+A full run makes 478 checks.
 
 The web server runs with `max_execution_time=30`, `upload_max_filesize=2M` and `post_max_size=8M`, like typical shared hosting, so anything that needs one long request fails here as it would in production. It has four workers, so the site can request itself (the uploads test does). A router script makes it behave like Apache with WordPress's rewrite rules (files that exist are served, everything else goes to WordPress) and, while WP Bouncer's block is in `uploads/.htaccess`, refuses scripts in uploads the way Apache would. OPcache is on, with timestamp validation on every request, so the update tests can swap the linked plugin folder for a copy and still see the new files. The site uses pretty permalinks. A second built-in server on port+1 stands in for download.db-ip.com.
 

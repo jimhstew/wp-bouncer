@@ -209,7 +209,28 @@ location ~* ^/wp-content/uploads/.*\.(php[0-9]?|phtml|pht|phar|phps|pgif|shtml|c
 | `plugin_updates` | bool | A plugin is updated. Off by default, since updates are routine and auto-updates already email the admin. |
 | `record_admin_logins` | bool | Default on. Every successful login by an administrator is written to the Activity Log as action `login`, rule `admin_login` (see "Administrator logins" below). Off stops the rows, the location history and the new-location email. Does not depend on `enabled`. |
 | `admin_login_location` | bool | Default on. Email when an administrator logs in from an IP range or country not seen for that account in the history window. Needs `enabled` and `record_admin_logins`. |
-| `firewall_changes` | bool | Default on. Settings that weaken the firewall are saved (mode, allowlist, trusted proxies, IP source, geo source or header, alert recipients, XML-RPC mode, a rule switched off, a shorter Activity Log or Traffic log retention), the Activity Log is cleared, or `WP_BOUNCER_DISABLE` is set (one reminder a day, sent from cron or an admin request). Every settings save also writes one `alert` row naming the changed settings, not their values. Recipients include the network admin on multisite. |
+| `firewall_changes` | bool | Default on. Settings that weaken the firewall are saved (mode, allowlist, trusted proxies, IP source, geo source or header, alert recipients, XML-RPC mode, a rule switched off, a shorter Activity Log or Traffic log retention), the Activity Log is cleared, or `WP_BOUNCER_DISABLE` is set (one reminder a day, sent from cron or an admin request). Every settings save also writes one `alert` row naming the changed settings, not their values. Recipients include the network admin on multisite. Settings changed outside WP Bouncer are reported the same way; see "Settings changed outside WP Bouncer" below. |
+
+### Settings changed outside WP Bouncer
+
+**Default:** on (follows `firewall_changes`) · `src/Audit/` (drift check) · Settings: none; the check runs on its own
+
+WP Bouncer keeps a keyed fingerprint of its settings after each change it audits. A daily cron check, and a check on admin page loads by users who can manage WP Bouncer (at most once an hour per site), compares the stored settings with it. A difference (a change made with `wp --skip-plugins`, or in the database) writes one Activity Log row, rule `settings`, labelled "Changed outside WP Bouncer", with actor `unknown`. The row says the change was found by a check, not made at that time, and names the setting paths, never their values. The settings found then become the new baseline, so each change is reported once. Nothing is reverted.
+
+The `firewall_changes` email follows the alert switch. Even with alerts off, a drift mail is sent when the alert settings, the firewall mode or the admin email changed, or when the fingerprint can't be trusted (missing, altered, or the WordPress security keys changed). Those mails go to the alert recipients and also to the site admin email (and the network admin on multisite).
+
+What this check cannot do, in plain words:
+
+- It only detects. It never reverts a change, and it blocks nothing.
+- Anyone who can read `wp-config.php` or run code on the server can defeat it.
+- It needs real security keys (salts) in `wp-config.php`. If they are missing or still the placeholder, WordPress keeps them in the database, and the check adds nothing.
+- Someone who can write the database, but not `wp-config.php`, can't forge a matching record. They can delete the record and the baseline, though, and the next check starts over silently.
+- Restoring an older settings-and-fingerprint pair is not detected.
+- Once the fingerprint is broken, the attacker chooses the recipients, because the addresses are in the database. Send the `wp_bouncer_settings_drift` action to your own log or SIEM to keep an independent copy.
+- Removing WP Bouncer from `active_plugins` is not detected.
+- Detection can take up to a day: the daily cron, or the next admin page load (at most hourly). Under `DISABLE_WP_CRON` with no admin visits, it can take longer.
+- Changes made before the baseline (after updating from 1.2.1) are not seen. A change reverted between two checks is never seen.
+- A legitimate restore, import, staging copy or salt rotation is reported as drift, once.
 
 Events are queued during the request and sent as one `wp_mail()` on `shutdown`, so "install and activate" is one email. Creating an administrator fires several hooks; they are merged into one line per user. Each email gives what happened, when, who was logged in (or "no logged-in user" for WP-CLI, cron or code), and the IP, country and User-Agent. Names are stripped of control characters, so a crafted username can't add mail headers. At most 20 emails go out per hour (transient `wpb_alert_count`), not counting administrator-login emails, which have their own limits (10 per site an hour, 3 per administrator; see "Administrator logins" below). Every event is also written to the Activity Log with rule `alerts` and action `alert`, which the Dashboard's statistics leave out. Alerts keep working while `WP_BOUNCER_DISABLE` is on, because they never refuse anyone.
 

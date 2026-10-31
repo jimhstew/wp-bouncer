@@ -42,6 +42,8 @@ Country lookups are done locally against a free database you import (DB-IP Lite 
 
 **Threat map**: the Activity Log shows where blocked requests and lockouts came from, on a world map and in a Top countries table, for the date range you pick. The map ignores the search box and the IP filter.
 
+**Settings drift**: WP Bouncer notices when its own settings were changed while the plugin wasn't loaded (for example with `wp --skip-plugins` or in the database). It writes an Activity Log row and emails you, but it never reverts the change.
+
 == Installation ==
 
 1. Upload the `wp-bouncer` folder to `/wp-content/plugins/` and activate it.
@@ -99,6 +101,22 @@ It replaces the firewall, brute-force, country-blocking and rate-limiting parts.
 = Why is the threat map empty, or showing "Unknown location"? =
 
 The map counts blocked requests and lockouts only, and needs a country for each entry. Import the geo database under Tools, or use a country header from your CDN. Entries with no known country are listed as unknown location and aren't drawn. Without a geo database and without a country header, the map isn't drawn at all.
+
+= Does WP Bouncer notice settings changed outside WordPress? =
+
+Only partly. After each change made with WP Bouncer loaded, it keeps a keyed fingerprint of its settings. A daily check, and a check on admin page loads by users who can manage WP Bouncer (at most once an hour), compares the settings with it. A difference, such as a change made with `wp --skip-plugins` or in the database, writes one Activity Log row and sends the firewall-change email. The row says when it was found, not when it was made, and shows only the setting names. The email is sent even with alerts off when the alert, mode or admin-email settings changed, or when the fingerprint can't be trusted. The settings found then become the new baseline.
+
+Limits, in plain words:
+
+* It only detects. It never reverts a change.
+* Anyone who can read wp-config.php or run code on the server can defeat it.
+* It needs real security keys (salts) in wp-config.php. If they are missing or still the placeholder, WordPress keeps them in the database, and the check adds nothing.
+* Someone who can write the database but not wp-config.php can't forge a matching record. They can delete the record and the baseline, though, and the next check starts over silently.
+* Restoring an older settings-and-fingerprint pair is not detected.
+* Once the fingerprint is broken, the attacker chooses who gets the email, because the addresses are in the database. To keep an independent copy, send the `wp_bouncer_settings_drift` action to your own log or SIEM.
+* Removing WP Bouncer from active_plugins is not detected.
+* Detection can take up to a day: the daily cron, or the next admin page load (at most hourly).
+* A legitimate restore, import, staging copy or salt rotation is reported as drift, once.
 
 == Credits ==
 

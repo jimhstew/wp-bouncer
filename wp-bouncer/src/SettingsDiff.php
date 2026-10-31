@@ -209,6 +209,46 @@ final class SettingsDiff {
 	}
 
 	/**
+	 * The settings leaves of a raw option value, for the drift fingerprint.
+	 *
+	 * Walks the schema (the defaults) with the same rules as changes(): it descends only into
+	 * arrays with named keys, treats each list path as one leaf and never makes a path from a key
+	 * the schema doesn't know. Values come from the raw option, not the normalised settings.
+	 *
+	 * @param mixed $raw Raw option value (anything the options API can hold).
+	 * @return array<string, array{0: bool, 1: mixed}> Path => [present, value]. "present" is false
+	 *                                                  when the path is missing or a parent is not an array.
+	 */
+	public static function leaves( mixed $raw ): array {
+		$out = array();
+		self::collect( $raw, is_array( $raw ), '', Settings::defaults(), $out );
+		return $out;
+	}
+
+	/**
+	 * Collect the leaves below one schema node.
+	 *
+	 * @param mixed                $value   Raw value at this path.
+	 * @param bool                 $present True when the path is there.
+	 * @param string               $path    Path so far.
+	 * @param mixed                $schema  Defaults at this path.
+	 * @param array<string, mixed> $out     Collected leaves.
+	 */
+	private static function collect( mixed $value, bool $present, string $path, mixed $schema, array &$out ): void {
+		if ( is_array( $schema ) && array() !== $schema && ! array_is_list( $schema ) && ! in_array( $path, self::LIST_PATHS, true ) ) {
+			foreach ( array_keys( $schema ) as $key ) {
+				$has   = $present && is_array( $value ) && array_key_exists( $key, $value );
+				$child = '' === $path ? (string) $key : $path . '.' . $key;
+				self::collect( $has ? $value[ $key ] : null, $has, $child, $schema[ $key ], $out );
+			}
+			return;
+		}
+		if ( '' !== $path ) {
+			$out[ $path ] = array( $present, $present ? $value : null );
+		}
+	}
+
+	/**
 	 * Read a dotted path.
 	 *
 	 * @param array<string, mixed> $settings Settings.

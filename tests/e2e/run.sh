@@ -1571,6 +1571,58 @@ dbq "DELETE FROM wp_bouncer_log WHERE reason = 'map e2e'" > /dev/null
 $WP eval 'WPBouncer\Admin\ThreatMapPanel::flush();' > /dev/null
 
 fi
+if want "Settings drift (WPB-12)"; then
+# A settings edit made while the plugin is not loaded (WP-CLI --skip-plugins) is found by the next check:
+# one row, then nothing more. On SQLite this also runs the INSERT IGNORE lock. A front-end request touches no fingerprint state.
+DRIFT_CHECK='delete_transient( "wp_bouncer_fp_check" ); WPBouncer\Plugin::instance()->drift_monitor()->check( "cron" );'
+$WP eval "$DRIFT_CHECK" > /dev/null
+dbq "DELETE FROM wp_bouncer_log WHERE rule = 'settings'" >/dev/null
+check "baseline check: no drift row" 0 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+DRIFT_NOW=$(dbq_opt wp_bouncer_settings 'echo $o["mode"];')
+if [ "$DRIFT_NOW" = "monitor" ]; then DRIFT_NEW=enforce; else DRIFT_NEW=monitor; fi
+$WP --skip-plugins option patch update wp_bouncer_settings mode "$DRIFT_NEW" > /dev/null
+check "edit without the plugin: no audit row yet" 0 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+$WP eval "$DRIFT_CHECK" > /dev/null
+check "the check writes exactly one drift row"   1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings' AND action = 'alert'")"
+check "  ...naming the changed setting"          1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings' AND reason LIKE '%mode%'")"
+check "  ...with no IP"                          1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings' AND ip = ''")"
+check "  ...and the lock is released"            0 "$(dbq "SELECT COUNT(*) FROM wp_options WHERE option_name = 'wp_bouncer_fp_lock'")"
+$WP eval "$DRIFT_CHECK" > /dev/null
+check "a second check writes nothing"            1 "$(dbq "SELECT COUNT(*) FROM wp_bouncer_log WHERE rule = 'settings'")"
+# The drift row has no IP and no country: the Activity Log page and the CSV export must cope.
+admin_login
+check "Activity Log lists the drift row"         200 "$(admin "$U/wp-admin/admin.php?page=wp-bouncer&tab=log&rule=settings")"
+check "  ...marked as changed outside WP Bouncer" 1 "$( [ "$(grep -c 'Changed outside WP Bouncer' "$WORK/admin.html")" -ge 1 ] && echo 1 || echo 0 )"
+check "  ...no PHP warning in the page"          0 "$(grep -Ec '<b>(Warning|Notice|Deprecated)</b>' "$WORK/admin.html")"
+DRIFT_EXPORT=$(grep -o 'href="[^"]*action=wp_bouncer_export_log[^"]*"' "$WORK/admin.html" | head -1 | sed 's/^href="//; s/"$//; s/&amp;/\&/g; s/&#038;/\&/g')
+admin "$DRIFT_EXPORT" > /dev/null
+check "CSV export: header row"                   "time_utc,ip,country,rule,action,reason,method,uri,user_agent" "$(head -1 "$WORK/admin.html")"
+check "  ...drift row with empty IP and country" 1 "$(grep -c '^"[0-9-]* [0-9:]*",,,settings,alert,' "$WORK/admin.html")"
+check "  ...no PHP warning in the file"          0 "$(grep -Ec '(Warning|Notice|Deprecated):' "$WORK/admin.html")"
+set_settings '$s["mode"] = "enforce"'
+# Front end: instrument every read and write of the fingerprint state with an mu-plugin.
+FPLOG="$WORK/fp-touch.log"
+rm -f "$FPLOG"
+cat > "$W/wp-content/mu-plugins/wpb-e2e-fp.php" <<PHPEOF
+<?php
+\$log = '$FPLOG';
+foreach ( array( 'wp_bouncer_fp', 'wp_bouncer_fp_since', 'wp_bouncer_fp_lock' ) as \$n ) {
+	add_filter( "pre_option_\$n", function ( \$v ) use ( \$n, \$log ) { file_put_contents( \$log, "read \$n\n", FILE_APPEND ); return \$v; } );
+	add_action( 'added_option', function ( \$o ) use ( \$n, \$log ) { if ( \$o === \$n ) { file_put_contents( \$log, "add \$n\n", FILE_APPEND ); } } );
+	add_action( 'updated_option', function ( \$o ) use ( \$n, \$log ) { if ( \$o === \$n ) { file_put_contents( \$log, "update \$n\n", FILE_APPEND ); } } );
+}
+// The record and marker are read with direct SQL (never get_option()), so watch the queries too.
+add_filter( 'query', function ( \$q ) use ( \$log ) { if ( false !== strpos( \$q, 'wp_bouncer_fp' ) ) { file_put_contents( \$log, "query\n", FILE_APPEND ); } return \$q; } );
+add_filter( 'pre_transient_wp_bouncer_fp_check', function ( \$v ) use ( \$log ) { file_put_contents( \$log, "read transient\n", FILE_APPEND ); return \$v; } );
+add_action( 'setted_transient', function ( \$t ) use ( \$log ) { if ( 'wp_bouncer_fp_check' === \$t ) { file_put_contents( \$log, "set transient\n", FILE_APPEND ); } } );
+PHPEOF
+check "front end answers (instrumented)"         301 "$(status 198.18.12.5 "$MOZ" "$U/?p=1")"
+check "  ...another page"                        200 "$(status 198.18.12.6 "$MOZ" "$U/")"
+check "  ...never touches the fingerprint state" 0 "$( [ -f "$FPLOG" ] && wc -l < "$FPLOG" | tr -d ' ' || echo 0 )"
+check "  ...(the probe itself fires on a check)" 1 "$( $WP eval "$DRIFT_CHECK" > /dev/null; [ -s "$FPLOG" ] && echo 1 || echo 0 )"
+rm -f "$W/wp-content/mu-plugins/wpb-e2e-fp.php"
+
+fi
 if want "PHP debug log"; then
 # WordPress also writes informational lines here (e.g. "Automatic updates starting..."); only PHP problems count.
 PHP_PROBLEMS='PHP (Fatal error|Parse error|Warning|Notice|Deprecated)'

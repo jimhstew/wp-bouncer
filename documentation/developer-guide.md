@@ -210,6 +210,7 @@ This is the public surface. WP Bouncer has no REST routes, shortcodes, blocks or
 | `wp_bouncer_admin_login_window_days` | `(int) apply_filters( …, 90 ): int` | 90 | Days of location history kept per administrator. Clamped to 30–365. Read at each login and by the daily cron. |
 | `wp_bouncer_admin_login_defer` | `(bool) apply_filters( …, $defer, WP_User $user, string $method ): bool` | true only for Two Factor users whose challenge runs after priority 20 | Return true to hold back recording of an interactive password login until a second factor passes. Nothing is recorded or saved while held back. Then fire `wp_bouncer_record_admin_login`. |
 | `wp_bouncer_admin_login_alert` | `(bool) apply_filters( …, true, array $event, array $flags ): bool` | `true` | Return false to skip the new-location email for one login. The Activity Log row is still written. `$event` and `$flags` are described under the `wp_bouncer_admin_login_recorded` action. |
+| `wp_bouncer_settings_drift_check` | `(bool) apply_filters( …, true, string $trigger ): bool` | `true` | Return false to skip the settings-drift check for this request. `$trigger` is `admin` or `cron`. Not applied to the save-path check, which always runs, so saves can't hide a drift. Turning off the checks also means drift goes unreported. |
 
 Example: allow a headless front end to log in (in a mu-plugin, so it loads before the firewall):
 
@@ -226,6 +227,7 @@ add_filter( 'wp_bouncer_login_allowed_origins', static function ( $origins ) {
 |---|---|---|
 | `wp_bouncer_settings_changed` | `do_action( 'wp_bouncer_settings_changed', string[] $changes, array $old, array $new, string $actor )` | After every real change to the settings, from any source: the admin screen, WP-CLI, cron or code calling `update_option()`. Not fired when nothing changed. `$changes` are dotted key paths such as `rules.xmlrpc.enabled`; a list setting (allowlist, countries) counts as one path. `$old` and `$new` are the full settings before and after, and hold values, so listeners must not log them. `$actor` is who made the change, as written in the Activity Log: `login #ID (context)` (for example `jim #1 (cli)`), or `cli`, `cron`, `rest`, `ajax` or `upgrade` when no user is signed in, or `unknown`. The hook does no capability check, so firing it doesn't mean the actor was allowed to change anything. Fired from `WPBouncer\Audit\SettingsAuditor`, after the row is written and any alert is queued. |
 | `wp_bouncer_log_cleared` | `do_action( 'wp_bouncer_log_cleared' )` | After the Activity Log is emptied from its screen. The Dashboard widget drops its cached numbers. The handler then writes one audit row and sends the `firewall_changes` email when that alert is on. No arguments. |
+| `wp_bouncer_settings_drift` | `do_action( 'wp_bouncer_settings_drift', string[] $paths, string $kind, string $trigger, bool $row_written )` | After a settings change made outside WP Bouncer (with the plugin not loaded, or the database edited directly) is found and recorded (WPB-12). Fired once per reported drift, after the Activity Log row is written (or fails) and the fingerprint is updated. `$paths` are safe key paths such as `alerts.enabled`, and empty when they are unknown. `$kind` is `changed` (named paths), `fingerprint_missing`, `fingerprint_altered` or `keys_changed` (no paths known, or the paths are unverified). `$trigger` is `admin` (an admin page load), `cron` (the daily check) or `save` (a settings save found it first). `$row_written` is false when the Activity Log row could not be written. This is the way to send drift alerts off the server: the alert email's recipients are stored in the database, so an attacker who can write the database can change them. A listener must not log settings values; it receives paths only. An exception thrown by a listener is caught, so the page or cron run carries on; with `WP_DEBUG_LOG` on, only the exception's class name is written to the debug log. Runs in the request that found the drift, so keep listeners quick, or hand the work to a queue. |
 
 | `wp_bouncer_admin_login_recorded` | `do_action( 'wp_bouncer_admin_login_recorded', array $event, array $flags )` | After an administrator login is written to the Activity Log and its history is saved (WPB-13). Not fired when recording is off, the user isn't an administrator, or the login was deduplicated. `$event` has the keys `user_id`, `login` (control characters removed, at most 60 characters), `ip`, `range`, `country` (empty if unknown), `method` (the label, such as `interactive password` or `application password (REST)`) and `time` (Unix time). `$flags` has `first` (no history existed), `new_range`, `new_country` and `reliable` (false when the client IP can't be trusted, in which case no history was read or saved). Runs inside the login request, so keep listeners quick. |
 | `wp_bouncer_record_admin_login` | `do_action( 'wp_bouncer_record_admin_login', WP_User $user )` (WP Bouncer listens; fire it from your code) | Record an administrator's login now. Fire it after a second factor passes, when another two-factor plugin deferred the record through `wp_bouncer_admin_login_defer`. WP Bouncer runs its handler at priority 10. Records only if the user is an administrator, and the login was not already recorded in this request. |
@@ -235,6 +237,25 @@ Example: log every settings change, with who made it, to a site's own audit trai
 ```php
 add_action( 'wp_bouncer_settings_changed', static function ( array $changes, array $old, array $new, string $actor ) {
 	error_log( 'WP Bouncer settings changed by ' . $actor . ': ' . implode( ', ', $changes ) );
+}, 10, 4 );
+```
+
+Example: ship settings drift off the server, so an attacker who can write the database can't also silence it. The listener sends only paths and the kind, never values. The endpoint URL is a placeholder:
+
+```php
+add_action( 'wp_bouncer_settings_drift', static function ( array $paths, string $kind, string $trigger, bool $row_written ) {
+	wp_remote_post( 'https://siem.example.com/hooks/wp-bouncer', array(
+		'timeout' => 5,
+		'body'    => wp_json_encode( array(
+			'site'        => home_url( '/' ),
+			'kind'        => $kind,
+			'paths'       => $paths,
+			'trigger'     => $trigger,
+			'row_written' => $row_written,
+			'time'        => time(),
+		) ),
+		'headers' => array( 'Content-Type' => 'application/json' ),
+	) );
 }, 10, 4 );
 ```
 

@@ -1034,6 +1034,8 @@ final class ThreatMapPanelTest extends IntegrationTestCase {
 		$wpdb->query( 'COMMIT' );
 
 		$site = self::factory()->blog->create();
+		// A plain administrator belongs only to the site they were created on: without this the panel renders nothing for site 2.
+		add_user_to_blog( $site, get_current_user_id(), 'administrator' );
 		switch_to_blog( $site );
 		Installer::activate();
 		update_option( Plugin::GEO_META_OPTION, array( 'rows' => 5 ) );

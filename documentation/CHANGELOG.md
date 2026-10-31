@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Settings changed outside WP Bouncer are detected (WPB-12).** After each change made with WP Bouncer loaded, the plugin keeps a keyed fingerprint of its settings. A daily check, and a check on admin page loads for users who can manage WP Bouncer (at most once an hour per site), compares the settings with it. A difference, such as a change made with `wp --skip-plugins` or directly in the database, adds one Activity Log row: rule "settings", "Changed outside WP Bouncer", actor unknown, with the time it was found (not the time it was made) and the setting paths that changed, never their values. The row also queues the `firewall_changes` email, which follows the alert switch. The email is sent even with alerts off when the alert, mode or admin-email settings changed, or when the fingerprint can't be trusted. The settings found are then taken as the new baseline, so the same change is reported once. Nothing is reverted or blocked. The first check after the update records the baseline silently. Each site is checked on its own, and uninstalling removes the fingerprint.
+- **Developer hook and filter for settings drift (WPB-12).** `wp_bouncer_settings_drift` fires after each reported drift, with the paths, the kind, the trigger and whether the row was written, so you can send it off the server. `wp_bouncer_settings_drift_check` can skip the admin and cron checks. See the developer guide.
 - **Administrator logins are recorded (WPB-13).** Each successful login by an administrator (the administrator role, `manage_options`, or a network super admin) adds one Activity Log row with action "Admin login", the user, IP, country, time and method: interactive password, application password (REST), application password (XML-RPC), or password (XML-RPC). Filter the log by action to see only these. Application-password and XML-RPC logins are recorded once per user, range and method each hour. Login rows are not counted as threats on the Dashboard.
 - **Email alert for a login from a new location (WPB-13).** An administrator who logs in from an IP range (IPv4 /24, IPv6 /64) or a country not seen for that account in the last 90 days gets one email. The first login after the update starts the history without an email. Each administrator gets at most 3 of these emails an hour, and the site at most 10 an hour; further logins are still recorded, and one "throttled" notice is sent per hour. The window can be changed with the `wp_bouncer_admin_login_window_days` filter.
 - **Settings for admin logins (WPB-13).** "Record administrator logins in the Activity Log" (`alerts.record_admin_logins`) and "an administrator logs in from a new location" (`alerts.admin_login_location`) are on the General tab, both on by default, including on upgraded sites. Switching either one off sends a risky-change alert.
@@ -19,6 +21,21 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - The Dashboard and dashboard widget counts of threats, the 14-day chart and the top rules, IPs and countries now leave out login rows, as they already left out alerts.
 - Uninstalling WP Bouncer removes each site's administrator login history.
+
+### Known limits
+
+- Settings changes made while WP Bouncer isn't loaded are detected, but not as they happen (WPB-12). Limits, in plain words:
+  - Detection only. WP Bouncer never reverts a change.
+  - Someone who can read `wp-config.php` or run code on the server can defeat the check.
+  - The check relies on real security keys (salts) in `wp-config.php`. If they are missing or still the placeholder, WordPress uses values stored in the database, and the check gives no extra protection.
+  - Someone with database write access, but not `wp-config.php`, can't forge a matching record. They can delete the record and the baseline marker, though, so the next check starts over silently.
+  - Restoring an older settings-and-fingerprint pair is not detected. This includes a fingerprint saved before 1.3.0, which hides a later admin-email change.
+  - Once the fingerprint is broken, the attacker chooses the recipients: the addresses are in the database. Ship the `wp_bouncer_settings_drift` action off the server.
+  - Removing WP Bouncer from `active_plugins` is not detected.
+  - Detection can take up to a day: the daily cron, or the next admin page load (at most hourly). Under `DISABLE_WP_CRON` with no admin visits, it can take longer.
+  - Changes made before the first baseline (after the update from 1.2.1) are not seen, and a change reverted between two checks is never seen.
+  - With a persistent object cache, a direct database edit is seen only once the cached settings expire.
+  - A legitimate restore, import, staging copy or salt rotation is reported as drift, once.
 
 ## [1.2.1] - 2026-10-24
 

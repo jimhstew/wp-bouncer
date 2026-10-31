@@ -141,7 +141,7 @@ final class SettingsAuditor {
 	 * @param mixed  $value  New raw value.
 	 */
 	public function on_add( $option, $value ): void {
-		$this->on_write( Settings::defaults(), $value );
+		$this->on_write( Settings::defaults(), $value, false, false );
 	}
 
 	/**
@@ -160,26 +160,37 @@ final class SettingsAuditor {
 		$blog = get_current_blog_id();
 		$old  = $this->stash[ $blog ] ?? array();
 		unset( $this->stash[ $blog ] );
-		$this->on_write( $old, Settings::defaults(), true );
+		$this->on_write( $old, Settings::defaults(), true, true );
 	}
 
 	/**
 	 * Audit one write.
 	 *
-	 * @param mixed $old_raw Old raw value.
-	 * @param mixed $new_raw New raw value.
-	 * @param bool  $deleted Option was deleted.
+	 * The drift monitor brackets the work: it compares the old value with the stored fingerprint first
+	 * (a change made outside the plugin is reported before this write's own row) and stores the
+	 * fingerprint of the new value last.
+	 *
+	 * @param mixed $old_raw     Old raw value.
+	 * @param mixed $new_raw     New raw value.
+	 * @param bool  $deleted     Option was deleted.
+	 * @param bool  $old_present True when the option was there before (false for an add).
 	 */
-	private function on_write( $old_raw, $new_raw, bool $deleted = false ): void {
-		$change = SettingsChange::from( $old_raw, $new_raw, $deleted );
-		if ( null === $change ) {
-			return;
-		}
-		$actor       = $this->actor();
-		$row_written = $this->record_row( $change->reason( $actor ) );
+	private function on_write( $old_raw, $new_raw, bool $deleted = false, bool $old_present = true ): void {
+		$monitor = $this->plugin->drift_monitor();
+		$monitor->before_audited_write( $old_raw, $old_present );
+		try {
+			$change = SettingsChange::from( $old_raw, $new_raw, $deleted );
+			if ( null === $change ) {
+				return; // No change to audit; the finally block below still runs after_audited_write().
+			}
+			$actor       = $this->actor();
+			$row_written = $this->record_row( $change->reason( $actor ) );
 
-		if ( ! empty( $change->risky ) ) {
-			$this->plugin->alerts()->on_risky_settings_change( $change->risky, $change->changes, $change->new, $change->old, $actor, $row_written );
+			if ( ! empty( $change->risky ) ) {
+				$this->plugin->alerts()->on_risky_settings_change( $change->risky, $change->changes, $change->new, $change->old, $actor, $row_written );
+			}
+		} finally {
+			$monitor->after_audited_write( $new_raw, ! $deleted );
 		}
 
 		// The in-memory copy belongs to the original blog.
@@ -190,7 +201,8 @@ final class SettingsAuditor {
 		/**
 		 * Fires once per real settings change, from every source (admin screen, WP-CLI, code).
 		 *
-		 * $old and $new hold setting values (normalised). Listeners must not log them.
+		 * $old and $new hold setting values (normalised). Listeners must not log them. After a change
+		 * made outside WP Bouncer is found, it fires with an empty $old and the actor "unknown".
 		 *
 		 * @param string[]             $changes Changed key paths, such as "rules.xmlrpc.enabled" (lists count as one path).
 		 * @param array<string, mixed> $old     Settings before.
@@ -203,12 +215,31 @@ final class SettingsAuditor {
 	/**
 	 * Write one audit row (alert action, rule "settings") for the current request.
 	 *
-	 * @param string $reason What happened and who did it; no setting values.
+	 * @param string $reason          What happened and who did it; no setting values.
+	 * @param bool   $request_details Store the request's IP, country, method, URI and user agent. Drift rows pass false:
+	 *                                the request belongs to whoever ran the check, not to the author of the change.
 	 * @return bool False when the row could not be written (for example the table is missing).
 	 */
-	public function record_row( string $reason ): bool {
-		$request = $this->plugin->current_request();
-		$ip      = $request->ip();
+	public function record_row( string $reason, bool $request_details = true ): bool {
+		$fields = array(
+			'ip'         => '',
+			'country'    => '',
+			'rule'       => AdminController::SETTINGS_LOG_RULE,
+			'action'     => BlockLogInterface::ACTION_ALERT,
+			'reason'     => mb_strimwidth( $reason, 0, 255, '...' ),
+			'method'     => '',
+			'uri'        => '',
+			'user_agent' => '',
+		);
+		if ( $request_details ) {
+			$request              = $this->plugin->current_request();
+			$ip                   = $request->ip();
+			$fields['ip']         = $ip;
+			$fields['country']    = '' !== $ip ? (string) $this->plugin->geo()->lookup( $ip ) : '';
+			$fields['method']     = $request->method();
+			$fields['uri']        = $request->uri();
+			$fields['user_agent'] = $request->user_agent();
+		}
 		if ( $this->switched() ) {
 			// The cached writer is bound to the original blog's table prefix.
 			global $wpdb;
@@ -216,19 +247,7 @@ final class SettingsAuditor {
 		} else {
 			$writer = $this->plugin->log_writer();
 		}
-		$id = $writer->record(
-			array(
-				'ip'         => $ip,
-				'country'    => '' !== $ip ? (string) $this->plugin->geo()->lookup( $ip ) : '',
-				'rule'       => AdminController::SETTINGS_LOG_RULE,
-				'action'     => BlockLogInterface::ACTION_ALERT,
-				'reason'     => mb_strimwidth( $reason, 0, 255, '...' ),
-				'method'     => $request->method(),
-				'uri'        => $request->uri(),
-				'user_agent' => $request->user_agent(),
-			)
-		);
-		return $id > 0;
+		return $writer->record( $fields ) > 0;
 	}
 
 	/**

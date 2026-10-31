@@ -224,6 +224,9 @@ trait PluginHelpers {
 			foreach ( $saved as $tag => $hook ) {
 				$wp_filter[ $tag ] = $hook; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- restoring what was removed above.
 			}
+			// An unaudited fixture write is not drift: forget the fingerprint so the next audited write sets a new baseline.
+			delete_option( 'wp_bouncer_fp' );
+			delete_option( 'wp_bouncer_fp_since' );
 		}
 	}
 

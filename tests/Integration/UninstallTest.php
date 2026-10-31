@@ -103,10 +103,14 @@ final class UninstallTest extends IntegrationTestCase {
 			'wpb_map_' . str_repeat( 'a', 20 ),
 			'wpb_map_lock',
 			'wpb_map_thr_12',
+			'wp_bouncer_fp_check',
 		);
 		update_option( 'wpb_map_keys', array( 'gen' => 2, 'keys' => array() ), false );
 		update_option( 'wpb_map_gen', 2, false );
 		update_option( 'wpb_map_lock', time() . '|abc', false );
+		update_option( 'wp_bouncer_fp', '{}', false );
+		update_option( 'wp_bouncer_fp_since', time(), false );
+		update_option( 'wp_bouncer_fp_lock', time() . '|abc', false );
 		$others = array( 'wpb_map_' . str_repeat( 'a', 19 ), 'wpb_map_thr_x', 'wpb_notours', 'wpb_' . str_repeat( 'z', 32 ), 'other_wpb_' . md5( 'y' ), 'wp_bouncer_unrelated' );
 		foreach ( array_merge( $ours, $others ) as $name ) {
 			set_transient( $name, 'v', 600 );
@@ -138,6 +142,9 @@ final class UninstallTest extends IntegrationTestCase {
 		$this->assertFalse( get_option( 'wpb_map_keys' ), 'threat map index deleted' );
 		$this->assertFalse( get_option( 'wpb_map_gen' ), 'threat map generation deleted' );
 		$this->assertFalse( get_option( 'wpb_map_lock' ), 'threat map lock deleted' );
+		foreach ( array( 'wp_bouncer_fp', 'wp_bouncer_fp_since', 'wp_bouncer_fp_lock' ) as $fp_option ) {
+			$this->assertFalse( get_option( $fp_option ), "{$fp_option} deleted" );
+		}
 		$this->assertFalse( get_site_transient( Updater::CACHE ), 'updater cache deleted' );
 		$this->assertSame( 'keep me', get_option( 'unrelated_option' ), 'unrelated option kept' );
 

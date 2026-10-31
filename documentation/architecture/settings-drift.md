@@ -29,7 +29,7 @@ Changed:
 |---|---|
 | `src/SettingsDiff.php` | New `public static function leaves( mixed $raw ): array<string, array{0: bool, 1: mixed}>`. It walks `Settings::defaults()` with the same rules as `walk()` (it descends only into named-key schema arrays, treats each `LIST_PATHS` entry as one leaf, and never makes a path from an unknown key). It returns `path => [present, value]` read from the **raw** option, where `present` is false when the path is missing or a parent is not an array. The existing methods do not change. |
 | `src/Audit/SettingsAuditor.php` | `on_write()` brackets the WPB-8 work with the monitor (§6). `on_add()` passes "old value absent". `on_delete()` passes "new value absent". `record_row()` gains `bool $request_details = true`; drift rows pass `false` (§8). `register()` does not change ("no reads, no queries"). |
-| `src/Alerts/AlertNotifier.php` | New `on_settings_drift( array $paths, bool $forced, string $title, string $detail, array $current_settings, bool $row_written ): void` (§9). Nothing else changes. |
+| `src/Alerts/AlertNotifier.php` | New `on_settings_drift( bool $forced, string $detail, array $current_settings ): void` (§9). The event carries `drift => true`: it uses no throttle counter stored in the database, only a per-request cap of 3 (RT-02). Throttle counters, the uncapped list and the notice lists are also ignored when out of range or when their stored timeout is missing or more than an hour and a minute ahead (RT-02). |
 | `src/Plugin.php` | Lazy `drift_monitor(): SettingsDriftMonitor`. In `register()`: `if ( is_admin() && ! wp_doing_ajax() ) add_action( 'admin_init', array( $this, 'check_settings_drift' ) )`. `check_settings_drift()` is one line that delegates to `drift_monitor()->on_admin_init()`. In `daily_maintenance()`: `$this->drift_monitor()->check( SettingsDriftMonitor::TRIGGER_CRON )` after `maybe_remind_disabled()`. Both sit outside the `is_disabled()` branch, like the auditor. |
 | `src/Admin/LogListTable.php` | Rows with rule `settings` whose reason starts with one of the `DriftVerdict::HEADS` show a translated label, `__( 'Changed outside WP Bouncer', 'wp-bouncer' )`, before the reason (AC 2). The stored reason stays English, like every other row, including WPB-8's. |
 | `uninstall.php` | Deletes the new options and the transient (§14). |
@@ -63,13 +63,21 @@ The option `wp_bouncer_fp` (per site, not autoloaded, about 5 KB):
 
 ```
 array(
-  'v'      => 1,
-  'kid'    => '8 hex',
-  'logged' => 0,            // time of the last drift row (SB12-10 hourly gate); 0 = never
-  'leaves' => array( 'allowlist' => '32 hex', 'alerts.enabled' => '32 hex', ..., 'settings' => '32 hex' ),
-  'seal'   => '32 hex',
+  'v'       => 2,
+  'kid'     => '8 hex',
+  'logged'  => 0,            // time of the last drift row (SB12-10 hourly gate); 0 = never
+  'leaves'  => array( 'allowlist' => '32 hex', 'alerts.enabled' => '32 hex', ..., 'settings' => '32 hex', 'wp.admin_email' => '32 hex', 'wp.network_admin_email' => '32 hex' ),
+  'pending' => array(),      // RT-03: or array( 'kind' => 'changed', 'paths' => array( ... ) ); sealed
+  'seal'    => '32 hex',
 )
 ```
+
+**Format 2 (WPB12-RT-03, RT-07).**
+
+- `pending` records a drift whose Activity Log row could not be written during a save. The save path writes the new record with `pending` set. The next check reports a valid record that has `pending` (under the same hourly gate) and clears it only after a row is written. A new `changed` drift merges its paths with a pending `changed` one.
+- Two extra leaves, `wp.admin_email` (the site `admin_email` option) and `wp.network_admin_email` (the network option, multisite only; absent elsewhere), make a changed recipient address a named, alert-forcing drift. There is no sealed copy of the recipients themselves.
+- The seal of format 2 also covers `pending`. Format 1 records are still read (their seal has no `pending`). Because the two email leaves are missing from a format 1 record, `DriftDetector` treats a missing email leaf of a format 1 record as a schema difference (rule 6): the first check or save rewrites the record in format 2 silently, with no false drift.
+- The record text is read with a prepared SELECT and never through `get_option()`, so a planted serialized object is never unserialized (RT-08). `save()` and `set_marker()` first delete a row that does not look like what the plugin writes, so `update_option()` never reads it as the old value.
 
 The option `wp_bouncer_fp_since` (per site, not autoloaded) holds the time of the first baseline. It is the SB12-06 "baseline established" marker. It is read only when the record is missing or cannot be parsed, so a normal check never reads it.
 
@@ -82,12 +90,14 @@ In order:
 | # | Stored record | Result | Row and alert | New record |
 |---|---|---|---|---|
 | 1 | missing or unparsable, marker **not** set | `baseline` | none (AC 7) | written; marker set |
-| 2 | missing or unparsable, marker set | `fingerprint_missing` | yes, no paths | written |
-| 3 | parsable, `kid` ≠ current | `keys_changed` | yes, no paths | written |
-| 4 | parsable, seal invalid | `fingerprint_altered` | yes; paths from the leaf diff, labelled unverified | written |
+| 2 | missing or unparsable, marker set | `fingerprint_missing` | yes, no paths | written, but on the check path only when the row was written (RT-04) |
+| 3 | parsable, `kid` ≠ current | `keys_changed` | yes, no paths | written, but on the check path only when the row was written (RT-04) |
+| 4 | parsable, seal invalid | `fingerprint_altered` | yes; paths from the leaf diff, labelled unverified | written, but on the check path only when the row was written (RT-04) |
 | 5 | valid; some common leaf MAC differs, or a leaf only in the current schema is `present` | `changed` | yes, with those paths | written |
 | 6 | valid; only schema differences (a leaf only in the stored record, or a leaf only in the current schema that is absent from the raw option) | `schema` | none | written silently |
 | 7 | valid; identical leaf map | `match` | none | not written |
+
+Rule 1's lock (`OptionLock`) treats a held value as stale when it is not `time|token`, or when its time is more than 5 seconds ahead, so a planted row cannot switch the checks off (RT-01). The save path waits for the lock at most about 1.8 seconds (nine pauses of 0.2 s between ten tries) and then goes on without it.
 
 A valid seal proves that the plugin wrote the leaf set, so a set difference under rule 6 can only come from a plugin version that added or removed settings. It is not tampering, which is why rule 6 is silent and rule 4 is not.
 
@@ -95,7 +105,7 @@ A valid seal proves that the plugin wrote the leaf set, so a set difference unde
 
 | Trigger | Where | Gate |
 |---|---|---|
-| `admin` | `admin_init`, registered only when `is_admin() && ! wp_doing_ajax()` (so not Heartbeat or other admin-ajax calls) | `current_user_can( AdminController::CAPABILITY )` (`manage_options`, the settings screen's capability) first, then `throttle_open()`. On success, `close_throttle()` sets transient `wp_bouncer_fp_check` for `HOUR_IN_SECONDS` **before** the compare. |
+| `admin` | `admin_init`, registered only when `is_admin() && ! wp_doing_ajax()` (so not Heartbeat or other admin-ajax calls) | `current_user_can( AdminController::CAPABILITY )` (`manage_options`, the settings screen's capability) first. Then the daily cron event is scheduled again if it is missing (RT-06). Then `throttle_open()`: the transient `wp_bouncer_fp_check` holds the time it was set, and a value that is not an int, lies in the future or is older than an hour counts as open whatever its timeout says (RT-06). On success, `close_throttle()` sets it for `HOUR_IN_SECONDS` **before** the compare. |
 | `cron` | `Plugin::daily_maintenance()` (hook `wp_bouncer_daily_maintenance`, per site) | none |
 | `save` | inside `SettingsAuditor::on_write()` (§6) | none; it is not filterable |
 

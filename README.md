@@ -20,6 +20,8 @@ The Activity Log also has a **threat map**: a world map and a Top countries tabl
 
 It also emails you when an administrator account appears, when an administrator signs in from a country or network not seen for that account recently, a plugin is installed, activated, deactivated or deleted, or the firewall's own settings change, so you hear about a break-in the same day. Every administrator login is recorded in the Activity Log.
 
+It also notices, within a day, when its own settings were changed while the plugin wasn't loaded (for example with `wp --skip-plugins` or in the database): it logs and emails that, but never reverts it.
+
 The Dashboard tab and Site Health also report whether your PHP and database versions still get security fixes, and flag PHP and WordPress settings that weaken security.
 
 There is no cloud service, account or subscription. Everything runs on your server, and nothing about your visitors is sent anywhere. Licence: GPL-2.0-or-later.
